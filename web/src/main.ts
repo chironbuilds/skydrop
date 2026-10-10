@@ -1,0 +1,635 @@
+import "./style.css";
+import type { OotleAccount } from "@chironbuilder/ootle-sdk";
+import type { IndexerProvider } from "@tari-project/ootle-indexer";
+import { CONFIG } from "./config";
+import * as bsky from "./bsky";
+import * as chain from "./chain";
+import { confetti, copy, h, icons, mount, short, spinnerLabel, toast } from "./dom";
+import { toHex } from "./cbor";
+
+const themeParam = new URLSearchParams(location.search).get("theme");
+if (themeParam === "dark") document.documentElement.dataset.theme = "dark";
+
+const root = document.getElementById("app")!;
+
+// ---------------------------------------------------------------------------------------------------------
+// session: one wallet kept in this browser
+// ---------------------------------------------------------------------------------------------------------
+
+let account: OotleAccount;
+let provider: IndexerProvider;
+let pubKey: Uint8Array;
+let myKeyHex = "";
+let walletAddress = "";
+let balance = 0n;
+let cleanups: (() => void)[] = [];
+
+async function startSession(): Promise<void> {
+  chain.initStorage();
+  const seed = chain.savedSeed() ?? chain.createSeed();
+  account = chain.openAccount(seed);
+  pubKey = await account.getPublicKey();
+  myKeyHex = toHex(pubKey);
+  walletAddress = await account.getWalletAddress();
+  provider = await account.getProvider();
+  await refreshBalance();
+}
+
+async function refreshBalance(): Promise<void> {
+  balance = await chain.tariBalance(account);
+  document.querySelectorAll<HTMLElement>("[data-balance]").forEach((el) => (el.textContent = `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`));
+}
+
+// ---- epochs: the chain counts time in epochs; learn how long one lasts so we can talk in hours ----------
+
+const EPOCH_KEY = "skydrop.epochs";
+function noteEpoch(epoch: number): void {
+  try {
+    const list = JSON.parse(localStorage.getItem(EPOCH_KEY) ?? "[]") as { e: number; t: number }[];
+    if (!list.length || list[list.length - 1]!.e !== epoch) list.push({ e: epoch, t: Date.now() });
+    localStorage.setItem(EPOCH_KEY, JSON.stringify(list.slice(-8)));
+  } catch {
+    /* storage unavailable: estimates fall back to the default */
+  }
+}
+function secondsPerEpoch(): number {
+  try {
+    const list = JSON.parse(localStorage.getItem(EPOCH_KEY) ?? "[]") as { e: number; t: number }[];
+    if (list.length >= 2) {
+      const a = list[0]!;
+      const b = list[list.length - 1]!;
+      const v = (b.t - a.t) / 1000 / (b.e - a.e);
+      if (v > 60 && v < 86400) return v;
+    }
+  } catch {
+    /* ignore */
+  }
+  return 3600;
+}
+function eta(epochs: number): string {
+  if (epochs <= 0) return "right away";
+  const mins = Math.round((epochs * secondsPerEpoch()) / 60);
+  if (mins < 90) return `about ${Math.max(mins, 1)} min`;
+  const hrs = mins / 60;
+  return hrs < 36 ? `about ${hrs.toFixed(hrs < 10 ? 1 : 0).replace(/\.0$/, "")} hours` : `about ${Math.round(hrs / 24)} days`;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// layout
+// ---------------------------------------------------------------------------------------------------------
+
+type Tab = "home" | "send" | "claim" | "how";
+
+function layout(active: Tab, ...content: (Node | null)[]): void {
+  const link = (href: string, label: string, tab: Tab, cls = "") =>
+    h("a", { href, class: cls, "aria-current": active === tab ? "page" : null }, label);
+  mount(
+    root,
+    h(
+      "header",
+      { class: "top" },
+      h("a", { class: "brand", href: "#/" }, h("span", { class: "logo" }, icons.drop(20)), "Skydrop"),
+      h(
+        "nav",
+        { class: "nav" },
+        link("#/send", "Send", "send"),
+        link("#/claim", "Collect", "claim"),
+        link("#/how", "How it works", "how", "hide-sm"),
+        h("span", { class: "net hide-sm" }, "Testnet"),
+        h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
+      ),
+    ),
+    ...content,
+    h(
+      "footer",
+      null,
+      "Tari testnet: tTARI has no monetary value.",
+      h("br"),
+      "Escrow contract ",
+      h("code", null, short(CONFIG.component, 18, 6)),
+      " · verified on-chain, no oracle, no middleman",
+    ),
+  );
+  window.scrollTo({ top: 0 });
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// wallet modal
+// ---------------------------------------------------------------------------------------------------------
+
+function openWallet(): void {
+  const body = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": "Your wallet" });
+  const scrim = h("div", { class: "scrim", onclick: (e: Event) => e.target === scrim && scrim.remove() }, body);
+  const close = () => scrim.remove();
+  let showSeed = false;
+
+  const faucetBtn = h("button", { class: "btn primary" }, "Get free testnet tTARI");
+  const faucetNote = h("div");
+  faucetBtn.addEventListener("click", async () => {
+    faucetBtn.disabled = true;
+    mount(faucetBtn, ...spinnerLabel("Asking the faucet…"));
+    mount(faucetNote);
+    try {
+      await chain.useFaucet(account);
+      await new Promise((r) => setTimeout(r, 2500));
+      await refreshBalance();
+      toast("Testnet tTARI received", "good");
+      render();
+    } catch (e) {
+      const m = chain.friendly(e);
+      mount(
+        faucetNote,
+        h(
+          "div",
+          { class: "note warn", style: "margin-top:12px" },
+          /insufficient|enough|InsufficientFunds|Available/i.test(String(e))
+            ? "The public testnet faucet is empty right now. Ask in the Tari community for some tTARI and give them your address above, or try again later."
+            : m,
+        ),
+      );
+      faucetBtn.disabled = false;
+      mount(faucetBtn, "Get free testnet tTARI");
+    }
+  });
+
+  const render = (): void => {
+    const seed = chain.savedSeed() ?? "";
+    mount(
+      body,
+      h("button", { class: "btn ghost sm x", onclick: close, "aria-label": "Close" }, icons.close(16)),
+      h("h3", null, "Your Skydrop wallet"),
+      h("p", { class: "sub", style: "margin-bottom:8px" }, "Kept in this browser. It signs for you, so you never connect an extension."),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "" }, `${chain.formatTari(balance, 4)} ${CONFIG.symbol}`))),
+      h(
+        "div",
+        { class: "kv" },
+        h("div", { class: "k" }, "Your address (share it to receive tTARI)"),
+        h("div", { class: "v" }, walletAddress),
+        h("div", { class: "row", style: "margin-top:6px" }, h("button", { class: "btn ghost sm", onclick: () => copy(walletAddress, "Address copied") }, icons.copy(), "Copy address")),
+      ),
+      h("div", { class: "row" }, faucetBtn),
+      faucetNote,
+      h("hr", { style: "border:0;border-top:1px solid var(--line);margin:22px 0" }),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Recovery key"), h("div", { class: "v" }, showSeed ? seed : "••••••••••••••••••••••••••••••••")),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { class: "btn ghost sm", onclick: () => { showSeed = !showSeed; render(); } }, showSeed ? "Hide" : "Reveal"),
+        h("button", { class: "btn ghost sm", onclick: () => copy(seed, "Recovery key copied") }, icons.copy(), "Copy"),
+      ),
+      h("p", { class: "help" }, "Anyone with this key controls this wallet. Save it somewhere safe. If you clear your browser data without it, the wallet is gone."),
+      h(
+        "div",
+        { class: "row", style: "margin-top:14px" },
+        h("button", { class: "btn ghost sm", onclick: importKey }, "Use a different recovery key"),
+      ),
+    );
+  };
+
+  const importKey = (): void => {
+    const input = prompt("Paste a 32-character recovery key. This replaces the wallet in this browser.");
+    if (!input) return;
+    try {
+      chain.saveSeed(input.trim());
+      location.reload();
+    } catch (e) {
+      toast(chain.friendly(e), "bad");
+    }
+  };
+
+  render();
+  document.body.appendChild(scrim);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      close();
+      removeEventListener("keydown", onKey);
+    }
+  };
+  addEventListener("keydown", onKey);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// shared bits
+// ---------------------------------------------------------------------------------------------------------
+
+function profileCard(p: bsky.Profile): HTMLElement {
+  return h(
+    "div",
+    { class: "profile" },
+    p.avatar ? h("img", { src: p.avatar, alt: "", width: 52, height: 52 }) : h("div", { class: "avatar" }),
+    h("div", { style: "min-width:0" }, h("div", { class: "n" }, p.displayName), h("div", { class: "h" }, `@${p.handle}`), h("div", { class: "did" }, short(p.did, 16, 8))),
+  );
+}
+
+/** A handle field that resolves the account as you type. */
+function handleField(initial: string, onProfile: (p: bsky.Profile | null) => void): { el: HTMLElement; input: HTMLInputElement; setValue: (v: string) => void } {
+  const input = h("input", { class: "input", placeholder: "name.bsky.social", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Bluesky handle" }) as HTMLInputElement;
+  const result = h("div");
+  let timer = 0;
+  let seq = 0;
+  const lookup = async (): Promise<void> => {
+    const v = input.value.trim();
+    const mine = ++seq;
+    if (!v) {
+      mount(result);
+      onProfile(null);
+      return;
+    }
+    mount(result, h("div", { class: "skel" }));
+    try {
+      const p = await bsky.lookupProfile(v);
+      if (mine !== seq) return;
+      mount(result, profileCard(p));
+      onProfile(p);
+    } catch (e) {
+      if (mine !== seq) return;
+      mount(result, h("div", { class: "note bad", style: "margin-top:12px" }, e instanceof Error ? e.message : String(e)));
+      onProfile(null);
+    }
+  };
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(lookup, 450);
+  });
+  const setValue = (v: string): void => {
+    input.value = v;
+    void lookup();
+  };
+  if (initial) setValue(initial);
+  return { el: h("div", null, h("div", { class: "field" }, input), result), input, setValue };
+}
+
+const needsFunds = (extra = 0n): boolean => balance < extra + 40_000n;
+
+function fundsNote(): HTMLElement {
+  return h(
+    "div",
+    { class: "note warn" },
+    "This wallet has no tTARI for network fees yet. ",
+    h("a", { href: "#", onclick: (e: Event) => { e.preventDefault(); openWallet(); } }, "Get some tTARI"),
+    ".",
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// home
+// ---------------------------------------------------------------------------------------------------------
+
+function renderHome(): void {
+  layout(
+    "home",
+    h(
+      "section",
+      { class: "hero" },
+      h("span", { class: "pill" }, icons.shield(14), "Trustless · verified on-chain"),
+      h("h1", null, "Send Tari to ", h("span", { class: "grad-text" }, "anyone on Bluesky")),
+      h("p", { class: "lead" }, "Type a handle, pick an amount, done. They collect it by proving they own the account. No wallet to set up first, no middleman holding the money."),
+    ),
+    h(
+      "div",
+      { class: "grid2" },
+      h("a", { class: "card action", href: "#/send" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Send"), h("p", null, "Pick a Bluesky handle and an amount. We hold it safely on-chain until they claim it.")),
+      h("a", { class: "card action", href: "#/claim" }, h("span", { class: "icon alt" }, icons.gift(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Collect"), h("p", null, "Someone sent you tTARI? Post one line on Bluesky to prove it's you, then collect.")),
+    ),
+    h(
+      "div",
+      { class: "trust" },
+      h("div", null, h("b", null, "No oracle"), h("span", null, "The contract itself checks your account's cryptographic signatures. Nobody vouches for you.")),
+      h("div", null, h("b", null, "Always refundable"), h("span", null, "Unclaimed money returns to the sender after a set time.")),
+      h("div", null, h("b", null, "Nothing to install"), h("span", null, "It works in your browser. A wallet is made for you in the background.")),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// send
+// ---------------------------------------------------------------------------------------------------------
+
+const WINDOWS = [
+  { w: 0, name: "Instant", desc: "They can collect the moment they verify. Best for tips and small gifts.", tag: "Recommended for small amounts" },
+  { w: 2, name: "Careful", desc: "A short safety window before it can be collected, so the real owner can stop a hijacked claim.", tag: "" },
+  { w: 10, name: "Vault", desc: "A longer safety window for larger transfers.", tag: "" },
+].filter((o) => o.w <= CONFIG.maxWindow);
+
+function renderSend(prefill?: string): void {
+  let profile: bsky.Profile | null = null;
+  let windowEpochs = 0;
+  let busy = false;
+
+  const field = handleField(prefill ?? "", (p) => {
+    profile = p;
+    update();
+    if (p) void showWaiting(p);
+  });
+  const waiting = h("div");
+  const amountInput = h("input", { class: "input big", inputmode: "decimal", placeholder: "1.0", "aria-label": "Amount" }) as HTMLInputElement;
+  const stage = h("div", { class: "log" });
+  const choicesEl = h("div", { class: "choices", role: "radiogroup", "aria-label": "Safety level" });
+  const sendBtn = h("button", { class: "btn primary block" }, "Send") as HTMLButtonElement;
+  const fundsEl = h("div");
+  const card = h("div", { class: "card stack" });
+
+  const amount = (): bigint | null => chain.parseTari(amountInput.value);
+
+  const drawChoices = (): void => {
+    mount(
+      choicesEl,
+      WINDOWS.map((o) =>
+        h(
+          "button",
+          { class: "choice", role: "radio", "aria-checked": String(windowEpochs === o.w), onclick: () => { windowEpochs = o.w; drawChoices(); } },
+          h("span", { class: "radio" }),
+          h("span", null, h("b", null, o.name, o.tag && o.w === 0 ? h("span", { class: "tag" }, "Tips") : null, o.w > 0 ? h("span", { style: "color:var(--faint);font-weight:500;margin-left:8px;font-size:14px" }, `safety window ${eta(o.w)}`) : null), h("span", { class: "d" }, o.desc)),
+        ),
+      ),
+    );
+  };
+
+  const update = (): void => {
+    const a = amount();
+    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy;
+    sendBtn.disabled = !ok;
+    mount(fundsEl, needsFunds(a ?? 0n) ? fundsNote() : null);
+    if (!busy) mount(sendBtn, profile ? `Send ${a ? chain.formatTari(a) : ""} ${CONFIG.symbol} to @${profile.handle}` : "Send");
+  };
+
+  const showWaiting = async (p: bsky.Profile): Promise<void> => {
+    try {
+      const esc = await chain.readEscrow(provider, p.did);
+      noteEpoch(esc.epoch);
+      mount(waiting, esc.deposits.length ? h("div", { class: "note good", style: "margin-top:12px" }, `${chain.formatTari(chain.total(esc.deposits))} ${CONFIG.symbol} is already waiting for @${p.handle}.`) : null);
+    } catch {
+      mount(waiting);
+    }
+  };
+
+  amountInput.addEventListener("input", update);
+  sendBtn.addEventListener("click", async () => {
+    const a = amount();
+    if (!profile || !a) return;
+    busy = true;
+    sendBtn.disabled = true;
+    mount(sendBtn, ...spinnerLabel("Sending…"));
+    mount(stage);
+    const say = (s: string) => stage.appendChild(h("div", null, s));
+    try {
+      const esc = await chain.readEscrow(provider, profile.did);
+      await chain.sendTip(account, { did: profile.did, amount: a, window: windowEpochs }, esc.epoch, say);
+      await refreshBalance();
+      done(profile, a, windowEpochs);
+    } catch (e) {
+      busy = false;
+      toast(chain.friendly(e), "bad");
+      update();
+    }
+  });
+
+  const done = (p: bsky.Profile, a: bigint, w: number): void => {
+    confetti();
+    const link = `${location.origin}${location.pathname}#/claim/${p.handle}`;
+    const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
+    mount(
+      card,
+      h(
+        "div",
+        { class: "success" },
+        h("div", { class: "big" }, "🎉"),
+        h("h2", { class: "page", style: "margin:8px 0" }, "Sent!"),
+        h("p", { class: "sub" }, `${chain.formatTari(a)} ${CONFIG.symbol} is now held on-chain for @${p.handle}. ${w ? `They can collect it after a safety window of ${eta(w)}.` : "They can collect it as soon as they verify."}`),
+        profileCard(p),
+      ),
+      h("div", { class: "note" }, "Now tell them. They can't collect what they don't know about."),
+      h(
+        "div",
+        { class: "row" },
+        h("a", { class: "btn primary bsky", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Tell them on Bluesky", icons.external()),
+        h("button", { class: "btn ghost", onclick: () => copy(link, "Link copied") }, icons.copy(), "Copy claim link"),
+        h("a", { class: "btn ghost", href: "#/send", onclick: () => setTimeout(() => location.reload(), 0) }, "Send another"),
+      ),
+      h("p", { class: "help" }, `If they haven't collected it in about ${eta(CONFIG.refundAfterEpochs)}, you can take it back.`),
+    );
+  };
+
+  mount(
+    card,
+    h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
+    h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
+    h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
+    h("div", null, sendBtn, stage),
+  );
+  drawChoices();
+  update();
+  layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account."), card);
+  if (!prefill) field.input.focus();
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// collect
+// ---------------------------------------------------------------------------------------------------------
+
+function renderClaim(prefill?: string): void {
+  let profile: bsky.Profile | null = null;
+  let esc: chain.Escrow | null = null;
+  let code = "";
+  let busy = false;
+  let collected: bigint | null = null;
+
+  const stepsEl = h("div");
+  const field = handleField(prefill ?? "", (p) => {
+    profile = p;
+    esc = null;
+    collected = null;
+    void load();
+  });
+
+  const load = async (): Promise<void> => {
+    if (!profile) return mount(stepsEl);
+    mount(stepsEl, h("div", { class: "skel" }), h("div", { class: "skel" }));
+    code = await bsky.claimCode(CONFIG.component, profile.did, pubKey);
+    await reload();
+  };
+
+  const reload = async (): Promise<void> => {
+    if (!profile) return;
+    try {
+      esc = await chain.readEscrow(provider, profile.did);
+      noteEpoch(esc.epoch);
+      draw();
+    } catch (e) {
+      mount(stepsEl, h("div", { class: "note bad" }, chain.friendly(e)));
+    }
+  };
+
+  const poll = window.setInterval(() => { if (profile && !busy) void reload(); }, 20_000);
+  cleanups.push(() => clearInterval(poll));
+
+  const draw = (): void => {
+    if (!profile || !esc) return;
+    const p = profile;
+    const e = esc;
+    const mine = e.pending?.claimant === myKeyHex;
+    const others = e.pending && !mine;
+    const waitingTotal = chain.total(e.deposits);
+
+    if (collected !== null) {
+      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "big" }, "🎉"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend"))));
+      return;
+    }
+
+    if (!e.deposits.length) {
+      mount(
+        stepsEl,
+        h("div", { class: "card", style: "margin-top:16px" }, h("h3", { style: "margin:0 0 6px" }, `Nothing is waiting for @${p.handle} yet`), h("p", { class: "sub", style: "margin:0 0 14px" }, "When someone sends tTARI to this account it shows up here. Want to try it? Send some to yourself."), h("a", { class: "btn ghost", href: `#/send/${p.handle}` }, "Send to this account")),
+      );
+      return;
+    }
+
+    const start = mine ? e.pending!.start : e.epoch;
+    const pay = chain.payableNow(e, start);
+
+    const stepClass = (n: number, cur: number) => `step ${n < cur ? "done" : n === cur ? "active" : "locked"}`;
+    const cur = !mine ? 1 : pay.amount > 0n ? 4 : 3;
+
+    const logEl = h("div", { class: "log" });
+    const say = (s: string) => logEl.appendChild(h("div", null, s));
+
+    const verifyBtn = h("button", { class: "btn primary" }, "I've posted it. Verify and claim") as HTMLButtonElement;
+    verifyBtn.addEventListener("click", async () => {
+      if (busy) return;
+      if (needsFunds()) return void toast("You need a little tTARI for network fees first.", "bad");
+      busy = true;
+      verifyBtn.disabled = true;
+      mount(verifyBtn, ...spinnerLabel("Verifying…"));
+      try {
+        say("Looking for your post on Bluesky");
+        const post = await bsky.findClaimPost(p.did, code);
+        if (!post) throw new Error("We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
+        say("Fetching the signed copy of your post");
+        const proof = await bsky.buildClaimProof(p.did, post.rkey);
+        say("Submitting the proof. The contract checks every signature itself");
+        await chain.startClaim(account, proof, say);
+        await refreshBalance();
+        toast("Verified on-chain", "good");
+        busy = false;
+        await reload();
+      } catch (err) {
+        busy = false;
+        toast(chain.friendly(err), "bad");
+        verifyBtn.disabled = false;
+        mount(verifyBtn, "I've posted it. Verify and claim");
+      }
+    });
+
+    const collectBtn = h("button", { class: "btn primary block" }, `Collect ${chain.formatTari(pay.amount)} ${CONFIG.symbol}`) as HTMLButtonElement;
+    collectBtn.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      collectBtn.disabled = true;
+      mount(collectBtn, ...spinnerLabel("Collecting…"));
+      try {
+        await chain.finalizeClaim(account, p.did, say);
+        const got = pay.amount;
+        await refreshBalance();
+        confetti();
+        busy = false;
+        const fresh = await chain.readEscrow(provider, p.did);
+        esc = fresh;
+        if (fresh.deposits.length) {
+          toast(`Collected ${chain.formatTari(got)} ${CONFIG.symbol}. The rest is still in its safety window.`, "good");
+          draw();
+        } else {
+          collected = got;
+          draw();
+        }
+      } catch (err) {
+        busy = false;
+        toast(chain.friendly(err), "bad");
+        collectBtn.disabled = false;
+        mount(collectBtn, `Collect ${chain.formatTari(pay.amount)} ${CONFIG.symbol}`);
+      }
+    });
+
+    const postText = `Claiming my ${CONFIG.symbol} on Tari. ${code}`;
+    const maxWin = Math.max(...e.deposits.map((d) => d.window));
+    const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
+    const pct = maxWin ? Math.min(100, Math.round((elapsed / maxWin) * 100)) : 100;
+
+    mount(
+      stepsEl,
+      h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
+      others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,
+      needsFunds() && cur === 1 ? h("div", { style: "margin-top:12px" }, fundsNote()) : null,
+      h(
+        "div",
+        { class: "steps" },
+        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards."), h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, verifyBtn, logEl) : null)),
+        h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
+        h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, "4"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, "Your tTARI lands in your Skydrop wallet."))),
+      ),
+    );
+  };
+
+  layout(
+    "claim",
+    h("h2", { class: "page" }, "Collect your tTARI"),
+    h("p", { class: "sub" }, "Enter your Bluesky handle. You'll post one line to prove it's you."),
+    h("div", { class: "card" }, h("label", { class: "f" }, "Your Bluesky handle"), field.el),
+    stepsEl,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// how it works
+// ---------------------------------------------------------------------------------------------------------
+
+function renderHow(): void {
+  layout(
+    "how",
+    h("h2", { class: "page" }, "How it works"),
+    h("p", { class: "sub" }, "Short version: the money sits in a smart contract that can check Bluesky's own signatures."),
+    h(
+      "div",
+      { class: "card" },
+      h(
+        "ol",
+        { class: "how", style: "padding-left:20px;margin:0" },
+        h("li", null, h("b", null, "You send."), " The tTARI moves into an escrow contract, filed under the recipient's permanent Bluesky ID (not their handle, which can change hands)."),
+        h("li", null, h("b", null, "They post a code."), " The code is a hash of their wallet's key, so the post can only ever pay out to the wallet that asked."),
+        h("li", null, h("b", null, "The contract checks the math."), " Bluesky accounts are cryptographic identities. The contract verifies the account's identity history, the signature on their repository and the path to the post. No server is asked."),
+        h("li", null, h("b", null, "They collect."), " After the safety window you chose, the escrow pays out to their wallet."),
+      ),
+    ),
+    h("details", null, h("summary", null, "What's the safety window for?"), h("p", null, "A proof can show an account's history is valid, but not that it's complete. If someone stole a Bluesky signing key and the real owner had already rotated it, the thief could present the old history. The window lets anyone submit the owner's rotation and cancel the claim. Small tips can skip it. Large transfers should use it.")),
+    h("details", null, h("summary", null, "What if nobody claims it?"), h("p", null, `The sender can take it back after about ${eta(CONFIG.refundAfterEpochs)}.`)),
+    h("details", null, h("summary", null, "What can't it do yet?"), h("p", null, "Only did:plc accounts work (almost everyone). There's no fee sponsorship yet, so a new wallet needs a little tTARI for network fees. Private payouts to a stealth address are planned. This is testnet.")),
+    h("details", null, h("summary", null, "Is my wallet safe?"), h("p", null, "It's created in your browser and never sent anywhere. Back up your recovery key from the wallet menu. This is testnet software.")),
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// router
+// ---------------------------------------------------------------------------------------------------------
+
+function route(): void {
+  cleanups.forEach((f) => f());
+  cleanups = [];
+  const [, kind = "", arg = ""] = location.hash.replace(/^#/, "").split("/");
+  const param = decodeURIComponent(arg);
+  if (kind === "send") renderSend(param || undefined);
+  else if (kind === "claim") renderClaim(param || undefined);
+  else if (kind === "how") renderHow();
+  else renderHome();
+}
+
+(async () => {
+  mount(root, h("div", { class: "hero" }, h("div", { class: "skel" })));
+  try {
+    await startSession();
+  } catch (e) {
+    mount(root, h("div", { class: "hero" }, h("h1", null, "Couldn't start"), h("p", { class: "lead" }, e instanceof Error ? e.message : String(e)), h("button", { class: "btn primary", onclick: () => location.reload() }, "Try again")));
+    return;
+  }
+  addEventListener("hashchange", route);
+  route();
+})();

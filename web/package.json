@@ -1,0 +1,32 @@
+{
+  "name": "skydrop-web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite --port 5190",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@chironbuilder/ootle-sdk": "0.1.20",
+    "@ipld/car": "5.4.0",
+    "@ipld/dag-cbor": "9.2.2",
+    "@tari-project/ootle": "file:./vendor/ootle-patched",
+    "@tari-project/ootle-indexer": "0.3.0",
+    "@tari-project/ootle-wasm": "file:./vendor/ootle-wasm-patched",
+    "multiformats": "13.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vite": "6.0.5",
+    "vite-plugin-top-level-await": "1.4.4",
+    "vite-plugin-wasm": "3.4.1"
+  },
+  "overrides": {
+    "@tari-project/ootle": "$@tari-project/ootle",
+    "@tari-project/ootle-wasm": "$@tari-project/ootle-wasm"
+  }
+}

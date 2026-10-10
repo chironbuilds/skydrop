@@ -184,6 +184,20 @@ async fn main() {
                 println!("(dry run only; add --submit to publish)");
             }
         },
+        // fund <otl_esm_… address> <amount_µT>: public transfer from the main wallet (testnet funding).
+        "fund" => {
+            let to = tari_ootle_address::OotleAddress::from_str(&args[1]).expect("recipient address");
+            let amount: u64 = args[2].parse().unwrap();
+            let mut p = connect_as("wallet").await;
+            let me = max_epoch(&p).await;
+            let tx = IAccount::new(&p, me)
+                .pay_fee(40_000u64)
+                .public_transfer(&to, TARI_TOKEN, amount)
+                .prepare()
+                .await
+                .unwrap();
+            sign_dry_run_submit(&mut p, tx, submit).await;
+        },
         "new" => {
             let template = PublishedTemplateAddress::from_str(&args[1]).expect("template address");
             let min: u64 = arg(2, "1000").parse().unwrap();

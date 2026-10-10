@@ -2,3 +2,6 @@ node_modules/
 target/
 Cargo.lock
 *.log
+.env
+bot/state.json
+web/dist/

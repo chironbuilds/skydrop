@@ -1,0 +1,114 @@
+import * as dagCbor from "@ipld/dag-cbor";
+import { CarReader } from "@ipld/car";
+import type { CID } from "multiformats/cid";
+import { CONFIG } from "./config";
+import { toHex, fromHex } from "./cbor";
+
+export interface Profile {
+  did: string;
+  handle: string;
+  displayName: string;
+  avatar?: string;
+  description?: string;
+}
+
+/** Normalises user input like "@Alice.bsky.social", "alice.bsky.social" or a bsky.app profile URL. */
+export function cleanHandle(input: string): string {
+  let s = input.trim().toLowerCase();
+  const m = s.match(/bsky\.app\/profile\/([^/?#\s]+)/);
+  if (m) s = m[1]!;
+  return s.replace(/^@/, "").replace(/^at:\/\//, "");
+}
+
+export async function lookupProfile(input: string): Promise<Profile> {
+  const actor = cleanHandle(input);
+  if (!actor || !/^[a-z0-9.:-]+$/.test(actor) || (!actor.includes(".") && !actor.startsWith("did:"))) {
+    throw new Error("That doesn't look like a Bluesky handle. Try something like name.bsky.social");
+  }
+  const r = await fetch(`${CONFIG.publicApi}/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(actor)}`);
+  if (!r.ok) throw new Error(r.status === 400 ? `No Bluesky account found for @${actor}` : `Bluesky lookup failed (${r.status})`);
+  const p = (await r.json()) as { did: string; handle: string; displayName?: string; avatar?: string; description?: string };
+  if (!p.did.startsWith("did:plc:")) {
+    throw new Error("This account uses a did:web identity, which isn't supported yet. did:plc accounts (almost everyone) work.");
+  }
+  return { did: p.did, handle: p.handle, displayName: p.displayName || p.handle, avatar: p.avatar, description: p.description };
+}
+
+/** What a claimant must post. The code binds this component, the DID and the claimant's Ootle key. */
+export async function claimCode(component: string, did: string, claimant: Uint8Array): Promise<string> {
+  const enc = new TextEncoder();
+  const parts = [enc.encode(CONFIG.claimDomain), enc.encode(component), enc.encode(":"), enc.encode(did), enc.encode(":"), claimant];
+  const data = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) {
+    data.set(p, off);
+    off += p.length;
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return `tari-claim:${toHex(digest.slice(0, 16))}`;
+}
+
+export const composeUrl = (text: string): string => `https://bsky.app/intent/compose?text=${encodeURIComponent(text)}`;
+
+export interface ClaimProof {
+  did: string;
+  rkey: string;
+  ops: Uint8Array[];
+  commit: Uint8Array;
+  nodes: Uint8Array[];
+  record: Uint8Array;
+  text: string;
+}
+
+async function plcLog(did: string): Promise<Record<string, unknown>[]> {
+  const r = await fetch(`${CONFIG.plcDirectory}/${did}/log`);
+  if (!r.ok) throw new Error(`Couldn't read the account's identity log (${r.status})`);
+  return (await r.json()) as Record<string, unknown>[];
+}
+
+/** Finds the user's post containing `code`, newest first. */
+export async function findClaimPost(did: string, code: string): Promise<{ uri: string; rkey: string } | null> {
+  const r = await fetch(
+    `${CONFIG.publicApi}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=50&filter=posts_no_replies`,
+  );
+  if (!r.ok) throw new Error(`Couldn't read your posts (${r.status})`);
+  const feed = (await r.json()) as { feed: { post: { uri: string; author: { did: string }; record?: { text?: string } } }[] };
+  for (const { post } of feed.feed) {
+    if (post.author.did === did && (post.record?.text ?? "").includes(code)) {
+      const rkey = post.uri.split("/").pop()!;
+      return { uri: post.uri, rkey };
+    }
+  }
+  return null;
+}
+
+/**
+ * Everything the contract verifies on-chain: the account's identity-operation chain, the signed repo
+ * commit, the Merkle-search-tree path to the post, and the post itself.
+ */
+export async function buildClaimProof(did: string, rkey: string): Promise<ClaimProof> {
+  const log = await plcLog(did);
+  const services = log[log.length - 1]!.services as Record<string, { endpoint: string }> | undefined;
+  const pds = services?.atproto_pds?.endpoint ?? (log[log.length - 1] as { service?: string }).service;
+  if (!pds) throw new Error("Couldn't find where your Bluesky data is hosted");
+  const url = `${pds}/xrpc/com.atproto.sync.getRecord?did=${encodeURIComponent(did)}&collection=${CONFIG.collection}&rkey=${rkey}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Couldn't fetch the signed copy of your post (${r.status})`);
+  const car = await CarReader.fromBytes(new Uint8Array(await r.arrayBuffer()));
+  const [root] = await car.getRoots();
+  const commit = await car.get(root as CID);
+  if (!commit) throw new Error("The signed repo commit is missing from the response");
+  const nodes: Uint8Array[] = [];
+  let record: Uint8Array | null = null;
+  for await (const b of car.blocks()) {
+    if (b.cid.equals(root as CID)) continue;
+    const v = dagCbor.decode(b.bytes) as Record<string, unknown>;
+    if (v && typeof v === "object" && Array.isArray((v as { e?: unknown }).e)) nodes.push(b.bytes);
+    else record = b.bytes;
+  }
+  if (!record) throw new Error("The post is missing from the response");
+  const text = ((dagCbor.decode(record) as { text?: string }).text) ?? "";
+  return { did, rkey, ops: log.map((o) => dagCbor.encode(o)), commit: commit.bytes, nodes, record, text };
+}
+
+export { toHex, fromHex };
