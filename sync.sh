@@ -8,3 +8,4 @@ rsync -a --delete --exclude target --exclude Cargo.lock $SRC/atp-verify/ $DST/at
 [ -d $SRC/bskyclaim ] && mkdir -p $DST/crates/engine/tests/templates/bskyclaim && rsync -a --exclude target --exclude Cargo.lock $SRC/bskyclaim/ $DST/crates/engine/tests/templates/bskyclaim/
 [ -f $SRC/bskyclaim.rs ] && cp $SRC/bskyclaim.rs $DST/crates/engine/tests/bskyclaim.rs
 true
+[ -d $SRC/cli ] && cp $SRC/cli/bsky_cli.rs $DST/crates/wallet/ootle-rs/examples/bsky_cli.rs

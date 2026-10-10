@@ -329,13 +329,13 @@ impl Env {
         r.finalize.result.any_reject().map(|x| format!("{x:?}"))
     }
 
-    fn deposit(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64) -> Option<String> {
+    fn deposit(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64) -> Option<String> {
         let c = self.component;
         let (account, id, did) = (from.account, from.id, did.to_string());
         self.run(from, |t| {
             t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
                 .put_last_instruction_output_on_workspace("funds")
-                .call_method(c, "deposit", args![did, id, refund_epoch, Workspace("funds")])
+                .call_method(c, "deposit", args![did, id, refund_epoch, window, Workspace("funds")])
         })
     }
 
@@ -391,8 +391,8 @@ fn deposit_claim_and_payout() {
     let mut env = Env::new();
     let (sender1, sender2, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    assert_eq!(env.deposit(&sender1, &acct.did, 5_000_000, 100), None);
-    assert_eq!(env.deposit(&sender2, &acct.did, 2_000_000, 100), None);
+    assert_eq!(env.deposit(&sender1, &acct.did, 5_000_000, 100, WINDOW), None);
+    assert_eq!(env.deposit(&sender2, &acct.did, 2_000_000, 100, WINDOW), None);
     assert_eq!(env.escrowed(), Amount::from(7_000_000u64));
 
     let code = env.code_for(&acct.did, &alice);
@@ -415,7 +415,7 @@ fn claim_is_bound_to_the_claimant_and_the_account() {
     let mut env = Env::new();
     let (sender, alice, mallory) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, WINDOW), None);
     let code = env.code_for(&acct.did, &alice);
     let post = acct.post(&format!("my code {code}"), "3kaaaaaaaaaaa");
 
@@ -439,7 +439,7 @@ fn tampered_proofs_are_rejected() {
     let mut env = Env::new();
     let (sender, alice) = (user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, WINDOW), None);
     let code = env.code_for(&acct.did, &alice);
     let good = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
 
@@ -467,7 +467,7 @@ fn stale_key_claim_is_cancelled_by_a_key_rotation() {
     let mut env = Env::new();
     let (sender, mallory, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let mut acct = Account::new();
-    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, WINDOW), None);
 
     // The repo key leaks. The owner rotates it, but Mallory presents the old chain and a post signed by
     // the old (leaked) key.
@@ -497,7 +497,7 @@ fn senders_can_refund_after_the_refund_epoch() {
     let (sender, other) = (user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
     let before = env.balance(&sender);
-    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 10), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 10, WINDOW), None);
     let (c, did, account) = (env.component, acct.did.clone(), sender.account);
     let refund = |env: &mut Env, who: &User| {
         let (did, account) = (did.clone(), if who.account == sender.account { account } else { who.account });
@@ -517,3 +517,63 @@ fn senders_can_refund_after_the_refund_epoch() {
 
 #[allow(dead_code)]
 fn _unused(_: NamedArg) {}
+
+#[test]
+fn window_zero_tip_pays_out_in_the_same_epoch_and_windows_are_capped() {
+    let mut env = Env::new();
+    let (sender, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    // A window above the component's maximum is refused.
+    expect_err(env.deposit(&sender, &acct.did, 5_000_000, 100, WINDOW + 1), "above the maximum");
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, 0), None);
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    let before = env.balance(&alice);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    // No epoch change needed.
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(5_000_000u64));
+}
+
+#[test]
+fn deposits_with_longer_windows_stay_escrowed_until_their_own_window_passes() {
+    let mut env = Env::new();
+    let (tip, big, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit(&tip, &acct.did, 1_000_000, 100, 0), None);
+    assert_eq!(env.deposit(&big, &acct.did, 9_000_000, 100, WINDOW), None);
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    let before = env.balance(&alice);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+
+    // Only the tip is payable now; the large deposit keeps waiting and the claim stays pending.
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(1_000_000u64));
+    assert_eq!(env.escrowed(), Amount::from(9_000_000u64));
+    expect_err(env.finalize(&alice, &acct.did), "still open");
+
+    // A rotation within the big deposit's window still cancels the claim on it.
+    let mut rotated = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone() };
+    rotated.rotate_repo_key();
+    assert_eq!(env.challenge(&tip, &rotated), None);
+    set_epoch(&mut env.test, 1 + WINDOW);
+    assert!(env.finalize(&alice, &acct.did).is_some(), "no pending claim after the challenge");
+    assert_eq!(env.escrowed(), Amount::from(9_000_000u64));
+}
+
+#[test]
+fn big_deposit_pays_after_its_window_when_unchallenged() {
+    let mut env = Env::new();
+    let (big, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit(&big, &acct.did, 9_000_000, 100, WINDOW), None);
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    let before = env.balance(&alice);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    expect_err(env.finalize(&alice, &acct.did), "still open");
+    set_epoch(&mut env.test, 1 + WINDOW);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(9_000_000u64));
+}

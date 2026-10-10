@@ -64,22 +64,24 @@ mod bskyclaim {
         vault: Vault,
         min_deposit: Amount,
         /// Epochs a started claim must wait before it can be finalised.
-        window_epochs: u64,
-        /// DID -> (sender, amount, refund epoch).
-        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64)>>,
-        /// DID -> (claimant, hash of the chain tip, chain length, epoch the claim can be finalised).
+        /// Longest challenge window a sender may ask for on a deposit.
+        max_window_epochs: u64,
+        /// DID -> (sender, amount, refund epoch, challenge window in epochs). Each sender picks the window for
+        /// their own deposit: 0 for a small tip, longer for a large transfer.
+        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)>>,
+        /// DID -> (claimant, hash of the chain tip, chain length, epoch the claim started).
         pending: BTreeMap<String, (RistrettoPublicKeyBytes, Bytes, u32, u64)>,
         /// DID -> longest valid operation chain seen. A claim must present a chain at least this long.
         known_len: BTreeMap<String, u32>,
     }
 
     impl BskyClaim {
-        pub fn new(resource: ResourceAddress, min_deposit: Amount, window_epochs: u64) -> Component<Self> {
+        pub fn new(resource: ResourceAddress, min_deposit: Amount, max_window_epochs: u64) -> Component<Self> {
             assert!(min_deposit.is_positive(), "minimum deposit must be positive");
             Component::new(Self {
                 vault: Vault::new_empty(resource),
                 min_deposit,
-                window_epochs,
+                max_window_epochs,
                 deposits: BTreeMap::new(),
                 pending: BTreeMap::new(),
                 known_len: BTreeMap::new(),
@@ -90,8 +92,16 @@ mod bskyclaim {
 
         /// Escrows `funds` for the owner of `did`. `sender` (who must sign) can take them back once the
         /// current epoch reaches `refund_epoch`.
-        pub fn deposit(&mut self, did: String, sender: RistrettoPublicKeyBytes, refund_epoch: u64, funds: Bucket) {
+        pub fn deposit(
+            &mut self,
+            did: String,
+            sender: RistrettoPublicKeyBytes,
+            refund_epoch: u64,
+            window_epochs: u64,
+            funds: Bucket,
+        ) {
             assert!(valid_did(&did), "not a did:plc identifier");
+            assert!(window_epochs <= self.max_window_epochs, "challenge window above the maximum");
             require_signer(sender);
             assert_eq!(funds.resource_address(), self.vault.resource_address(), "wrong resource");
             let amount = funds.amount();
@@ -99,7 +109,7 @@ mod bskyclaim {
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
             let list = self.deposits.entry(did).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
-            list.push((sender, amount, refund_epoch));
+            list.push((sender, amount, refund_epoch, window_epochs));
             self.vault.deposit(funds);
         }
 
@@ -135,41 +145,45 @@ mod bskyclaim {
             let code = claim_code(&CallerContext::current_component_address().to_string(), &did, &claimant);
             assert!(text.contains(&code), "the post does not contain the claim code");
 
-            let ready = Consensus::current_epoch() + self.window_epochs;
             self.known_len.insert(did.clone(), chain.len);
-            self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, ready));
+            self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, Consensus::current_epoch()));
         }
 
         /// Cancels a pending claim by presenting a valid operation chain for the DID that differs from the
         /// one the claim relied on: a later key rotation, or the canonical branch of a fork. Anyone may call.
+        /// It works while any deposit's challenge window, counted from the claim's start, is still open.
         pub fn challenge(&mut self, did: String, ops: Vec<Bytes>) {
-            let (_, tip, _, ready) = self.pending.get(&did).expect("no pending claim");
-            assert!(Consensus::current_epoch() < *ready, "the challenge window has closed");
+            let (_, tip, _, start) = self.pending.get(&did).expect("no pending claim");
+            let longest = self.deposits.get(&did).map_or(0, |d| d.iter().map(|e| e.3).max().unwrap_or(0));
+            assert!(Consensus::current_epoch() < *start + longest, "the challenge window has closed");
             let chain = self.check_chain(&did, &ops);
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the claim already relies on");
             self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
             self.pending.remove(&did);
         }
 
-        /// Pays out a claim whose window has passed. Only the claimant can call it.
+        /// Pays out every deposit whose challenge window has passed since the claim started. Deposits with a
+        /// longer window stay escrowed and the claim stays pending. Only the claimant can call it.
         pub fn finalize_claim(&mut self, did: String) -> Bucket {
-            let (claimant, _, _, ready) = self.pending.get(&did).cloned().expect("no pending claim");
+            let (claimant, _, _, start) = self.pending.get(&did).cloned().expect("no pending claim");
             require_signer(claimant);
-            assert!(Consensus::current_epoch() >= ready, "the challenge window is still open");
-            let total = self
-                .deposits
-                .remove(&did)
-                .unwrap_or_default()
-                .iter()
-                .fold(Amount::zero(), |acc, (_, a, _)| acc + *a);
-            self.pending.remove(&did);
+            let now = Consensus::current_epoch();
+            let list = self.deposits.remove(&did).unwrap_or_default();
+            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| now >= start + e.3);
+            assert!(!ready.is_empty(), "the challenge window is still open");
+            let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
+            if waiting.is_empty() {
+                self.pending.remove(&did);
+            } else {
+                self.deposits.insert(did, waiting);
+            }
             self.vault.withdraw(total)
         }
 
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
         pub fn refund(&mut self, did: String, index: u32) -> Bucket {
             let list = self.deposits.get_mut(&did).expect("no deposits for this account");
-            let (sender, amount, refund_epoch) = *list.get(index as usize).expect("no such deposit");
+            let (sender, amount, refund_epoch, _) = *list.get(index as usize).expect("no such deposit");
             require_signer(sender);
             assert!(Consensus::current_epoch() >= refund_epoch, "not refundable yet");
             list.remove(index as usize);
@@ -179,12 +193,13 @@ mod bskyclaim {
             self.vault.withdraw(amount)
         }
 
-        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64)> {
+        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)> {
             self.deposits.get(&did).cloned().unwrap_or_default()
         }
 
+        /// (claimant, chain length, epoch the claim started)
         pub fn pending_for(&self, did: String) -> Option<(RistrettoPublicKeyBytes, u32, u64)> {
-            self.pending.get(&did).map(|(c, _, l, r)| (*c, *l, *r))
+            self.pending.get(&did).map(|(c, _, l, s)| (*c, *l, *s))
         }
 
         pub fn total_escrowed(&self) -> Amount {
