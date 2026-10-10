@@ -28,6 +28,7 @@ use tari_template_test_tooling::TemplateTest;
 const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 const BSKYCLAIM: &str = "tests/templates/bskyclaim";
 const WINDOW: u64 = 3;
+const BOT: &str = "did:plc:abcdefghijklmnopqrstuvwx";
 const COLLECTION: &str = "app.bsky.feed.post";
 
 // ---- minimal DAG-CBOR encoder -------------------------------------------------------------------------
@@ -230,6 +231,10 @@ impl Account {
             ("text", V::T(text.into())),
             ("createdAt", V::T("2026-10-10T00:00:00.000Z".into())),
         ]));
+        self.post_record(record, rkey)
+    }
+
+    fn post_record(&self, record: Vec<u8>, rkey: &str) -> Post {
         let other = cbor(&V::M(vec![("text", V::T("unrelated".into()))]));
         let key = format!("{COLLECTION}/{rkey}");
         let other_key = format!("{COLLECTION}/3zzzzzzzzzzzz");
@@ -316,7 +321,7 @@ impl Env {
         let admin = user(&mut test);
         let tx = test
             .transaction()
-            .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW])
+            .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string()])
             .build_and_seal(&admin.key);
         test.execute_expect_success(tx, vec![admin.badge.clone()]);
         let component = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
@@ -703,4 +708,245 @@ fn sponsorship_only_pays_for_valid_claims_and_is_bounded() {
     set_epoch(&mut env.test, 1 + WINDOW);
     assert!(sponsored_finalize(&mut env, &sk2, id2, &acct.did).is_some());
     assert_eq!(sponsored_finalize(&mut env, &sk, id, &acct.did), None);
+}
+
+// ---- tips from a budget ---------------------------------------------------------------------------------
+
+const MENTION: &str = "app.bsky.richtext.facet#mention";
+
+fn facet(start: usize, end: usize, did: &str) -> V {
+    V::M(vec![
+        ("index", V::M(vec![("byteStart", V::U(start as u64)), ("byteEnd", V::U(end as u64))])),
+        ("features", V::A(vec![V::M(vec![("$type", V::T(MENTION.into())), ("did", V::T(did.into()))])])),
+    ])
+}
+
+/// `@bot.test tip @bob.test <amount>` with real mention facets for the bot and the recipient.
+fn tip_record(recipient_did: &str, amount: &str) -> Vec<u8> {
+    let (bot, bob) = ("@bot.test", "@bob.test");
+    let text = format!("{bot} tip {bob} {amount}");
+    let bob_start = bot.len() + 5;
+    cbor(&V::M(vec![
+        ("$type", V::T(COLLECTION.into())),
+        ("text", V::T(text)),
+        ("createdAt", V::T("2026-10-10T00:00:00.000Z".into())),
+        ("facets", V::A(vec![facet(0, bot.len(), BOT), facet(bob_start, bob_start + bob.len(), recipient_did)])),
+    ]))
+}
+
+impl Env {
+    fn open_budget(&mut self, owner: &User, did: &str, window: u64, refund_after: u64, max_tip: u64, amount: u64) -> Option<String> {
+        let (c, account, id, did) = (self.component, owner.account, owner.id, did.to_string());
+        self.run(owner, |t| {
+            t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
+                .put_last_instruction_output_on_workspace("funds")
+                .call_method(c, "open_budget", args![did, id, window, refund_after, Amount::from(max_tip), Workspace("funds")])
+        })
+    }
+
+    fn close_budget(&mut self, who: &User, did: &str, owner: RistrettoPublicKeyBytes, amount: u64) -> Option<String> {
+        let (c, account, did) = (self.component, who.account, did.to_string());
+        self.run(who, |t| {
+            t.call_method(c, "close_budget", args![did, owner, Amount::from(amount)])
+                .put_last_instruction_output_on_workspace("back")
+                .call_method(account, "deposit", args![Workspace("back")])
+        })
+    }
+
+    fn tip(&mut self, relayer: &User, tipper: &Account, owner: RistrettoPublicKeyBytes, post: &Post) -> Option<String> {
+        let c = self.component;
+        let (did, ops, commit, nodes, record, rkey) = (
+            tipper.did.clone(),
+            bytes_list(&tipper.ops),
+            Bytes::from_vec(post.commit.clone()),
+            bytes_list(&post.nodes),
+            Bytes::from_vec(post.record.clone()),
+            post.rkey.clone(),
+        );
+        self.run(relayer, |t| t.call_method(c, "tip", args![did, owner, ops, commit, nodes, record, rkey]))
+    }
+
+    fn budget(&mut self, did: &str, owner: RistrettoPublicKeyBytes) -> Option<(Amount, u64, u64, Amount)> {
+        self.test.call_method(self.component, "budget_for", args![did.to_string(), owner], vec![])
+    }
+
+    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)> {
+        self.test.call_method(self.component, "deposits_for", args![did.to_string()], vec![])
+    }
+}
+
+#[test]
+fn a_tip_post_moves_budget_to_the_recipient_who_then_claims_it() {
+    let mut env = Env::new();
+    let (owner, relayer, bob_owner) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let (alice, bob) = (Account::new(), Account::new());
+    assert_eq!(env.open_budget(&owner, &alice.did, 0, 100, 5_000_000, 10_000_000), None);
+    assert_eq!(env.escrowed(), Amount::from(10_000_000u64));
+
+    let post = alice.post_record(tip_record(&bob.did, "3"), "3kaaaaaaaaaaa");
+    // Anyone can relay it. The relayer is not the owner.
+    assert_eq!(env.tip(&relayer, &alice, owner.id, &post), None);
+    let pts = env.test.last_execution_points();
+    println!("tip points: wasm={} native={} total={}", pts.wasm, pts.native, pts.total());
+    assert_eq!(env.budget(&alice.did, owner.id).unwrap().0, Amount::from(7_000_000u64));
+    assert_eq!(env.escrowed(), Amount::from(10_000_000u64), "money only changes books");
+    let deps = env.deposits_for(&bob.did);
+    assert_eq!(deps.len(), 1);
+    assert_eq!((deps[0].0, deps[0].1, deps[0].3), (owner.id, Amount::from(3_000_000u64), 0));
+
+    // Bob proves he owns his account and collects the tip.
+    let code = env.code_for(&bob.did, &bob_owner);
+    let claim = bob.post(&format!("hi {code}"), "3kbbbbbbbbbbb");
+    let before = env.balance(&bob_owner);
+    assert_eq!(env.start_claim(&bob_owner, bob_owner.id, &bob, &claim), None);
+    assert_eq!(env.finalize(&bob_owner, &bob.did), None);
+    assert_eq!(env.balance(&bob_owner), before + Amount::from(3_000_000u64));
+}
+
+#[test]
+fn a_post_can_only_tip_once_and_in_order() {
+    let mut env = Env::new();
+    let (owner, relayer) = (user(&mut env.test), user(&mut env.test));
+    let (alice, bob) = (Account::new(), Account::new());
+    assert_eq!(env.open_budget(&owner, &alice.did, 0, 100, 5_000_000, 10_000_000), None);
+
+    let first = alice.post_record(tip_record(&bob.did, "1"), "3kbbbbbbbbbbb");
+    assert_eq!(env.tip(&relayer, &alice, owner.id, &first), None);
+    expect_err(env.tip(&relayer, &alice, owner.id, &first), "already spent");
+    // An older post cannot be replayed after a newer one.
+    let older = alice.post_record(tip_record(&bob.did, "1"), "3kaaaaaaaaaaa");
+    expect_err(env.tip(&relayer, &alice, owner.id, &older), "already spent");
+    let newer = alice.post_record(tip_record(&bob.did, "1"), "3kccccccccccc");
+    assert_eq!(env.tip(&relayer, &alice, owner.id, &newer), None);
+    assert_eq!(env.budget(&alice.did, owner.id).unwrap().0, Amount::from(8_000_000u64));
+}
+
+#[test]
+fn tips_are_limited_by_the_budget_and_must_be_authentic() {
+    let mut env = Env::new();
+    let (owner, relayer, stranger) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let (alice, bob) = (Account::new(), Account::new());
+    assert_eq!(env.open_budget(&owner, &alice.did, 0, 100, 2_000_000, 3_000_000), None);
+
+    // Over the per-tip limit, then over the balance.
+    let big = alice.post_record(tip_record(&bob.did, "2.5"), "3kaaaaaaaaaaa");
+    expect_err(env.tip(&relayer, &alice, owner.id, &big), "per-tip limit");
+    assert_eq!(env.tip(&relayer, &alice, owner.id, &alice.post_record(tip_record(&bob.did, "2"), "3kbbbbbbbbbbb")), None);
+    expect_err(
+        env.tip(&relayer, &alice, owner.id, &alice.post_record(tip_record(&bob.did, "2"), "3kccccccccccc")),
+        "budget too small",
+    );
+    // A budget that belongs to someone else's key is a different budget.
+    expect_err(
+        env.tip(&relayer, &alice, stranger.id, &alice.post_record(tip_record(&bob.did, "1"), "3kddddddddddd")),
+        "no such budget",
+    );
+
+    // A post signed by another account, a post that is not a tip, a post to the wrong bot, and self-tipping.
+    let mallory = Account::new();
+    let forged = mallory.post_record(tip_record(&bob.did, "1"), "3keeeeeeeeeee");
+    expect_err(env.tip(&relayer, &alice, owner.id, &forged), "invalid repo proof");
+    expect_err(env.tip(&relayer, &alice, owner.id, &alice.post("tip bob 1", "3kfffffffffff")), "not a tip post");
+    let wrong_bot = cbor(&V::M(vec![
+        ("$type", V::T(COLLECTION.into())),
+        ("text", V::T("@bot.test tip @bob.test 1".into())),
+        ("facets", V::A(vec![facet(0, 9, "did:plc:zzzzzzzzzzzzzzzzzzzzzzzz"), facet(14, 23, &bob.did)])),
+    ]));
+    expect_err(env.tip(&relayer, &alice, owner.id, &alice.post_record(wrong_bot, "3kggggggggggg")), "not a tip post");
+    expect_err(
+        env.tip(&relayer, &alice, owner.id, &alice.post_record(tip_record(&alice.did, "1"), "3khhhhhhhhhhh")),
+        "cannot tip yourself",
+    );
+    // A short record key is not a TID.
+    expect_err(
+        env.tip(&relayer, &alice, owner.id, &alice.post_record(tip_record(&bob.did, "1"), "3kshort")),
+        "13-character",
+    );
+}
+
+#[test]
+fn only_the_owner_withdraws_and_unclaimed_tips_refund_to_the_owner() {
+    let mut env = Env::new();
+    let (owner, relayer, thief) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let (alice, bob) = (Account::new(), Account::new());
+    assert_eq!(env.open_budget(&owner, &alice.did, 0, 50, 5_000_000, 6_000_000), None);
+
+    assert!(env.close_budget(&thief, &alice.did, owner.id, 1_000_000).is_some());
+    let before = env.balance(&owner);
+    assert_eq!(env.close_budget(&owner, &alice.did, owner.id, 1_000_000), None);
+    assert_eq!(env.balance(&owner), before + Amount::from(1_000_000u64));
+
+    assert_eq!(env.tip(&relayer, &alice, owner.id, &alice.post_record(tip_record(&bob.did, "2"), "3kaaaaaaaaaaa")), None);
+    // Bob never claims. After the refund period the owner takes the tip back out of escrow.
+    let c = env.component;
+    let (did, owner_account) = (bob.did.clone(), owner.account);
+    expect_err(env.run(&owner, |t| t.call_method(c, "refund", args![did.clone(), 0u32])), "not refundable yet");
+    set_epoch(&mut env.test, 1 + 50);
+    let mid = env.balance(&owner);
+    assert_eq!(
+        env.run(&owner, |t| {
+            t.call_method(c, "refund", args![did, 0u32])
+                .put_last_instruction_output_on_workspace("back")
+                .call_method(owner_account, "deposit", args![Workspace("back")])
+        }),
+        None
+    );
+    assert_eq!(env.balance(&owner), mid + Amount::from(2_000_000u64));
+}
+
+fn sponsored_tip(
+    env: &mut Env,
+    sk: &RistrettoSecretKey,
+    tipper: &Account,
+    owner: RistrettoPublicKeyBytes,
+    post: &Post,
+) -> Option<String> {
+    let c = env.component;
+    let (did, ops, commit, nodes, record, rkey) = (
+        tipper.did.clone(),
+        bytes_list(&tipper.ops),
+        Bytes::from_vec(post.commit.clone()),
+        bytes_list(&post.nodes),
+        Bytes::from_vec(post.record.clone()),
+        post.rkey.clone(),
+    );
+    env.test.enable_fees();
+    let tx = Transaction::builder_localnet(env.test.current_epoch())
+        .with_fee_instructions_builder(|b| {
+            b.call_method(c, "tip_sponsored", args![did, owner, ops, commit, nodes, record, rkey, Amount::from(60_000u64)])
+        })
+        .with_seal_signer_authorized(true)
+        .build_and_seal(sk);
+    let r = env.test.execute_and_commit_on_success(tx, vec![]);
+    env.test.disable_fees();
+    r.finalize.result.any_reject().map(|x| format!("{x:?}"))
+}
+
+#[test]
+fn a_relayer_with_no_funds_relays_a_tip_and_the_tipper_covers_the_fee() {
+    let mut env = Env::new();
+    let (owner, funder) = (user(&mut env.test), user(&mut env.test));
+    let (alice, bob) = (Account::new(), Account::new());
+    env.fund_sponsor(&funder, 1_000_000);
+    assert_eq!(env.open_budget(&owner, &alice.did, 0, 100, 5_000_000, 3_000_000), None);
+    let (sk, _id) = bare_claimant(&mut env);
+
+    let post = alice.post_record(tip_record(&bob.did, "2"), "3kaaaaaaaaaaa");
+    assert_eq!(sponsored_tip(&mut env, &sk, &alice, owner.id, &post), None);
+    let pts = env.test.last_execution_points();
+    println!("sponsored tip points: wasm={} native={} total={}", pts.wasm, pts.native, pts.total());
+    // The tipper's budget put the whole offered fee into the vault and the vault paid the real fee, so the
+    // vault ends level (never drained by tips): within the offered fee of where it started.
+    let vault = env.fee_balance();
+    assert!(vault >= Amount::from(1_000_000u64) && vault <= Amount::from(1_060_000u64), "vault at {vault:?}");
+    // The budget was charged the tip and the fee, and the books balance.
+    let left = env.budget(&alice.did, owner.id).unwrap().0;
+    assert!(left < Amount::from(1_000_000u64) && left > Amount::from(800_000u64), "budget left {left:?}");
+    assert_eq!(env.deposits_for(&bob.did).len(), 1);
+
+    // A tip that does not verify costs the sponsor vault nothing.
+    let before = env.fee_balance();
+    let bad = alice.post("not a tip", "3kbbbbbbbbbbb");
+    assert!(sponsored_tip(&mut env, &sk, &alice, owner.id, &bad).is_some());
+    assert_eq!(env.fee_balance(), before);
 }

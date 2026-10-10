@@ -19,6 +19,7 @@ import type { IndexerProvider } from "@tari-project/ootle-indexer";
 import { CONFIG } from "./config";
 import { fromHex, lit, toHex } from "./cbor";
 import type { ClaimProof } from "./bsky";
+import type { Wallet } from "./wallet";
 
 const SEED_KEY = "skydrop.seed.v1";
 
@@ -185,34 +186,34 @@ export interface TxOutcome {
   transactionId: string;
 }
 
-async function run(account: OotleAccount, instructions: unknown[], maxFee: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+async function run(wallet: Wallet, instructions: unknown[], maxFee: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
   onStage?.("Checking it works…");
-  const dry = await account.execute(instructions as Instr, { dryRun: true, maxFee });
+  const dry = await wallet.execute(instructions, { dryRun: true, maxFee });
   assertAccepted(dry);
   onStage?.("Sending to the network…");
-  const res = (await account.execute(instructions as Instr, { maxFee })) as { transaction_id?: unknown; transactionId?: unknown };
+  const res = (await wallet.execute(instructions, { maxFee })) as { transaction_id?: unknown; transactionId?: unknown };
   assertAccepted(res);
   return { transactionId: String(res.transaction_id ?? res.transactionId ?? "") };
 }
 
 export async function sendTip(
-  account: OotleAccount,
+  wallet: Wallet,
   p: { did: string; amount: bigint; window: number },
   epoch: number,
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
-  const owner = await account.getComponentAddress();
-  const pk = await account.getPublicKey();
+  const owner = wallet.componentAddress;
+  const pk = wallet.publicKey;
   const instructions = [
     call(owner, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
     toWorkspace,
     call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), workspace0]),
   ];
-  return run(account, instructions, 30_000n, onStage);
+  return run(wallet, instructions, 30_000n, onStage);
 }
 
-export async function startClaim(account: OotleAccount, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const pk = await account.getPublicKey();
+export async function startClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const pk = wallet.publicKey;
   const instructions = [
     call(CONFIG.component, "start_claim", [
       lit(proof.did),
@@ -224,19 +225,25 @@ export async function startClaim(account: OotleAccount, proof: ClaimProof, onSta
       lit(proof.rkey),
     ]),
   ];
-  return run(account, instructions, 120_000n, onStage);
+  return run(wallet, instructions, 120_000n, onStage);
 }
 
-export async function finalizeClaim(account: OotleAccount, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const owner = await account.getComponentAddress();
+export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const owner = wallet.componentAddress;
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
-  return run(account, instructions, 30_000n, onStage);
+  return run(wallet, instructions, 30_000n, onStage);
 }
 
 // ---- sponsored transactions: the escrow's fee vault pays, so the claimant needs no funds ----------------
 
 /** Fee ceiling offered per sponsored call (µT). The contract caps it too, and refunds what isn't used. */
 export const SPONSOR_FEE = 60_000n;
+
+/** Sponsored (fee-phase) transactions need the signing key, which only the built-in wallet exposes to us. */
+function builtinOnly(w: Wallet): OotleAccount {
+  if (!w.account) throw new ChainError("Sponsored fees need the built-in wallet. Your wallet will pay the small fee instead.");
+  return w.account;
+}
 
 type Raw = { addFeeInstruction(i: unknown): unknown; addInstruction(i: unknown): unknown };
 
@@ -280,8 +287,9 @@ async function sendSponsored(
   }
 }
 
-export async function startClaimSponsored(account: OotleAccount, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const pk = await account.getPublicKey();
+export async function startClaimSponsored(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  const pk = wallet.publicKey;
   return sendSponsored(
     account,
     (b) =>
@@ -302,8 +310,9 @@ export async function startClaimSponsored(account: OotleAccount, proof: ClaimPro
 }
 
 /** Pays out into the claimant's account, creating it in the same transaction if it doesn't exist yet. */
-export async function finalizeClaimSponsored(account: OotleAccount, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const pk = await account.getPublicKey();
+export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  const pk = wallet.publicKey;
   return sendSponsored(
     account,
     (b) => {
@@ -316,8 +325,8 @@ export async function finalizeClaimSponsored(account: OotleAccount, did: string,
   );
 }
 
-export async function useFaucet(account: OotleAccount): Promise<void> {
-  await account.claimTestnetXtr(100_000n);
+export async function useFaucet(wallet: Wallet): Promise<void> {
+  await builtinOnly(wallet).claimTestnetXtr(100_000n);
 }
 
 // ---- formatting -------------------------------------------------------------------------------------------------

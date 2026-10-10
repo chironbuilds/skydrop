@@ -55,6 +55,15 @@ fn valid_did(did: &str) -> bool {
         && did[8..].bytes().all(|c| matches!(c, b'a'..=b'z' | b'2'..=b'7'))
 }
 
+fn budget_key(did: &str, owner: &RistrettoPublicKeyBytes) -> String {
+    let mut s = String::from(did);
+    s.push(':');
+    for b in owner.into_array() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 fn require_signer(key: RistrettoPublicKeyBytes) {
     CallerContext::get_signer_proof_for_public_key(key).drop();
 }
@@ -83,11 +92,24 @@ mod bskyclaim {
         fee_vault: Vault,
         /// DID -> (sponsored claim starts, sponsored finalisations). Bounds what one account can draw.
         sponsored: BTreeMap<String, (u32, u32)>,
+        /// "did:owner-key-hex" -> tip budget: (balance, challenge window for tips, refund after epochs, max per tip).
+        /// The owner key funds and withdraws it. Whoever controls the DID can spend it, by posting a tip command.
+        budgets: BTreeMap<String, (Amount, u64, u64, Amount)>,
+        /// DID -> rkey of the last tip post spent. Tip posts must have a larger rkey, so a post tips once.
+        last_tip: BTreeMap<String, String>,
+        /// The bot account that tip posts mention: `@bot tip @someone 5`.
+        bot_did: String,
     }
 
     impl BskyClaim {
-        pub fn new(resource: ResourceAddress, min_deposit: Amount, max_window_epochs: u64) -> Component<Self> {
+        pub fn new(
+            resource: ResourceAddress,
+            min_deposit: Amount,
+            max_window_epochs: u64,
+            bot_did: String,
+        ) -> Component<Self> {
             assert!(min_deposit.is_positive(), "minimum deposit must be positive");
+            assert!(valid_did(&bot_did), "bot must be a did:plc identifier");
             Component::new(Self {
                 vault: Vault::new_empty(resource),
                 min_deposit,
@@ -97,6 +119,9 @@ mod bskyclaim {
                 known_len: BTreeMap::new(),
                 fee_vault: Vault::new_empty(TARI_TOKEN),
                 sponsored: BTreeMap::new(),
+                budgets: BTreeMap::new(),
+                last_tip: BTreeMap::new(),
+                bot_did,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -193,6 +218,133 @@ mod bskyclaim {
 
         pub fn fee_balance(&self) -> Amount {
             self.fee_vault.balance()
+        }
+
+        /// Opens or tops up a tip budget for `did`, owned by `owner` (who must sign and is the only one who can
+        /// withdraw). Tips drawn from it become deposits for the recipient with `window_epochs` of challenge
+        /// window, refundable to `owner` after `refund_after` epochs, and at most `max_tip` each.
+        pub fn open_budget(
+            &mut self,
+            did: String,
+            owner: RistrettoPublicKeyBytes,
+            window_epochs: u64,
+            refund_after: u64,
+            max_tip: Amount,
+            funds: Bucket,
+        ) {
+            assert!(valid_did(&did), "not a did:plc identifier");
+            require_signer(owner);
+            assert_eq!(funds.resource_address(), self.vault.resource_address(), "wrong resource");
+            assert!(window_epochs <= self.max_window_epochs, "challenge window above the maximum");
+            assert!(refund_after > 0, "refund period must be positive");
+            assert!(max_tip >= self.min_deposit, "max tip below the minimum deposit");
+            let amount = funds.amount();
+            assert!(amount >= self.min_deposit, "budget below the minimum deposit");
+            let entry = self.budgets.entry(budget_key(&did, &owner)).or_insert((Amount::zero(), 0, 0, Amount::zero()));
+            entry.0 += amount;
+            entry.1 = window_epochs;
+            entry.2 = refund_after;
+            entry.3 = max_tip;
+            self.vault.deposit(funds);
+        }
+
+        /// Takes `amount` back out of the budget. Only its owner.
+        pub fn close_budget(&mut self, did: String, owner: RistrettoPublicKeyBytes, amount: Amount) -> Bucket {
+            require_signer(owner);
+            assert!(amount.is_positive(), "amount must be positive");
+            let key = budget_key(&did, &owner);
+            let entry = self.budgets.get_mut(&key).expect("no such budget");
+            assert!(entry.0 >= amount, "budget too small");
+            entry.0 -= amount;
+            if entry.0.is_zero() {
+                self.budgets.remove(&key);
+            }
+            self.vault.withdraw(amount)
+        }
+
+        /// (balance, window, refund after, max per tip)
+        pub fn budget_for(&self, did: String, owner: RistrettoPublicKeyBytes) -> Option<(Amount, u64, u64, Amount)> {
+            self.budgets.get(&budget_key(&did, &owner)).copied()
+        }
+
+        /// Spends from the budget of (`did`, `owner`) on the tip described by a post in `did`'s repo, shaped
+        /// `@bot tip @recipient 5`. Anyone may submit it: the post's signature is the authority, so a relayer
+        /// can neither forge nor alter a tip. Each post can be spent once.
+        pub fn tip(
+            &mut self,
+            did: String,
+            owner: RistrettoPublicKeyBytes,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+        ) {
+            self.begin_tip(did, owner, ops, commit, mst_nodes, record, rkey, Amount::zero());
+        }
+
+        /// `tip`, with the network fee paid from the sponsor vault and charged to the tipper's budget, so the
+        /// relayer needs no funds. Call it from the fee phase.
+        pub fn tip_sponsored(
+            &mut self,
+            did: String,
+            owner: RistrettoPublicKeyBytes,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+            fee: Amount,
+        ) {
+            assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
+            self.begin_tip(did, owner, ops, commit, mst_nodes, record, rkey, fee);
+            self.fee_vault.deposit(self.vault.withdraw(fee));
+            self.fee_vault.pay_fee(fee);
+        }
+
+        fn begin_tip(
+            &mut self,
+            did: String,
+            owner: RistrettoPublicKeyBytes,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+            fee: Amount,
+        ) {
+            let key = budget_key(&did, &owner);
+            let (balance, window, refund_after, max_tip) = *self.budgets.get(&key).expect("no such budget");
+            assert!(rkey.len() == 13, "tip posts have 13-character record keys");
+            if let Some(last) = self.last_tip.get(&did) {
+                assert!(rkey.as_str() > last.as_str(), "this post, or a later one, was already spent");
+            }
+            let chain = self.check_chain(&did, &ops);
+            if let Some(&known) = self.known_len.get(&did) {
+                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
+            }
+            let nodes = slices(&mst_nodes, MAX_NODES);
+            assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
+            verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
+                .expect("invalid repo proof");
+            let (recipient, micro) = atp_verify::tip::parse_tip(record.as_slice(), &self.bot_did).expect("not a tip post");
+            let amount = Amount::from(micro);
+            assert!(recipient != did, "cannot tip yourself");
+            assert!(amount >= self.min_deposit, "tip below the minimum deposit");
+            assert!(amount <= max_tip, "tip above this budget's per-tip limit");
+            assert!(balance >= amount + fee, "budget too small for this tip");
+
+            let left = balance - amount - fee;
+            if left.is_zero() {
+                self.budgets.remove(&key);
+            } else {
+                self.budgets.get_mut(&key).unwrap().0 = left;
+            }
+            self.known_len.insert(did.clone(), chain.len);
+            self.last_tip.insert(did, rkey);
+            let list = self.deposits.entry(recipient).or_default();
+            assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
+            list.push((owner, amount, Consensus::current_epoch() + refund_after, window));
         }
 
         fn begin_claim(

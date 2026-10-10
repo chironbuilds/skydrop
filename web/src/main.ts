@@ -1,11 +1,13 @@
 import "./style.css";
-import type { OotleAccount } from "@chironbuilder/ootle-sdk";
-import type { IndexerProvider } from "@tari-project/ootle-indexer";
+import { IndexerProvider } from "@tari-project/ootle-indexer";
+import { Network, defaultIndexerUrl } from "@tari-project/ootle";
 import { CONFIG } from "./config";
 import * as bsky from "./bsky";
 import * as chain from "./chain";
 import { confetti, copy, h, icons, mount, short, spinnerLabel, toast } from "./dom";
 import { toHex } from "./cbor";
+import * as wallets from "./wallet";
+import type { Wallet } from "./wallet";
 
 const themeParam = new URLSearchParams(location.search).get("theme");
 if (themeParam === "dark") document.documentElement.dataset.theme = "dark";
@@ -16,7 +18,7 @@ const root = document.getElementById("app")!;
 // session: one wallet kept in this browser
 // ---------------------------------------------------------------------------------------------------------
 
-let account: OotleAccount;
+let wallet: Wallet;
 let provider: IndexerProvider;
 let pubKey: Uint8Array;
 let myKeyHex = "";
@@ -26,17 +28,32 @@ let cleanups: (() => void)[] = [];
 
 async function startSession(): Promise<void> {
   chain.initStorage();
-  const seed = chain.savedSeed() ?? chain.createSeed();
-  account = chain.openAccount(seed);
-  pubKey = await account.getPublicKey();
+  let chosen: Wallet | null = null;
+  if (wallets.savedKind() === "sapient") {
+    try {
+      chosen = await wallets.connectSapient(false);
+    } catch {
+      chosen = null;
+    }
+    if (!chosen) wallets.saveKind("builtin");
+  }
+  if (chosen) {
+    provider = await IndexerProvider.connect({ url: defaultIndexerUrl(Network.Esmeralda), network: Network.Esmeralda });
+  } else {
+    const account = chain.openAccount(chain.savedSeed() ?? chain.createSeed());
+    chosen = await wallets.builtinWallet(account, () => chain.tariBalance(account));
+    provider = await account.getProvider();
+  }
+  wallet = chosen;
+  pubKey = wallet.publicKey;
   myKeyHex = toHex(pubKey);
-  walletAddress = await account.getWalletAddress();
-  provider = await account.getProvider();
+  walletAddress = wallet.walletAddress;
+  wallets.onSapientAccountChange(() => location.reload());
   await refreshBalance();
 }
 
 async function refreshBalance(): Promise<void> {
-  balance = await chain.tariBalance(account);
+  balance = await wallet.balance();
   document.querySelectorAll<HTMLElement>("[data-balance]").forEach((el) => (el.textContent = `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`));
 }
 
@@ -130,7 +147,7 @@ function openWallet(): void {
     mount(faucetBtn, ...spinnerLabel("Asking the faucet…"));
     mount(faucetNote);
     try {
-      await chain.useFaucet(account);
+      await chain.useFaucet(wallet);
       await new Promise((r) => setTimeout(r, 2500));
       await refreshBalance();
       toast("Testnet tTARI received", "good");
@@ -152,7 +169,44 @@ function openWallet(): void {
     }
   });
 
+  const useSapient = async (): Promise<void> => {
+    try {
+      const w = await wallets.connectSapient(true);
+      if (!w) return void toast("Sapient isn't installed in this browser.", "bad");
+      wallets.saveKind("sapient");
+      location.reload();
+    } catch (e) {
+      toast(chain.friendly(e), "bad");
+    }
+  };
+
+  const useBuiltin = async (): Promise<void> => {
+    await wallets.disconnectSapient();
+    wallets.saveKind("builtin");
+    location.reload();
+  };
+
+  const renderSapient = (): void => {
+    mount(
+      body,
+      h("button", { class: "btn ghost sm x", onclick: close, "aria-label": "Close" }, icons.close(16)),
+      h("h3", null, "Sapient wallet"),
+      h("p", { class: "sub", style: "margin-bottom:8px" }, "Connected. Sapient holds your keys and asks you to approve each transaction."),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "" }, `${chain.formatTari(balance, 4)} ${CONFIG.symbol}`))),
+      h(
+        "div",
+        { class: "kv" },
+        h("div", { class: "k" }, "Your address (share it to receive tTARI)"),
+        h("div", { class: "v" }, walletAddress),
+        h("div", { class: "row", style: "margin-top:6px" }, h("button", { class: "btn ghost sm", onclick: () => copy(walletAddress, "Address copied") }, icons.copy(), "Copy address")),
+      ),
+      h("p", { class: "help" }, "Claims with Sapient pay their own small network fee, so keep a little tTARI in it. Get testnet tTARI from inside Sapient."),
+      h("div", { class: "row", style: "margin-top:14px" }, h("button", { class: "btn ghost sm", onclick: useBuiltin }, "Use Skydrop's built-in wallet instead")),
+    );
+  };
+
   const render = (): void => {
+    if (wallet.kind === "sapient") return renderSapient();
     const seed = chain.savedSeed() ?? "";
     mount(
       body,
@@ -169,6 +223,10 @@ function openWallet(): void {
       ),
       h("div", { class: "row" }, faucetBtn),
       faucetNote,
+      h("hr", { style: "border:0;border-top:1px solid var(--line);margin:22px 0" }),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Prefer your own wallet?")),
+      h("div", { class: "row" }, h("button", { class: "btn ghost sm", onclick: useSapient }, "Connect Sapient")),
+      h("p", { class: "help" }, "Sapient is a Tari browser wallet. Your keys stay in the extension and you approve each transaction there."),
       h("hr", { style: "border:0;border-top:1px solid var(--line);margin:22px 0" }),
       h("div", { class: "kv" }, h("div", { class: "k" }, "Recovery key"), h("div", { class: "v" }, showSeed ? seed : "••••••••••••••••••••••••••••••••")),
       h(
@@ -374,7 +432,7 @@ function renderSend(prefill?: string): void {
     const say = (s: string) => stage.appendChild(h("div", null, s));
     try {
       const esc = await chain.readEscrow(provider, profile.did);
-      await chain.sendTip(account, { did: profile.did, amount: a, window: windowEpochs }, esc.epoch, say);
+      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs }, esc.epoch, say);
       await refreshBalance();
       done(profile, a, windowEpochs);
     } catch (e) {
@@ -447,7 +505,7 @@ function renderClaim(prefill?: string): void {
     if (!profile) return mount(stepsEl);
     mount(stepsEl, h("div", { class: "skel" }), h("div", { class: "skel" }));
     code = await bsky.claimCode(CONFIG.component, profile.did, pubKey);
-    sponsorOk = (await chain.readSponsorBalance(provider)) >= chain.SPONSOR_FEE * 3n;
+    sponsorOk = wallet.account !== null && (await chain.readSponsorBalance(provider)) >= chain.SPONSOR_FEE * 3n;
     await reload();
   };
 
@@ -512,14 +570,14 @@ function renderClaim(prefill?: string): void {
         if (sponsorOk) {
           try {
             say("Network fees are covered for you");
-            await chain.startClaimSponsored(account, proof, say);
+            await chain.startClaimSponsored(wallet, proof, say);
           } catch (err) {
             if (needsFunds()) throw err;
             say("Sponsored fees weren't available, so your wallet pays the small fee");
-            await chain.startClaim(account, proof, say);
+            await chain.startClaim(wallet, proof, say);
           }
         } else {
-          await chain.startClaim(account, proof, say);
+          await chain.startClaim(wallet, proof, say);
         }
         await refreshBalance();
         toast("Verified on-chain", "good");
@@ -543,14 +601,14 @@ function renderClaim(prefill?: string): void {
         if (sponsorOk) {
           try {
             say("Network fees are covered for you");
-            await chain.finalizeClaimSponsored(account, p.did, say);
+            await chain.finalizeClaimSponsored(wallet, p.did, say);
           } catch (err) {
             if (needsFunds()) throw err;
             say("Sponsored fees weren't available, so your wallet pays the small fee");
-            await chain.finalizeClaim(account, p.did, say);
+            await chain.finalizeClaim(wallet, p.did, say);
           }
         } else {
-          await chain.finalizeClaim(account, p.did, say);
+          await chain.finalizeClaim(wallet, p.did, say);
         }
         const got = pay.amount;
         await refreshBalance();

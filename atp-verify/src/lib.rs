@@ -16,6 +16,7 @@ extern crate alloc;
 
 pub mod cbor;
 pub mod enc;
+pub mod tip;
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
