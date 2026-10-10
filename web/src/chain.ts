@@ -1,10 +1,20 @@
 import {
   OotleAccount,
   configureOotleStorage,
+  extractMissingSubstateAddress,
   inMemoryAdapter,
   localStorageAdapter,
+  resolveInputsWithRetry,
+  toOotleNetwork,
 } from "@chironbuilder/ootle-sdk";
-import { TARI_RESOURCE_ADDRESS, amountLiteral, resourceAddressLiteral } from "@tari-project/ootle";
+import {
+  TARI_RESOURCE_ADDRESS,
+  TransactionBuilder,
+  amountLiteral,
+  resolveMaxEpoch,
+  resourceAddressLiteral,
+  sendTransaction,
+} from "@tari-project/ootle";
 import type { IndexerProvider } from "@tari-project/ootle-indexer";
 import { CONFIG } from "./config";
 import { fromHex, lit, toHex } from "./cbor";
@@ -112,6 +122,22 @@ export function payableNow(e: Escrow, start: number): { amount: bigint; waitingA
   return { amount, waitingAmount, nextEpoch: next };
 }
 
+/** TARI left in the vault that pays claimants' network fees. */
+export async function readSponsorBalance(provider: IndexerProvider): Promise<bigint> {
+  try {
+    const sub = await provider.getSubstate(CONFIG.component);
+    const state = (sub.substate as { Component: { body: { state: { value?: { hex: string } }[] } } }).Component.body.state;
+    const vaultId = state[6]?.value?.hex;
+    if (!vaultId) return 0n;
+    const v = await provider.getSubstate(`vault_${vaultId}`);
+    const rc = (v.substate as { Vault: { resource_container: Record<string, { revealed_amount?: string; amount?: string }> } }).Vault.resource_container;
+    const inner = Object.values(rc)[0];
+    return BigInt(inner?.revealed_amount ?? inner?.amount ?? 0);
+  } catch {
+    return 0n;
+  }
+}
+
 export const total = (ds: Deposit[]): bigint => ds.reduce((n, d) => n + d.amount, 0n);
 
 // ---- transactions -------------------------------------------------------------------------------------------
@@ -205,6 +231,89 @@ export async function finalizeClaim(account: OotleAccount, did: string, onStage?
   const owner = await account.getComponentAddress();
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
   return run(account, instructions, 30_000n, onStage);
+}
+
+// ---- sponsored transactions: the escrow's fee vault pays, so the claimant needs no funds ----------------
+
+/** Fee ceiling offered per sponsored call (µT). The contract caps it too, and refunds what isn't used. */
+export const SPONSOR_FEE = 60_000n;
+
+type Raw = { addFeeInstruction(i: unknown): unknown; addInstruction(i: unknown): unknown };
+
+async function sendSponsored(
+  account: OotleAccount,
+  fill: (b: Raw) => void,
+  onStage?: (s: string) => void,
+): Promise<TxOutcome> {
+  const provider = await account.getProvider();
+  const network = toOotleNetwork(CONFIG.network);
+  const signer = (account as unknown as { signer: Parameters<typeof sendTransaction>[1] }).signer;
+  const dryRun = (account as unknown as {
+    submitDryRun(p: IndexerProvider, tx: unknown, extra: unknown[]): Promise<unknown>;
+  }).submitDryRun.bind(account);
+  const maxEpoch = await resolveMaxEpoch(provider);
+  let inputs = await resolveInputsWithRetry(provider, [{ substate_id: CONFIG.component, version: null }]);
+  const seen = new Set<string>();
+  for (let attempt = 0; ; attempt++) {
+    const build = () => {
+      const b = TransactionBuilder.new(network, maxEpoch);
+      fill(b as unknown as Raw);
+      b.withInputs(inputs);
+      return b.buildUnsignedTransaction();
+    };
+    try {
+      onStage?.("Checking it works…");
+      const dry = await dryRun(provider, build(), []);
+      assertAccepted(dry);
+      onStage?.("Sending to the network…");
+      const res = (await sendTransaction(provider, signer, build())) as unknown as { transaction_id?: unknown };
+      assertAccepted(res);
+      return { transactionId: String(res.transaction_id ?? "") };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const missing = extractMissingSubstateAddress(msg);
+      if (!missing || seen.has(missing) || attempt >= 14) throw e;
+      seen.add(missing);
+      const [resolved] = await resolveInputsWithRetry(provider, [{ substate_id: missing, version: null }]);
+      inputs = [...inputs, resolved!];
+    }
+  }
+}
+
+export async function startClaimSponsored(account: OotleAccount, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const pk = await account.getPublicKey();
+  return sendSponsored(
+    account,
+    (b) =>
+      b.addFeeInstruction(
+        call(CONFIG.component, "start_claim_sponsored", [
+          lit(proof.did),
+          lit(pk),
+          lit(proof.ops),
+          lit(proof.commit),
+          lit(proof.nodes),
+          lit(proof.record),
+          lit(proof.rkey),
+          amountLiteral(SPONSOR_FEE),
+        ]),
+      ),
+    onStage,
+  );
+}
+
+/** Pays out into the claimant's account, creating it in the same transaction if it doesn't exist yet. */
+export async function finalizeClaimSponsored(account: OotleAccount, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const pk = await account.getPublicKey();
+  return sendSponsored(
+    account,
+    (b) => {
+      b.addFeeInstruction(call(CONFIG.component, "sponsor_finalize", [lit(did), amountLiteral(SPONSOR_FEE)]));
+      b.addInstruction(call(CONFIG.component, "finalize_claim", [lit(did)]));
+      b.addInstruction(toWorkspace);
+      b.addInstruction({ CreateAccount: { owner_public_key: toHex(pk), owner_rule: null, access_rules: null, bucket_workspace_id: { id: 0, offset: null } } });
+    },
+    onStage,
+  );
 }
 
 export async function useFaucet(account: OotleAccount): Promise<void> {

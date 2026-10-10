@@ -245,6 +245,28 @@ async fn main() {
             let tx = call(fee).await.unwrap();
             sign_dry_run_submit(&mut p, tx, submit).await;
         },
+        // fundfees <component> <amount_µT>: top up the vault that pays claimants' network fees.
+        "fundfees" => {
+            let component = ComponentAddress::from_str(&args[1]).unwrap();
+            let amount: u64 = args[2].parse().unwrap();
+            let account = load_named("wallet").to_address().to_account_address();
+            let mut p = connect_as("wallet").await;
+            let me = max_epoch(&p).await;
+            let call = |fee: u64| {
+                IComponent::new(&p, me)
+                    .want_vault_for(account, TARI_TOKEN, true)
+                    .then(|b| {
+                        b.call_method(account, "withdraw", args![TARI_TOKEN, Amount::new(u128::from(amount))])
+                            .put_last_instruction_output_on_workspace("funds")
+                    })
+                    .call_method(component, "fund", args![Workspace("funds")])
+                    .pay_fee(fee)
+                    .prepare()
+            };
+            let fee = fee_for(&p, call(5_000_000).await.unwrap()).await;
+            let tx = call(fee).await.unwrap();
+            sign_dry_run_submit(&mut p, tx, submit).await;
+        },
         "code" => {
             let component = ComponentAddress::from_str(&args[1]).unwrap();
             let claimant = identity_bytes(&load_named(&arg(3, "wallet")));

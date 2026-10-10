@@ -433,6 +433,7 @@ function renderClaim(prefill?: string): void {
   let code = "";
   let busy = false;
   let collected: bigint | null = null;
+  let sponsorOk = false;
 
   const stepsEl = h("div");
   const field = handleField(prefill ?? "", (p) => {
@@ -446,6 +447,7 @@ function renderClaim(prefill?: string): void {
     if (!profile) return mount(stepsEl);
     mount(stepsEl, h("div", { class: "skel" }), h("div", { class: "skel" }));
     code = await bsky.claimCode(CONFIG.component, profile.did, pubKey);
+    sponsorOk = (await chain.readSponsorBalance(provider)) >= chain.SPONSOR_FEE * 3n;
     await reload();
   };
 
@@ -496,7 +498,7 @@ function renderClaim(prefill?: string): void {
     const verifyBtn = h("button", { class: "btn primary" }, "I've posted it. Verify and claim") as HTMLButtonElement;
     verifyBtn.addEventListener("click", async () => {
       if (busy) return;
-      if (needsFunds()) return void toast("You need a little tTARI for network fees first.", "bad");
+      if (!sponsorOk && needsFunds()) return void toast("You need a little tTARI for network fees first.", "bad");
       busy = true;
       verifyBtn.disabled = true;
       mount(verifyBtn, ...spinnerLabel("Verifying…"));
@@ -507,7 +509,18 @@ function renderClaim(prefill?: string): void {
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
         say("Submitting the proof. The contract checks every signature itself");
-        await chain.startClaim(account, proof, say);
+        if (sponsorOk) {
+          try {
+            say("Network fees are covered for you");
+            await chain.startClaimSponsored(account, proof, say);
+          } catch (err) {
+            if (needsFunds()) throw err;
+            say("Sponsored fees weren't available, so your wallet pays the small fee");
+            await chain.startClaim(account, proof, say);
+          }
+        } else {
+          await chain.startClaim(account, proof, say);
+        }
         await refreshBalance();
         toast("Verified on-chain", "good");
         busy = false;
@@ -527,7 +540,18 @@ function renderClaim(prefill?: string): void {
       collectBtn.disabled = true;
       mount(collectBtn, ...spinnerLabel("Collecting…"));
       try {
-        await chain.finalizeClaim(account, p.did, say);
+        if (sponsorOk) {
+          try {
+            say("Network fees are covered for you");
+            await chain.finalizeClaimSponsored(account, p.did, say);
+          } catch (err) {
+            if (needsFunds()) throw err;
+            say("Sponsored fees weren't available, so your wallet pays the small fee");
+            await chain.finalizeClaim(account, p.did, say);
+          }
+        } else {
+          await chain.finalizeClaim(account, p.did, say);
+        }
         const got = pay.amount;
         await refreshBalance();
         confetti();
@@ -558,7 +582,7 @@ function renderClaim(prefill?: string): void {
       stepsEl,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
       others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,
-      needsFunds() && cur === 1 ? h("div", { style: "margin-top:12px" }, fundsNote()) : null,
+      sponsorOk ? h("div", { class: "note good", style: "margin-top:12px" }, "Network fees are covered. You don't need any tTARI to collect.") : needsFunds() && cur === 1 ? h("div", { style: "margin-top:12px" }, fundsNote()) : null,
       h(
         "div",
         { class: "steps" },

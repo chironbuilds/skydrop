@@ -15,7 +15,7 @@ import { IndexerProvider } from "@tari-project/ootle-indexer";
 import { Network, defaultIndexerUrl } from "@tari-project/ootle";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const COMPONENT = "component_e416eb50720a70921c8454e6357e8a702c73770f3a26e04bd50b96265d4893fe";
+const COMPONENT = "component_6aa79eaa110cc5b7b1fc672b3ad74d026259f6257884c565ed8d4ea529d69ec9";
 const POLL_MS = 60_000;
 const COOLDOWN_MS = 6 * 3600_000;
 const MAX_POSTS_PER_HOUR = 20;

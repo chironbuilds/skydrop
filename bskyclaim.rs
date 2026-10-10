@@ -577,3 +577,130 @@ fn big_deposit_pays_after_its_window_when_unchallenged() {
     assert_eq!(env.finalize(&alice, &acct.did), None);
     assert_eq!(env.balance(&alice), before + Amount::from(9_000_000u64));
 }
+
+// ---- sponsored fees: a claimant with no account and no funds -------------------------------------------
+
+use tari_ootle_transaction::Transaction;
+
+impl Env {
+    fn fund_sponsor(&mut self, from: &User, amount: u64) {
+        let (c, account) = (self.component, from.account);
+        assert_eq!(
+            self.run(from, |t| {
+                t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
+                    .put_last_instruction_output_on_workspace("f")
+                    .call_method(c, "fund", args![Workspace("f")])
+            }),
+            None
+        );
+    }
+
+    fn fee_balance(&mut self) -> Amount {
+        self.test.call_method(self.component, "fee_balance", args![], vec![])
+    }
+}
+
+/// A claimant that exists only as a key pair: no account, no balance.
+fn bare_claimant(env: &mut Env) -> (RistrettoSecretKey, RistrettoPublicKeyBytes) {
+    let (_badge, pk, sk) = env.test.create_owner_proof();
+    (sk, RistrettoPublicKeyBytes::from_bytes(pk.as_bytes()).unwrap())
+}
+
+fn sponsored_start(env: &mut Env, sk: &RistrettoSecretKey, id: RistrettoPublicKeyBytes, acct: &Account, post: &Post) -> Option<String> {
+    let c = env.component;
+    let (did, ops, commit, nodes, record, rkey) = (
+        acct.did.clone(),
+        bytes_list(&acct.ops),
+        Bytes::from_vec(post.commit.clone()),
+        bytes_list(&post.nodes),
+        Bytes::from_vec(post.record.clone()),
+        post.rkey.clone(),
+    );
+    env.test.enable_fees();
+    let tx = Transaction::builder_localnet(env.test.current_epoch())
+        .with_fee_instructions_builder(|b| {
+            b.call_method(c, "start_claim_sponsored", args![did, id, ops, commit, nodes, record, rkey, Amount::from(60_000u64)])
+        })
+        .with_seal_signer_authorized(true)
+        .build_and_seal(sk);
+    let r = env.test.execute_and_commit_on_success(tx, vec![]);
+    env.test.disable_fees();
+    r.finalize.result.any_reject().map(|x| format!("{x:?}"))
+}
+
+fn sponsored_finalize(env: &mut Env, sk: &RistrettoSecretKey, id: RistrettoPublicKeyBytes, did: &str) -> Option<String> {
+    let (c, did) = (env.component, did.to_string());
+    env.test.enable_fees();
+    let tx = Transaction::builder_localnet(env.test.current_epoch())
+        .with_fee_instructions_builder(|b| b.call_method(c, "sponsor_finalize", args![did.clone(), Amount::from(60_000u64)]))
+        .call_method(c, "finalize_claim", args![did])
+        .put_last_instruction_output_on_workspace("paid")
+        .create_account_with_bucket(id, "paid")
+        .with_seal_signer_authorized(true)
+        .build_and_seal(sk);
+    let r = env.test.execute_and_commit_on_success(tx, vec![]);
+    env.test.disable_fees();
+    r.finalize.result.any_reject().map(|x| format!("{x:?}"))
+}
+
+#[test]
+fn a_claimant_with_no_account_and_no_funds_claims_and_collects() {
+    let mut env = Env::new();
+    let (sender, funder) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    env.fund_sponsor(&funder, 2_000_000);
+    assert_eq!(env.fee_balance(), Amount::from(2_000_000u64));
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, 0), None);
+
+    let (sk, id) = bare_claimant(&mut env);
+    let code: String = env.test.call_method(env.component, "expected_post_text", args![acct.did.clone(), id], vec![]);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+
+    assert_eq!(sponsored_start(&mut env, &sk, id, &acct, &post), None);
+    let after_start = env.fee_balance();
+    assert!(after_start < Amount::from(2_000_000u64), "the sponsor vault paid the fee");
+    let pts = env.test.last_execution_points();
+    println!("sponsored start_claim points: wasm={} native={} total={}", pts.wasm, pts.native, pts.total());
+
+    assert_eq!(sponsored_finalize(&mut env, &sk, id, &acct.did), None);
+    // The payout landed in an account created in that same transaction. Read its address before any other call
+    // replaces the harness's record of the last transaction's outputs.
+    let outputs: Vec<_> = [SubstateType::Component]
+        .iter()
+        .map(|t| env.test.get_previous_output_address(*t))
+        .collect();
+    let account = outputs.iter().find_map(|o| o.as_component_address()).expect("an account was created");
+    assert!(env.fee_balance() < after_start, "the payout fee also came from the sponsor vault");
+    assert_eq!(env.escrowed(), Amount::zero(), "deposit paid out");
+    assert_eq!(env.test.call_method::<Amount>(account, "balance", args![TARI_TOKEN], vec![]), Amount::from(5_000_000u64));
+}
+
+#[test]
+fn sponsorship_only_pays_for_valid_claims_and_is_bounded() {
+    let mut env = Env::new();
+    let (sender, funder) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    env.fund_sponsor(&funder, 2_000_000);
+    assert_eq!(env.deposit(&sender, &acct.did, 5_000_000, 100, WINDOW), None);
+    let (sk, id) = bare_claimant(&mut env);
+    let before = env.fee_balance();
+
+    // A proof without the claim code is rejected and costs the vault nothing.
+    let bad = acct.post("no code here", "3kaaaaaaaaaaa");
+    assert!(sponsored_start(&mut env, &sk, id, &acct, &bad).is_some());
+    assert_eq!(env.fee_balance(), before);
+
+    // A valid claim is sponsored; but its payout is not sponsored while the window is open.
+    let code: String = env.test.call_method(env.component, "expected_post_text", args![acct.did.clone(), id], vec![]);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(sponsored_start(&mut env, &sk, id, &acct, &post), None);
+    let mid = env.fee_balance();
+    assert!(sponsored_finalize(&mut env, &sk, id, &acct.did).is_some());
+    assert_eq!(env.fee_balance(), mid, "no fee paid for a payout that cannot happen yet");
+
+    // Someone else cannot spend this account's sponsored payout.
+    let (sk2, id2) = bare_claimant(&mut env);
+    set_epoch(&mut env.test, 1 + WINDOW);
+    assert!(sponsored_finalize(&mut env, &sk2, id2, &acct.did).is_some());
+    assert_eq!(sponsored_finalize(&mut env, &sk, id, &acct.did), None);
+}

@@ -18,7 +18,7 @@ use tari_template_lib::{
     Consensus,
     caller_context::CallerContext,
     prelude::*,
-    types::crypto::RistrettoPublicKeyBytes,
+    types::{constants::TARI_TOKEN, crypto::RistrettoPublicKeyBytes},
 };
 
 const CODE_DOMAIN: &[u8] = b"tari-bsky-claim:v1:";
@@ -27,6 +27,11 @@ const MAX_OPS: usize = 16;
 const MAX_NODES: usize = 32;
 const MAX_DEPOSITS_PER_DID: usize = 32;
 const MAX_BLOCK_LEN: usize = 16 * 1024;
+/// Ceiling on the fee one sponsored call may offer from the sponsor vault (µT).
+const MAX_SPONSORED_FEE: u64 = 100_000;
+/// Sponsored claim starts and payouts one account may draw. Beyond that the claimant pays their own fee.
+const MAX_SPONSORED_STARTS: u32 = 3;
+const MAX_SPONSORED_FINALS: u32 = 3;
 
 /// The text a claimant must post: `tari-claim:` followed by this code.
 fn claim_code(component: &str, did: &str, claimant: &RistrettoPublicKeyBytes) -> String {
@@ -73,6 +78,11 @@ mod bskyclaim {
         pending: BTreeMap<String, (RistrettoPublicKeyBytes, Bytes, u32, u64)>,
         /// DID -> longest valid operation chain seen. A claim must present a chain at least this long.
         known_len: BTreeMap<String, u32>,
+        /// TARI that pays the network fee of claims that verify, so a brand-new claimant needs no funds.
+        /// Kept apart from `vault`: deposits are never spent on fees.
+        fee_vault: Vault,
+        /// DID -> (sponsored claim starts, sponsored finalisations). Bounds what one account can draw.
+        sponsored: BTreeMap<String, (u32, u32)>,
     }
 
     impl BskyClaim {
@@ -85,6 +95,8 @@ mod bskyclaim {
                 deposits: BTreeMap::new(),
                 pending: BTreeMap::new(),
                 known_len: BTreeMap::new(),
+                fee_vault: Vault::new_empty(TARI_TOKEN),
+                sponsored: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -121,6 +133,69 @@ mod bskyclaim {
         /// Starts a claim. The proof must show that `did`'s repo contains a post at `rkey` whose text
         /// contains the claim code for `claimant`, who must sign this transaction.
         pub fn start_claim(
+            &mut self,
+            did: String,
+            claimant: RistrettoPublicKeyBytes,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+        ) {
+            self.begin_claim(did, claimant, ops, commit, mst_nodes, record, rkey);
+        }
+
+        /// `start_claim`, with the network fee paid from the sponsor vault. Call it from the fee phase of a
+        /// transaction signed by `claimant`: the fee is only paid once the proof has verified, so an invalid
+        /// claim costs the vault nothing. The fee phase has a fixed compute allowance, so very long identity
+        /// histories must pay their own fee with `start_claim`.
+        pub fn start_claim_sponsored(
+            &mut self,
+            did: String,
+            claimant: RistrettoPublicKeyBytes,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+            fee: Amount,
+        ) {
+            assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
+            let used = self.sponsored.get(&did).map_or(0, |s| s.0);
+            assert!(used < MAX_SPONSORED_STARTS, "this account has used its sponsored claims");
+            self.begin_claim(did.clone(), claimant, ops, commit, mst_nodes, record, rkey);
+            self.sponsored.entry(did).or_insert((0, 0)).0 += 1;
+            self.fee_vault.pay_fee(fee);
+        }
+
+        /// Pays the fee of the claimant's `finalize_claim`, called from the fee phase. Only when a claim is
+        /// pending, signed for by its claimant, and at least one deposit is already payable.
+        pub fn sponsor_finalize(&mut self, did: String, fee: Amount) {
+            assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
+            let (claimant, _, _, start) = self.pending.get(&did).cloned().expect("no pending claim");
+            require_signer(claimant);
+            let now = Consensus::current_epoch();
+            assert!(
+                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| now >= start + e.3)),
+                "nothing is payable yet"
+            );
+            let used = self.sponsored.get(&did).map_or(0, |s| s.1);
+            assert!(used < MAX_SPONSORED_FINALS, "this account has used its sponsored payouts");
+            self.sponsored.entry(did).or_insert((0, 0)).1 += 1;
+            self.fee_vault.pay_fee(fee);
+        }
+
+        /// Adds TARI to the sponsor vault. Anyone may contribute.
+        pub fn fund(&mut self, bucket: Bucket) {
+            assert_eq!(bucket.resource_address(), TARI_TOKEN, "fee funding must be TARI");
+            self.fee_vault.deposit(bucket);
+        }
+
+        pub fn fee_balance(&self) -> Amount {
+            self.fee_vault.balance()
+        }
+
+        fn begin_claim(
             &mut self,
             did: String,
             claimant: RistrettoPublicKeyBytes,
