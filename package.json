@@ -1,0 +1,13 @@
+{
+  "name": "bsky-tari",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": { "fixtures": "tsx src/fixtures.ts" },
+  "dependencies": {
+    "@ipld/car": "5.4.0",
+    "@ipld/dag-cbor": "9.2.2",
+    "multiformats": "13.3.2"
+  },
+  "devDependencies": { "tsx": "4.19.2", "typescript": "5.7.2", "@types/node": "22.10.2" }
+}
