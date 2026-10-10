@@ -1,5 +1,6 @@
 {
   "name": "skydrop",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist" }
+  "assets": { "directory": "./dist" },
+  "routes": [{ "pattern": "skydrop.tari.mw", "custom_domain": true }]
 }
