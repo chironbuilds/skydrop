@@ -739,17 +739,31 @@ function renderClaim(prefill?: string): void {
       collectBtn.disabled = true;
       mount(collectBtn, ...spinnerLabel("Collecting…"));
       try {
-        if (sponsorOk) {
-          try {
-            say("Network fees are covered for you");
-            await chain.finalizeClaimSponsored(wallet, p.did, say);
-          } catch (err) {
-            if (needsFunds()) throw err;
-            say("Sponsored fees weren't available, so your wallet pays the small fee");
-            await chain.finalizeClaim(wallet, p.did, say);
+        const attempt = async (): Promise<void> => {
+          if (sponsorOk) {
+            try {
+              say("Network fees are covered for you");
+              await chain.finalizeClaimSponsored(wallet, p.did, say, true);
+            } catch (err) {
+              if (needsFunds() || chain.isWindowOpen(err)) throw err;
+              say("Sponsored fees weren't available, so your wallet pays the small fee");
+              await chain.finalizeClaim(wallet, p.did, say, true);
+            }
+          } else {
+            await chain.finalizeClaim(wallet, p.did, say, true);
           }
-        } else {
-          await chain.finalizeClaim(wallet, p.did, say);
+        };
+        // Right after a claim starts, the node that checks the payout can still be on the previous epoch for a
+        // moment, so an instant payout looks "not open yet". That clears by itself: wait and try again.
+        for (let tries = 0; ; tries++) {
+          try {
+            await attempt();
+            break;
+          } catch (err) {
+            if (!chain.isWindowOpen(err) || tries >= 6) throw err;
+            say("The network is catching up to your claim. Trying again in a few seconds…");
+            await new Promise((r) => setTimeout(r, 12_000));
+          }
         }
         const got = pay.amount;
         await refreshBalance();

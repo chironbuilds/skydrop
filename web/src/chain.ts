@@ -154,7 +154,7 @@ export function friendly(e: unknown): string {
     [/invalid operation chain/i, "Your account's identity history didn't verify."],
     [/stale operation chain/i, "A newer version of this account's identity history exists. Refresh and try again."],
     [/nothing deposited/i, "Nothing is waiting for this account."],
-    [/window is still open/i, "The safety window hasn't passed yet."],
+    [/window is still open/i, "The network hasn't caught up to your claim yet. Wait a minute and press Collect again."],
     [/not enough|insufficient/i, "This wallet doesn't have enough tTARI to cover the amount plus network fees."],
     [/already claimed/i, "This wallet already used the faucet."],
     [/deposit below the minimum/i, `The smallest amount you can send is ${Number(CONFIG.minDeposit) / Number(CONFIG.unit)} ${CONFIG.symbol}.`],
@@ -164,6 +164,9 @@ export function friendly(e: unknown): string {
   for (const [re, text] of rules) if (re.test(m)) return text;
   return m.length > 220 ? `${m.slice(0, 220)}…` : m;
 }
+
+/** The contract refused a payout because, as far as the checking node knows, the safety window is still open. */
+export const isWindowOpen = (e: unknown): boolean => /window is still open/i.test(e instanceof Error ? e.message : String(e));
 
 function assertAccepted(dry: unknown): void {
   const result = (dry as { result?: { finalize?: { result?: unknown } } })?.result?.finalize?.result;
@@ -186,10 +189,23 @@ export interface TxOutcome {
   transactionId: string;
 }
 
-async function run(wallet: Wallet, instructions: unknown[], maxFee: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+async function run(
+  wallet: Wallet,
+  instructions: unknown[],
+  maxFee: bigint,
+  onStage?: (s: string) => void,
+  tolerateEpochLag = false,
+): Promise<TxOutcome> {
   onStage?.("Checking it works…");
-  const dry = await wallet.execute(instructions, { dryRun: true, maxFee });
-  assertAccepted(dry);
+  try {
+    const dry = await wallet.execute(instructions, { dryRun: true, maxFee });
+    assertAccepted(dry);
+  } catch (e) {
+    // The pre-check runs against the previous epoch, so it can call a payout "too early" that the real
+    // transaction (executed in the current epoch) accepts. Only for payouts the caller already knows are due.
+    if (!tolerateEpochLag || !isWindowOpen(e)) throw e;
+    onStage?.("The pre-check is one epoch behind. Sending anyway…");
+  }
   onStage?.("Sending to the network…");
   const res = (await wallet.execute(instructions, { maxFee })) as { transaction_id?: unknown; transactionId?: unknown };
   assertAccepted(res);
@@ -228,10 +244,10 @@ export async function startClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s
   return run(wallet, instructions, 120_000n, onStage);
 }
 
-export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: string) => void, payableByEpoch = false): Promise<TxOutcome> {
   const owner = wallet.componentAddress;
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
-  return run(wallet, instructions, 30_000n, onStage);
+  return run(wallet, instructions, 30_000n, onStage, payableByEpoch);
 }
 
 // ---- tip budgets ------------------------------------------------------------------------------------------
@@ -292,6 +308,7 @@ async function sendSponsored(
   account: OotleAccount,
   fill: (b: Raw) => void,
   onStage?: (s: string) => void,
+  tolerateEpochLag = false,
 ): Promise<TxOutcome> {
   const provider = await account.getProvider();
   const network = toOotleNetwork(CONFIG.network);
@@ -311,8 +328,13 @@ async function sendSponsored(
     };
     try {
       onStage?.("Checking it works…");
-      const dry = await dryRun(provider, build(), []);
-      assertAccepted(dry);
+      try {
+        const dry = await dryRun(provider, build(), []);
+        assertAccepted(dry);
+      } catch (e) {
+        if (!tolerateEpochLag || !isWindowOpen(e)) throw e;
+        onStage?.("The pre-check is one epoch behind. Sending anyway…");
+      }
       onStage?.("Sending to the network…");
       const res = (await sendTransaction(provider, signer, build())) as unknown as { transaction_id?: unknown };
       assertAccepted(res);
@@ -351,7 +373,7 @@ export async function startClaimSponsored(wallet: Wallet, proof: ClaimProof, onS
 }
 
 /** Pays out into the claimant's account, creating it in the same transaction if it doesn't exist yet. */
-export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStage?: (s: string) => void, payableByEpoch = false): Promise<TxOutcome> {
   const account = builtinOnly(wallet);
   const pk = wallet.publicKey;
   return sendSponsored(
@@ -363,6 +385,7 @@ export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStag
       b.addInstruction({ CreateAccount: { owner_public_key: toHex(pk), owner_rule: null, access_rules: null, bucket_workspace_id: { id: 0, offset: null } } });
     },
     onStage,
+    payableByEpoch,
   );
 }
 
