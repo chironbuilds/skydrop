@@ -2,8 +2,8 @@
 export const CONFIG = {
   network: "esmeralda" as const,
   /** The BskyClaim escrow component (per-deposit challenge windows). */
-  component: "component_6aa79eaa110cc5b7b1fc672b3ad74d026259f6257884c565ed8d4ea529d69ec9",
-  template: "template_3e39a735fdc408313124b235814c7be8427f1c00f83dcb0094d3b8705269ac9b",
+  component: "component_0752fceb69628e0310315ece70ec11282d1b71e8532eb0fa23c1d3e1b2e3d1ce",
+  template: "template_868f2f457194c84fcab14ef4d2b76888836549635a2a7fc048938b513e1f560f",
   /** µT per tTARI. */
   unit: 1_000_000n,
   symbol: "tTARI",
@@ -13,6 +13,9 @@ export const CONFIG = {
   minDeposit: 1000n,
   /** Largest challenge window the component accepts. */
   maxWindow: 10,
+  /** The bot account that relays tip posts. */
+  botHandle: "taridrop.bsky.social",
+  botDid: "did:plc:lsdjnz7b7du3e3rkawynfsqd",
   claimDomain: "tari-bsky-claim:v1:",
   collection: "app.bsky.feed.post",
   publicApi: "https://public.api.bsky.app",

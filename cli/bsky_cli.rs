@@ -4,7 +4,7 @@
 //!
 //!   bsky_cli addr | balance
 //!   bsky_cli publish <bskyclaim.wasm>
-//!   bsky_cli new <template> [min_deposit_µT] [window_epochs]
+//!   bsky_cli new <template> [min_deposit_µT] [window_epochs] [bot_did]
 //!   bsky_cli deposit <component> <did> <amount_µT> <refund_in_epochs> [sender_wallet] [window_epochs]
 //!   bsky_cli code <component> <did> [claimant_wallet]        the text the claimant must post
 //!   bsky_cli claim <component> <did> <proof.json> [claimant_wallet] [--submit]
@@ -202,6 +202,7 @@ async fn main() {
             let template = PublishedTemplateAddress::from_str(&args[1]).expect("template address");
             let min: u64 = arg(2, "1000").parse().unwrap();
             let window: u64 = arg(3, "2").parse().unwrap();
+            let bot_did = arg(4, "did:plc:lsdjnz7b7du3e3rkawynfsqd");
             let mut p = connect_as("wallet").await;
             let me = max_epoch(&p).await;
             let call = |fee: u64| {
@@ -209,7 +210,8 @@ async fn main() {
                     .call_function(template.as_template_address(), "new", args![
                         TARI_TOKEN,
                         Amount::new(u128::from(min)),
-                        window
+                        window,
+                        bot_did.clone()
                     ])
                     .pay_fee(fee)
                     .prepare()

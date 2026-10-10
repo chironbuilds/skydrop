@@ -2,13 +2,17 @@
   "name": "skydrop-bot",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "scripts": { "start": "tsx index.ts" },
   "dependencies": {
     "@atproto/api": "0.13.35",
+    "@chironbuilder/ootle-sdk": "0.1.20",
+    "@ipld/car": "5.4.0",
+    "@ipld/dag-cbor": "9.2.2",
     "@tari-project/ootle": "file:../web/vendor/ootle-patched",
     "@tari-project/ootle-wasm": "file:../web/vendor/ootle-wasm-patched",
     "@tari-project/ootle-indexer": "0.3.0",
+    "multiformats": "13.3.2",
     "tsx": "4.19.2"
   },
   "overrides": { "@tari-project/ootle": "$@tari-project/ootle", "@tari-project/ootle-wasm": "$@tari-project/ootle-wasm" }

@@ -13,9 +13,15 @@ import { fileURLToPath } from "node:url";
 import { AtpAgent, RichText } from "@atproto/api";
 import { IndexerProvider } from "@tari-project/ootle-indexer";
 import { Network, defaultIndexerUrl } from "@tari-project/ootle";
+import { CONFIG } from "../web/src/config";
+import * as chain from "../web/src/chain";
+import * as bskyLib from "../web/src/bsky";
+import { builtinWallet } from "../web/src/wallet";
+import type { Wallet } from "../web/src/wallet";
+import { fromHex } from "../web/src/cbor";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const COMPONENT = "component_6aa79eaa110cc5b7b1fc672b3ad74d026259f6257884c565ed8d4ea529d69ec9";
+const COMPONENT = CONFIG.component;
 const POLL_MS = 60_000;
 const COOLDOWN_MS = 6 * 3600_000;
 const MAX_POSTS_PER_HOUR = 20;
@@ -31,6 +37,8 @@ function loadEnv(): Record<string, string> {
 }
 
 const env = loadEnv();
+// A real environment variable wins over the file, so a local dry run cannot go live by accident.
+if (process.env.BOT_LIVE) env.BOT_LIVE = process.env.BOT_LIVE;
 const LIVE = env.BOT_LIVE === "1" && !!env.CLAIM_URL;
 const CLAIM_URL = (env.CLAIM_URL || "https://<claim-url-not-set>").replace(/\/$/, "");
 const NOTIFY_MIN = BigInt(env.NOTIFY_MIN || "1000");
@@ -66,7 +74,7 @@ interface Dep {
   window: number;
 }
 
-async function readDeposits(provider: IndexerProvider): Promise<Record<string, Dep[]>> {
+async function readDeposits(): Promise<Record<string, Dep[]>> {
   const sub = await provider.getSubstate(COMPONENT);
   const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
   if (!comp) throw new Error("escrow component unreadable");
@@ -82,6 +90,68 @@ async function readDeposits(provider: IndexerProvider): Promise<Record<string, D
 }
 
 const agent = new AtpAgent({ service: "https://bsky.social" });
+let provider: IndexerProvider;
+/** Signs the relay transactions. It holds no funds: fees come from the escrow's fee vault and the tipper's budget. */
+let relayWallet: Wallet | null = null;
+
+const TIP_RE = /^@\S+\s+tip\s+@\S+\s+(\d+(?:\.\d{1,6})?)(?:\s+tTARI)?\s*$/i;
+const MAX_TIP_RELAYS_PER_HOUR = 30;
+const relayTimes: number[] = [];
+
+interface Notif {
+  uri: string;
+  cid: string;
+  author: { did: string; handle: string };
+  record: unknown;
+}
+
+/** Relays one tip post to the contract. Returns false if the post was not a tip command at all. */
+async function handleTip(n: Notif, ref: { uri: string; cid: string }, root: { uri: string; cid: string }): Promise<boolean> {
+  const rec = n.record as { text?: string; facets?: { features?: { $type?: string; did?: string }[] }[] };
+  const m = TIP_RE.exec((rec.text ?? "").trim());
+  if (!m) return false;
+  const reply = (text: string) => post(text, { root, parent: ref });
+  const amount = chain.parseTari(m[1]!);
+  const mentioned = (rec.facets ?? []).flatMap((f) => f.features ?? []).filter((f) => f.$type === "app.bsky.richtext.facet#mention").map((f) => f.did!);
+  const recipientDid = mentioned.find((d) => d !== agent.session!.did);
+  if (!amount || !recipientDid) return true;
+
+  const me = n.author.handle;
+  const budgets = (await chain.readBudgetsFor(provider, n.author.did)).filter(([, b]) => b.balance >= amount + chain.SPONSOR_FEE && b.maxTip >= amount);
+  if (!budgets.length) {
+    await reply(`@${me} I can't tip from your account yet: no tip budget with enough in it (or the tip is over your per-tip limit). Set one up here: ${CLAIM_URL}/#/tips/${me}`);
+    return true;
+  }
+  if (!LIVE || !relayWallet) {
+    log(`[dry-run] would relay tip of ${fmt(amount)} from ${me} to ${recipientDid}`);
+    return true;
+  }
+  const now = Date.now();
+  while (relayTimes.length && now - relayTimes[0]! > 3600_000) relayTimes.shift();
+  if (relayTimes.length >= MAX_TIP_RELAYS_PER_HOUR) {
+    log("tip relay rate limit reached");
+    return true;
+  }
+  relayTimes.push(now);
+
+  const rkey = n.uri.split("/").pop()!;
+  try {
+    const proof = await bskyLib.buildClaimProof(n.author.did, rkey);
+    const out = await chain.relayTipSponsored(relayWallet, proof, fromHex(budgets[0]![0]), (s) => log("  ·", s));
+    log(`tipped ${fmt(amount)} from ${me}: ${out.transactionId}`);
+    let recipient = recipientDid;
+    try {
+      recipient = "@" + (await agent.getProfile({ actor: recipientDid })).data.handle;
+    } catch {
+      /* mention by DID text is not possible; fall back below */
+    }
+    await reply(`@${me} ✅ Sent ${fmt(amount)} tTARI to ${recipient}. They collect it by proving they own the account: ${CLAIM_URL}/#/claim/${recipient.replace(/^@/, "")}`);
+  } catch (e) {
+    log("tip failed:", e instanceof Error ? e.message : e);
+    await reply(`@${me} I couldn't send that tip: ${chain.friendly(e)}`);
+  }
+  return true;
+}
 
 async function post(text: string, reply?: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } }) {
   const rt = new RichText({ text });
@@ -100,8 +170,8 @@ async function post(text: string, reply?: { root: { uri: string; cid: string }; 
   state.postTimes.push(now);
 }
 
-async function notifyDeposits(provider: IndexerProvider): Promise<void> {
-  const all = await readDeposits(provider);
+async function notifyDeposits(): Promise<void> {
+  const all = await readDeposits();
   const firstRun = !state.initialised;
   for (const [did, deps] of Object.entries(all)) {
     const known = new Set(state.seen[did] ?? []);
@@ -145,6 +215,10 @@ async function answerMentions(): Promise<void> {
     if (handled.has(n.uri) || (n.reason !== "mention" && n.reason !== "reply") || n.author.did === me) continue;
     handled.add(n.uri);
     const rec = n.record as { text?: string; reply?: { root: { uri: string; cid: string } } };
+    {
+      const tipRef = { uri: n.uri, cid: n.cid };
+      if (await handleTip(n as unknown as Notif, tipRef, rec.reply?.root ?? tipRef)) continue;
+    }
     const text = (rec.text ?? "").toLowerCase();
     if (!/\b(claim|help|tari)\b/.test(text)) continue;
     if (Date.now() - (state.repliedTo[n.author.did] ?? 0) < REPLY_COOLDOWN_MS) continue;
@@ -160,11 +234,19 @@ async function answerMentions(): Promise<void> {
 async function main() {
   await agent.login({ identifier: env.BSKY_HANDLE!, password: env.BSKY_APP_PASSWORD! });
   log(`logged in as ${agent.session!.handle}; mode: ${LIVE ? "LIVE" : "dry-run"}; claim url: ${CLAIM_URL}`);
-  const provider = await IndexerProvider.connect({ url: defaultIndexerUrl(Network.Esmeralda), network: Network.Esmeralda });
+  provider = await IndexerProvider.connect({ url: defaultIndexerUrl(Network.Esmeralda), network: Network.Esmeralda });
+  if (env.OOTLE_SEED) {
+    chain.initStorage();
+    const account = chain.openAccount(env.OOTLE_SEED);
+    relayWallet = await builtinWallet(account, () => chain.tariBalance(account));
+    log("tip relaying enabled");
+  } else {
+    log("OOTLE_SEED not set: tip relaying disabled");
+  }
   const once = process.argv.includes("--once");
   for (;;) {
     try {
-      await notifyDeposits(provider);
+      await notifyDeposits();
       await answerMentions();
       save();
     } catch (e) {

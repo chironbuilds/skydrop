@@ -234,6 +234,47 @@ export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: s
   return run(wallet, instructions, 30_000n, onStage);
 }
 
+// ---- tip budgets ------------------------------------------------------------------------------------------
+
+export interface Budget {
+  balance: bigint;
+  window: number;
+  refundAfter: number;
+  maxTip: bigint;
+}
+
+/** The budget this wallet key funded for `did`, if any. Component state index 8: "did:ownerKeyHex" -> tuple. */
+export async function readBudget(provider: IndexerProvider, did: string, ownerKeyHex: string): Promise<Budget | null> {
+  const sub = await provider.getSubstate(CONFIG.component);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  const map = comp?.body.state[8] as Record<string, Cbor[]> | undefined;
+  const b = map?.[`${did}:${ownerKeyHex}`];
+  if (!b) return null;
+  return { balance: BigInt(b[0] as number), window: Number(b[1]), refundAfter: Number(b[2]), maxTip: BigInt(b[3] as number) };
+}
+
+export async function openBudget(
+  wallet: Wallet,
+  p: { did: string; amount: bigint; window: number; refundAfter: number; maxTip: bigint },
+  onStage?: (s: string) => void,
+): Promise<TxOutcome> {
+  const instructions = [
+    call(wallet.componentAddress, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
+    toWorkspace,
+    call(CONFIG.component, "open_budget", [lit(p.did), lit(wallet.publicKey), lit(p.window), lit(p.refundAfter), amountLiteral(p.maxTip), workspace0]),
+  ];
+  return run(wallet, instructions, 40_000n, onStage);
+}
+
+export async function closeBudget(wallet: Wallet, did: string, amount: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const instructions = [
+    call(CONFIG.component, "close_budget", [lit(did), lit(wallet.publicKey), amountLiteral(amount)]),
+    toWorkspace,
+    call(wallet.componentAddress, "deposit", [workspace0]),
+  ];
+  return run(wallet, instructions, 30_000n, onStage);
+}
+
 // ---- sponsored transactions: the escrow's fee vault pays, so the claimant needs no funds ----------------
 
 /** Fee ceiling offered per sponsored call (µT). The contract caps it too, and refunds what isn't used. */
@@ -323,6 +364,41 @@ export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStag
     },
     onStage,
   );
+}
+
+/**
+ * Relays someone's tip post to the contract. Anyone can do this: the post's signature is the authority. The
+ * network fee comes from the escrow's fee vault and is charged back to the tipper's budget.
+ */
+export async function relayTipSponsored(wallet: Wallet, proof: ClaimProof, ownerKey: Uint8Array, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  return sendSponsored(
+    account,
+    (b) =>
+      b.addFeeInstruction(
+        call(CONFIG.component, "tip_sponsored", [
+          lit(proof.did),
+          lit(ownerKey),
+          lit(proof.ops),
+          lit(proof.commit),
+          lit(proof.nodes),
+          lit(proof.record),
+          lit(proof.rkey),
+          amountLiteral(SPONSOR_FEE),
+        ]),
+      ),
+    onStage,
+  );
+}
+
+/** Every budget funded for `did`, by any owner: [ownerKeyHex, budget]. Component state index 8. */
+export async function readBudgetsFor(provider: IndexerProvider, did: string): Promise<[string, Budget][]> {
+  const sub = await provider.getSubstate(CONFIG.component);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  const map = (comp?.body.state[8] ?? {}) as Record<string, Cbor[]>;
+  return Object.entries(map)
+    .filter(([k]) => k.startsWith(`${did}:`))
+    .map(([k, b]) => [k.slice(did.length + 1), { balance: BigInt(b[0] as number), window: Number(b[1]), refundAfter: Number(b[2]), maxTip: BigInt(b[3] as number) }]);
 }
 
 export async function useFaucet(wallet: Wallet): Promise<void> {

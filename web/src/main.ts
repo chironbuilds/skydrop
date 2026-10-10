@@ -95,7 +95,7 @@ function eta(epochs: number): string {
 // layout
 // ---------------------------------------------------------------------------------------------------------
 
-type Tab = "home" | "send" | "claim" | "how";
+type Tab = "home" | "send" | "claim" | "tips" | "how";
 
 function layout(active: Tab, ...content: (Node | null)[]): void {
   const link = (href: string, label: string, tab: Tab, cls = "") =>
@@ -111,6 +111,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         { class: "nav" },
         link("#/send", "Send", "send"),
         link("#/claim", "Collect", "claim"),
+        link("#/tips", "Tip by post", "tips"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
         h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
@@ -347,6 +348,7 @@ function renderHome(): void {
       "div",
       { class: "grid2" },
       h("a", { class: "card action", href: "#/send" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Send"), h("p", null, "Pick a Bluesky handle and an amount. We hold it safely on-chain until they claim it.")),
+      h("a", { class: "card action", href: "#/tips" }, h("span", { class: "icon" }, icons.drop(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Tip by post"), h("p", null, "Fund a budget once, then tip anyone by posting a line on Bluesky. Nobody holds your keys.")),
       h("a", { class: "card action", href: "#/claim" }, h("span", { class: "icon alt" }, icons.gift(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Collect"), h("p", null, "Someone sent you tTARI? Post one line on Bluesky to prove it's you, then collect.")),
     ),
     h(
@@ -478,6 +480,145 @@ function renderSend(prefill?: string): void {
   drawChoices();
   update();
   layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account."), card);
+  if (!prefill) field.input.focus();
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// tips: a budget you fund once, then spend by posting "@bot tip @someone 5"
+// ---------------------------------------------------------------------------------------------------------
+
+function renderTips(prefill?: string): void {
+  let profile: bsky.Profile | null = null;
+  let budget: chain.Budget | null = null;
+  let windowEpochs = 0;
+  let busy = false;
+
+  const field = handleField(prefill ?? "", (p) => {
+    profile = p;
+    budget = null;
+    void loadBudget();
+    update();
+  });
+  const amountInput = h("input", { class: "input big", inputmode: "decimal", placeholder: "10", "aria-label": "Budget" }) as HTMLInputElement;
+  const maxInput = h("input", { class: "input", inputmode: "decimal", value: "1", "aria-label": "Largest single tip" }) as HTMLInputElement;
+  const stage = h("div", { class: "log" });
+  const choicesEl = h("div", { class: "choices", role: "radiogroup", "aria-label": "Safety level for tips" });
+  const fundBtn = h("button", { class: "btn primary block" }, "Fund tip budget") as HTMLButtonElement;
+  const statusEl = h("div");
+  const howEl = h("div");
+  const card = h("div", { class: "card stack" });
+
+  const drawChoices = (): void => {
+    mount(
+      choicesEl,
+      WINDOWS.map((o) =>
+        h(
+          "button",
+          { class: "choice", role: "radio", "aria-checked": String(windowEpochs === o.w), onclick: () => { windowEpochs = o.w; drawChoices(); } },
+          h("span", { class: "radio" }),
+          h("span", null, h("b", null, o.name), h("span", { class: "d" }, o.desc)),
+        ),
+      ),
+    );
+  };
+
+  const loadBudget = async (): Promise<void> => {
+    if (!profile) return void mount(statusEl);
+    try {
+      budget = await chain.readBudget(provider, profile.did, myKeyHex);
+    } catch {
+      budget = null;
+    }
+    drawStatus();
+    drawHow();
+    update();
+  };
+
+  const drawStatus = (): void => {
+    if (!profile) return void mount(statusEl);
+    if (!budget) return void mount(statusEl, h("div", { class: "note", style: "margin-top:4px" }, `No tip budget yet for @${profile.handle}. Fund one below.`));
+    const b = budget;
+    const withdraw = h("button", { class: "btn ghost sm" }, "Withdraw it all") as HTMLButtonElement;
+    withdraw.addEventListener("click", async () => {
+      if (busy || !profile) return;
+      busy = true;
+      withdraw.disabled = true;
+      mount(withdraw, ...spinnerLabel("Withdrawing…"));
+      try {
+        await chain.closeBudget(wallet, profile.did, b.balance, (s) => stage.appendChild(h("div", null, s)));
+        await refreshBalance();
+        toast("Budget withdrawn", "good");
+      } catch (e) {
+        toast(chain.friendly(e), "bad");
+      }
+      busy = false;
+      await loadBudget();
+    });
+    mount(
+      statusEl,
+      h(
+        "div",
+        { class: "note good", style: "margin-top:4px" },
+        h("div", null, h("b", null, `${chain.formatTari(b.balance)} ${CONFIG.symbol}`), ` left in your tip budget for @${profile.handle}. Up to ${chain.formatTari(b.maxTip)} per tip.`),
+        h("div", { class: "row", style: "margin-top:8px" }, withdraw),
+      ),
+    );
+  };
+
+  const drawHow = (): void => {
+    if (!profile || !budget) return void mount(howEl);
+    const text = `@${CONFIG.botHandle} tip @friend.bsky.social 1`;
+    mount(
+      howEl,
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Tip by posting")),
+      h("div", { class: "codebox" }, text),
+      h("p", { class: "help" }, "Post it from this account, mention the person you are tipping, then the amount. The bot relays your post to the contract, which checks your signature itself. Each post tips once."),
+      h("div", { class: "row" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(text, "Text copied") }, icons.copy(14), "Copy")),
+    );
+  };
+
+  const update = (): void => {
+    const a = chain.parseTari(amountInput.value);
+    const m = chain.parseTari(maxInput.value);
+    fundBtn.disabled = !(profile && a && m && a >= CONFIG.minDeposit && m >= CONFIG.minDeposit && !busy);
+    if (!busy) mount(fundBtn, budget ? "Add to tip budget" : "Fund tip budget");
+  };
+
+  amountInput.addEventListener("input", update);
+  maxInput.addEventListener("input", update);
+  fundBtn.addEventListener("click", async () => {
+    const a = chain.parseTari(amountInput.value);
+    const m = chain.parseTari(maxInput.value);
+    if (!profile || !a || !m) return;
+    busy = true;
+    fundBtn.disabled = true;
+    mount(fundBtn, ...spinnerLabel("Funding…"));
+    mount(stage);
+    try {
+      await chain.openBudget(wallet, { did: profile.did, amount: a, window: windowEpochs, refundAfter: CONFIG.refundAfterEpochs, maxTip: m }, (s) => stage.appendChild(h("div", null, s)));
+      await refreshBalance();
+      toast("Tip budget funded", "good");
+      amountInput.value = "";
+    } catch (e) {
+      toast(chain.friendly(e), "bad");
+    }
+    busy = false;
+    await loadBudget();
+  });
+
+  mount(
+    card,
+    h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el, statusEl),
+    h("div", null, h("label", { class: "f" }, "Put aside"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol))),
+    h("div", null, h("label", { class: "f" }, "Largest single tip"), h("div", { class: "field" }, maxInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("p", { class: "help" }, "A hard cap per post. Keep it small: it limits what a stolen Bluesky key could spend.")),
+    h("div", null, h("label", { class: "f" }, "Safety level for people you tip"), choicesEl),
+    h("div", null, fundBtn, stage),
+    howEl,
+    h("p", { class: "help" }, "Only the wallet that funded the budget can withdraw it, any time. Anyone who controls the Bluesky account can spend it by posting a tip, so only put aside what you are happy to tip. The network fee for each tip (about 0.06 tTARI) comes out of the budget."),
+  );
+  drawChoices();
+  update();
+  layout("tips", h("h2", { class: "page" }, "Tip by posting"), h("p", { class: "sub" }, `Fund a budget once. Then tip anyone by posting "@${CONFIG.botHandle} tip @them 5".`), card);
   if (!prefill) field.input.focus();
 }
 
@@ -684,7 +825,7 @@ function renderHow(): void {
     ),
     h("details", null, h("summary", null, "What's the safety window for?"), h("p", null, "A proof can show an account's history is valid, but not that it's complete. If someone stole a Bluesky signing key and the real owner had already rotated it, the thief could present the old history. The window lets anyone submit the owner's rotation and cancel the claim. Small tips can skip it. Large transfers should use it.")),
     h("details", null, h("summary", null, "What if nobody claims it?"), h("p", null, `The sender can take it back after about ${eta(CONFIG.refundAfterEpochs)}.`)),
-    h("details", null, h("summary", null, "What can't it do yet?"), h("p", null, "Only did:plc accounts work (almost everyone). There's no fee sponsorship yet, so a new wallet needs a little tTARI for network fees. Private payouts to a stealth address are planned. This is testnet.")),
+    h("details", null, h("summary", null, "What can't it do yet?"), h("p", null, "Only did:plc accounts work (almost everyone). Private payouts to a stealth address are planned. This is testnet.")),
     h("details", null, h("summary", null, "Is my wallet safe?"), h("p", null, "It's created in your browser and never sent anywhere. Back up your recovery key from the wallet menu. This is testnet software.")),
   );
 }
@@ -700,6 +841,7 @@ function route(): void {
   const param = decodeURIComponent(arg);
   if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined);
+  else if (kind === "tips") renderTips(param || undefined);
   else if (kind === "how") renderHow();
   else renderHome();
 }
