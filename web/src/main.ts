@@ -817,10 +817,15 @@ function renderLink(prefill?: string): void {
   };
 
   const useAddress = async (raw: string): Promise<void> => {
-    const a = raw.trim();
+    let a = raw.trim();
     addrProblem = "";
-    if (!/^component_[0-9a-f]{64}$/.test(a)) addrProblem = "That should be an account address: component_ followed by 64 characters (your wallet shows it).";
-    else {
+    if (a.startsWith("otl_")) {
+      const bad = chain.addressProblem(a, wallet.walletAddress);
+      if (bad && bad !== "That's this wallet's own address.") addrProblem = bad;
+      else a = chain.accountOf(a);
+    }
+    if (!addrProblem && !/^component_[0-9a-f]{64}$/.test(a)) addrProblem = "Paste a Tari wallet address (starts with otl_) or an account address (starts with component_).";
+    else if (!addrProblem) {
       try {
         await provider.getSubstate(a);
       } catch {
@@ -875,7 +880,7 @@ function renderLink(prefill?: string): void {
   const draw = (): void => {
     if (!profile) return;
     const p = profile;
-    const addrInput = h("input", { class: "input", placeholder: "component_…", "aria-label": "Account address to link" }) as HTMLInputElement;
+    const addrInput = h("input", { class: "input", placeholder: "otl_… or component_…", "aria-label": "Address to link" }) as HTMLInputElement;
     const changer = changing
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
       : h("button", { class: "btn ghost sm", style: "margin-top:10px", onclick: () => { changing = true; draw(); } }, "Link a different address");

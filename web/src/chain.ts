@@ -1,5 +1,6 @@
 import {
   OotleAccount,
+  componentAddressFromWalletAddress,
   configureOotleStorage,
   extractMissingSubstateAddress,
   inMemoryAdapter,
@@ -289,6 +290,9 @@ export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: s
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
   return run(wallet, instructions, 30_000n, onStage, payableByEpoch);
 }
+
+/** The account component behind a wallet address (otl_…). */
+export const accountOf = (walletAddress: string): string => componentAddressFromWalletAddress(walletAddress);
 
 /** Why `address` can't be paid from `own` (a wallet address on the same network), or null when it can. */
 export function addressProblem(address: string, own: string): string | null {
