@@ -239,7 +239,7 @@ Use this to test changes or run a private escrow.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
-   bsky_cli new <template> [min_deposit_µT] [max_window_epochs] [bot_did]
+   bsky_cli new <template> [min_deposit_µT] [max_window_epochs] [bot_did] [bind_delay_epochs]
    bsky_cli fundfees <component> <amount_µT>
    ```
    Publishing costs a few tTARI on Esmeralda.
