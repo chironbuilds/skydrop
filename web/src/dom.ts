@@ -47,6 +47,33 @@ export const icons = {
   close: (s = 20) => svg('<path d="M18 6 6 18M6 6l12 12"/>', s),
 };
 
+/** The hero postage stamp (a parcel under a parachute) with a postmark across its corner. */
+export function stamp(): HTMLElement {
+  const w = document.createElement("div");
+  w.className = "stamp-wrap";
+  w.setAttribute("aria-hidden", "true");
+  w.innerHTML = `
+<div class="stamp"><svg viewBox="0 0 144 192" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="sk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fb5ff"/><stop offset="1" stop-color="#e3eeff"/></linearGradient></defs>
+  <rect width="144" height="192" fill="url(#sk)"/>
+  <g fill="#fffaf0" opacity=".95"><ellipse cx="26" cy="160" rx="30" ry="9"/><ellipse cx="48" cy="166" rx="26" ry="8"/><ellipse cx="116" cy="150" rx="28" ry="8"/><ellipse cx="132" cy="157" rx="22" ry="7"/></g>
+  <g stroke="#191730" stroke-width="1.6" fill="none"><path d="M20 80 L72 132"/><path d="M52 84 L72 132"/><path d="M92 84 L72 132"/><path d="M124 80 L72 132"/></g>
+  <path d="M16 82 Q72 -14 128 82 Q110 96 92 84 Q72 98 52 84 Q34 96 16 82Z" fill="#d9362b" stroke="#191730" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M52 84 Q58 34 72 6 Q86 34 92 84 Q72 96 52 84Z" fill="#fff4dc" stroke="#191730" stroke-width="2.2" stroke-linejoin="round"/>
+  <rect x="52" y="130" width="40" height="32" fill="#d9a566" stroke="#191730" stroke-width="2.2"/>
+  <rect x="68" y="130" width="8" height="32" fill="#f6d44c" stroke="#191730" stroke-width="1.6"/>
+  <text x="9" y="17" font-family="DM Mono, monospace" font-size="8" letter-spacing="2" fill="#191730">SKYDROP</text>
+  <text x="9" y="184" font-family="Fraunces, Georgia, serif" font-weight="800" font-size="17" fill="#191730">1 tTARI</text>
+</svg></div>
+<svg class="postmark" viewBox="0 0 118 96" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#d9362b" stroke-width="2.4">
+  <defs><path id="pm" d="M70 48 m-30 0 a30 30 0 1 1 60 0 a30 30 0 1 1 -60 0"/></defs>
+  <circle cx="70" cy="48" r="40"/><circle cx="70" cy="48" r="22" stroke-width="1.4"/>
+  <text font-family="DM Mono, monospace" font-size="9.5" letter-spacing="2.2" fill="#d9362b" stroke="none"><textPath href="#pm">SKYDROP · TESTNET · BSKY ·</textPath></text>
+  <path d="M0 30 q8 -7 16 0 t16 0 t16 0"/><path d="M0 46 q8 -7 16 0 t16 0 t16 0"/><path d="M0 62 q8 -7 16 0 t16 0 t16 0"/>
+</svg>`;
+  return w;
+}
+
 export function toast(message: string, kind: "good" | "bad" | "" = ""): void {
   const box = document.getElementById("toasts")!;
   const t = h("div", { class: `toast ${kind}`, role: "status" }, message);
@@ -77,7 +104,7 @@ export function confetti(): void {
   canvas.width = innerWidth * dpr;
   canvas.height = innerHeight * dpr;
   ctx.scale(dpr, dpr);
-  const colors = ["#1185fe", "#8b5cf6", "#34d399", "#fbbf24", "#f472b6"];
+  const colors = ["#d9362b", "#2350d8", "#f6d44c", "#fffaf0", "#191730"];
   const parts = Array.from({ length: 140 }, () => ({
     x: innerWidth / 2 + (Math.random() - 0.5) * 120,
     y: innerHeight * 0.45,

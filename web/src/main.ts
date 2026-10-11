@@ -4,7 +4,7 @@ import { Network, defaultIndexerUrl } from "@tari-project/ootle";
 import { CONFIG } from "./config";
 import * as bsky from "./bsky";
 import * as chain from "./chain";
-import { confetti, copy, h, icons, mount, short, spinnerLabel, toast } from "./dom";
+import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } from "./dom";
 import { toHex } from "./cbor";
 import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
@@ -105,7 +105,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
     h(
       "header",
       { class: "top" },
-      h("a", { class: "brand", href: "#/" }, h("span", { class: "logo" }, icons.drop(20)), "Skydrop"),
+      h("a", { class: "brand", href: "#/" }, h("span", { class: "logo" }, icons.drop(20)), h("span", { class: "brand-name" }, "Skydrop")),
       h(
         "nav",
         { class: "nav" },
@@ -334,7 +334,8 @@ function handleField(initial: string, onProfile: (p: bsky.Profile | null) => voi
   return { el: h("div", null, h("div", { class: "field" }, input), result), input, setValue };
 }
 
-const needsFunds = (extra = 0n): boolean => balance < extra + 40_000n;
+const SEND_FEE_ROOM = 40_000n;
+const needsFunds = (extra = 0n): boolean => balance < extra + SEND_FEE_ROOM;
 
 function fundsNote(): HTMLElement {
   return h(
@@ -356,9 +357,14 @@ function renderHome(): void {
     h(
       "section",
       { class: "hero" },
-      h("span", { class: "pill" }, icons.shield(14), "Trustless · verified on-chain"),
-      h("h1", null, "Send Tari to ", h("span", { class: "grad-text" }, "anyone on Bluesky")),
-      h("p", { class: "lead" }, "Type a handle, pick an amount, done. They collect it by proving they own the account. No wallet to set up first, no middleman holding the money."),
+      h(
+        "div",
+        null,
+        h("span", { class: "pill" }, icons.shield(14), "Trustless · verified on-chain"),
+        h("h1", null, "Send Tari to ", h("em", null, "anyone"), " on Bluesky"),
+        h("p", { class: "lead" }, "Type a handle, pick an amount, done. They collect it by proving they own the account. No wallet to set up first, no middleman holding the money."),
+      ),
+      stamp(),
     ),
     h(
       "div",
@@ -423,9 +429,16 @@ function renderSend(prefill?: string): void {
 
   const update = (): void => {
     const a = amount();
-    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy;
+    const short = needsFunds(a ?? 0n);
+    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short;
     sendBtn.disabled = !ok;
-    mount(fundsEl, needsFunds(a ?? 0n) ? fundsNote() : null);
+    const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
+    mount(
+      fundsEl,
+      !short ? null : a && room > 0n
+        ? h("div", { class: "note warn" }, `You have ${chain.formatTari(balance)} ${CONFIG.symbol}. A small network fee is kept back, so the most you can send is `, h("a", { href: "#", onclick: (e: Event) => { e.preventDefault(); amountInput.value = chain.formatTari(room).replace(/,/g, ""); update(); } }, `${chain.formatTari(room)}`), ".")
+        : fundsNote(),
+    );
     if (!busy) mount(sendBtn, profile ? `Send ${a ? chain.formatTari(a) : ""} ${CONFIG.symbol} to @${profile.handle}` : "Send");
   };
 
@@ -440,6 +453,9 @@ function renderSend(prefill?: string): void {
   };
 
   amountInput.addEventListener("input", update);
+  amountInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !sendBtn.disabled) sendBtn.click();
+  });
   sendBtn.addEventListener("click", async () => {
     const a = amount();
     if (!profile || !a) return;
@@ -469,12 +485,12 @@ function renderSend(prefill?: string): void {
       h(
         "div",
         { class: "success" },
-        h("div", { class: "big" }, "🎉"),
-        h("h2", { class: "page", style: "margin:8px 0" }, "Sent!"),
+        h("div", { class: "delivered" }, "Dispatched"),
+        h("h2", { class: "page", style: "margin:8px 0" }, "On its way"),
         h("p", { class: "sub" }, `${chain.formatTari(a)} ${CONFIG.symbol} is now held on-chain for @${p.handle}. ${w ? `They can collect it after a safety window of ${eta(w)}.` : "They can collect it as soon as they verify."}`),
         profileCard(p),
       ),
-      h("div", { class: "note" }, "Now tell them. They can't collect what they don't know about."),
+      h("div", { class: "note" }, `The Skydrop bot (@${CONFIG.botHandle}) mentions them on Bluesky within a few minutes. Add a personal note of your own too, it's what gets noticed.`),
       h(
         "div",
         { class: "row" },
@@ -721,7 +737,7 @@ function renderClaim(prefill?: string): void {
     const waitingTotal = chain.total(e.deposits);
 
     if (collected !== null) {
-      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "big" }, "🎉"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend"))));
+      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend"))));
       return;
     }
 
