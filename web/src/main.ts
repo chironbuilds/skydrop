@@ -12,7 +12,31 @@ import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
 
 const themeParam = new URLSearchParams(location.search).get("theme");
-if (themeParam === "dark") document.documentElement.dataset.theme = "dark";
+const THEME_KEY = "skydrop.theme";
+const storedTheme = (): string | null => {
+  try {
+    return localStorage.getItem(THEME_KEY);
+  } catch {
+    return null;
+  }
+};
+// ?theme= wins for this visit; otherwise the choice made with the toggle; otherwise the system setting
+const chosenTheme = themeParam === "dark" || themeParam === "light" ? themeParam : storedTheme();
+if (chosenTheme === "dark" || chosenTheme === "light") document.documentElement.dataset.theme = chosenTheme;
+const isDark = (): boolean => {
+  const t = document.documentElement.dataset.theme;
+  return t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+};
+function toggleTheme(button: HTMLElement): void {
+  const next = isDark() ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    /* storage can be blocked: the choice just lasts this visit */
+  }
+  mount(button, isDark() ? icons.sun(16) : icons.moon(16));
+}
 
 const root = document.getElementById("app")!;
 
@@ -117,6 +141,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         link("#/link", "Link wallet", "link", "hide-sm"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
+        h("button", { class: "lang theme", "aria-label": "Switch between light and dark", onclick: (e: Event) => toggleTheme(e.currentTarget as HTMLElement) }, isDark() ? icons.sun(16) : icons.moon(16)),
         h("button", { class: "lang", "aria-label": currentLang() === "zh" ? "Switch to English" : "切换到中文", onclick: () => setLang(currentLang() === "zh" ? "en" : "zh") }, currentLang() === "zh" ? "EN" : "中文"),
         h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
       ),

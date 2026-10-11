@@ -103,6 +103,7 @@ const ZH: Record<string, string> = {
   "The Skydrop bot tells them on Bluesky, with your envelope and note.": "Skydrop 机器人会在 Bluesky 上通知对方，并带上你的红包和留言。",
   "They prove it's them": "对方证明身份",
   "One post from their account, checked by the contract itself. Link a wallet once and later gifts arrive instantly.": "用自己的账号发一条帖子，由合约自己验证。关联一次钱包，之后的礼物即时到账。",
+  "Switch between light and dark": "切换浅色/深色模式",
   Refundable: "可取回",
   "Claim started": "已开始领取",
   "Needs a link": "需先关联",
