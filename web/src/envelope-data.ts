@@ -48,4 +48,18 @@ export function shareLink(origin: string, handle: string, styleId: string, note:
   return `${origin}/e/${handle}${q.length ? "?" + q.join("&") : ""}`;
 }
 
-export interface EnvelopeRecord { e: string; m: string; c: string; a: string }
+export interface EnvelopeRecord { e: string; m: string; c: string; a?: string }
+
+/**
+ * The hash a deposit commits to for its envelope: SHA-256 of the cleaned style, note and cover. The registry stores a
+ * record under its own hash, so nobody can put something else where a gift's envelope belongs, and the bot only shows
+ * a record whose hash matches the one on-chain.
+ */
+export async function envelopeHash(rec: { e?: string; m?: string; c?: string }): Promise<string> {
+  const canon = JSON.stringify([styleOf(rec.e).id, cleanNote(rec.m ?? ""), isCoverId(rec.c) ? rec.c : ""]);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canon)));
+  return Array.from(digest, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** True when the envelope is just the plain default, which needs no hash or registry entry. */
+export const isPlainEnvelope = (rec: { e?: string; m?: string; c?: string }): boolean => styleOf(rec.e).id === "air" && !cleanNote(rec.m ?? "") && !isCoverId(rec.c);

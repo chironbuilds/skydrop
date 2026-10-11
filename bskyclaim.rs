@@ -355,12 +355,16 @@ impl Env {
     }
 
     fn deposit_hold(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64, challenge: &str, hold: u64) -> Option<String> {
+        self.deposit_full(from, did, amount, refund_epoch, window, challenge, hold, vec![])
+    }
+
+    fn deposit_full(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64, challenge: &str, hold: u64, env_hash: Vec<u8>) -> Option<String> {
         let c = self.component;
         let (account, id, did, challenge) = (from.account, from.id, did.to_string(), challenge.to_string());
         self.run(from, |t| {
             t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
                 .put_last_instruction_output_on_workspace("funds")
-                .call_method(c, "deposit", args![did, id, refund_epoch, window, challenge, hold, Workspace("funds")])
+                .call_method(c, "deposit", args![did, id, refund_epoch, window, challenge, hold, Bytes::from_vec(env_hash.clone()), Workspace("funds")])
         })
     }
 
@@ -409,6 +413,11 @@ impl Env {
     fn sweep(&mut self, who: &User, did: &str) -> Option<String> {
         let (c, did) = (self.component, did.to_string());
         self.run(who, |t| t.call_method(c, "sweep", args![did]))
+    }
+
+    fn observe(&mut self, who: &User, acct: &Account) -> Option<String> {
+        let (c, did, ops) = (self.component, acct.did.clone(), bytes_list(&acct.ops));
+        self.run(who, |t| t.call_method(c, "observe_chain", args![did, ops]))
     }
 
     fn challenge_bind(&mut self, who: &User, acct: &Account) -> Option<String> {
@@ -868,7 +877,7 @@ impl Env {
         self.test.call_method(self.component, "budget_for", args![did.to_string(), owner], vec![])
     }
 
-    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64)> {
+    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64, Bytes)> {
         self.test.call_method(self.component, "deposits_for", args![did.to_string()], vec![])
     }
 }
@@ -1159,7 +1168,7 @@ fn a_bound_account_is_paid_directly_when_nothing_is_asked_of_it() {
     assert_eq!(env.balance(&wallet), before + Amount::from(3_000_000u64));
     assert_eq!(env.escrowed(), Amount::zero());
     // the payment is recorded so the bot can tell the owner it arrived
-    let got: Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)> = env.test.call_method(env.component, "received_for", args![acct.did.clone()], vec![]);
+    let got: Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64, Bytes)> = env.test.call_method(env.component, "received_for", args![acct.did.clone()], vec![]);
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].0, got[0].1, got[0].2, got[0].3), (sender.id, Amount::from(3_000_000u64), 100, 0));
 
@@ -1510,4 +1519,63 @@ fn a_sponsored_decline_is_paid_back_out_of_the_returned_gift() {
     assert_eq!(r.finalize.result.any_reject().map(|x| format!("{x:?}")), None);
     assert_eq!(env.returned(&sender), Amount::from(1_000_000u64 - 60_000));
     assert!(env.fee_balance() > Amount::from(1_900_000u64), "the vault is repaid");
+}
+
+#[test]
+fn a_deposit_carries_a_hash_of_its_envelope_and_nothing_else_fits() {
+    let mut env = Env::new();
+    let (sender, owner, other) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    let hash = vec![7u8; 32];
+    assert_eq!(env.deposit_full(&sender, &acct.did, 1_000_000, 100, 0, "", 0, hash.clone()), None);
+    expect_err(env.deposit_full(&sender, &acct.did, 1_000_000, 100, 0, "", 0, vec![1u8; 31]), "32 bytes");
+    let deps = env.deposits_for(&acct.did);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].7.as_slice(), hash.as_slice());
+    // a direct payment to a linked account records the hash too, for the bot
+    env.link_first(&owner, &acct);
+    assert_eq!(env.deposit_full(&other, &acct.did, 1_000_000, 100, 0, "", 0, hash.clone()), None);
+    let got: Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64, Bytes)> = env.test.call_method(env.component, "received_for", args![acct.did.clone()], vec![]);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].5.as_slice(), hash.as_slice());
+}
+
+#[test]
+fn only_a_standard_account_can_be_linked() {
+    let mut env = Env::new();
+    let (relayer, owner) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    // another escrow component is a perfectly valid component, but it is not an ordinary account
+    let template = env.test.get_template_address("BskyClaim");
+    let tx = env
+        .test
+        .transaction()
+        .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string()])
+        .build_and_seal(&owner.key);
+    env.test.execute_expect_success(tx, vec![owner.badge.clone()]);
+    let not_an_account = env.test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
+    let code = env.bind_text(&acct.did, not_an_account, owner.id);
+    let post = acct.post(&format!("link {code}"), "3kaaaaaaaaaaa");
+    expect_err(env.bind(&relayer, &acct, not_an_account, owner.id, &post), "standard Tari account");
+    assert_eq!(env.bound(&acct.did), None);
+    // a real account links fine
+    let ok = env.bind_post(&acct, owner.account, owner.id, "3kbbbbbbbbbbb");
+    assert_eq!(env.bind(&relayer, &acct, owner.account, owner.id, &ok), None);
+}
+
+#[test]
+fn watching_an_account_makes_proofs_from_an_older_chain_fail() {
+    let mut env = Env::new();
+    let (watcher, sender, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let mut acct = Account::new();
+    let stale = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone(), clock: std::cell::Cell::new(T0) };
+    acct.rotate_repo_key();
+    // nobody has shown the contract the rotation yet, so the old chain still works
+    assert_eq!(env.deposit(&sender, &stale.did, 1_000_000, 100, 0), None);
+    let thief = user(&mut env.test);
+    let code = env.code_for(&stale.did, &thief);
+    let post = stale.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    // a watcher reports the current chain; from then on the stale one is refused
+    assert_eq!(env.observe(&watcher, &acct), None);
+    expect_err(env.start_claim(&thief, thief.id, &stale, &post), "stale operation chain");
 }

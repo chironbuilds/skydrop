@@ -15,19 +15,16 @@ Reviewed 2026-10-11: the escrow contract (`bskyclaim`), the verifier (`atp-verif
 | 6 | Medium | **The bot repeated sender-chosen text as live mentions and links.** A challenge phrase like `@someone buy http://…` was echoed by the bot's account and made clickable. | Sender text is quoted but never turned into mentions or links. |
 | 7 | Low | **Envelope registry records could be pre-registered by anyone**, including the amount text shown on the preview. | The bot and the sender's own list always show the real on-chain amount. The registry now has a per-address rate limit. (See open items for the rest.) |
 | 9 | Medium | **Spam could fill an account's 32 deposit slots**, and unanswered phrase deposits could not be cleared by the owner. | At most 4 gifts per sender and 8 phrase gifts per account; the owner of a linked wallet can decline a gift (it goes back to its sender); phrase gifts nobody acts on for about 3 days can be swept back by anyone. |
+| 10 | Low | **Envelope notes could be pre-registered for someone else's gift.** | A deposit commits to the SHA-256 of its envelope (style, note, cover). The registry stores a record under the hash of its own content, and the bot and app only show a record that hashes to the on-chain value, so nobody can put different content where a gift's envelope belongs. |
+| 11 | Low | **A linked "account" could be any component**, including one written to fail or to take over the call that pays it. | Only a standard Tari account (the built-in account template) can be linked. |
+| 12 | Medium | **A stolen, rotated-away key could still spend a tip budget or link a wallet** until someone had shown the contract the rotation. | `observe_chain` lets anyone record an account's longest operation chain; the bot does it for every linked account and every budget owner (at most hourly, only when the chain has grown), after which older-chain proofs are refused. |
 | 8 | Low | **`/og` image rendering could be driven with unlimited unique queries** (CPU, font downloads), and the cache key included junk parameters. | The cache key is built from the cleaned values only; new pictures are rate limited per address. |
 
 ## Open items (known, not fixed)
 
-- **Envelope notes can be pre-registered by anyone** (first write wins) for a predictable deposit. The text is cleaned
-  and capped at 80 characters, but it can be offensive or misleading. Plan: commit a hash of the envelope in the
-  deposit so the registry can be checked against the chain.
 - **Uploaded cover pictures are not moderated** and are served from this domain for 90 days (20 uploads per address per hour).
 - **Stolen-key attacks rely on someone noticing in time.** The bot's watchtower now cancels suspicious links and
   claims, but if the bot is down nobody else is watching. Anyone can run the same check (`challenge`, `challenge_bind`).
-- **A malicious linked account can make payments to it fail** (its `deposit` can panic). That only affects the account
-  that chose the link, but a relayed tip to it will fail until it is changed.
-- **The tip budget is spendable by whoever controls the account's current key**, including a stale one. `max_tip` limits it.
 - Epoch length is assumed to be about an hour when converting a hold time into real time.
 - The in-browser wallet seed lives in `localStorage`. Anything that can run script on the page can read it. The page
   builds all text with DOM text nodes and sets no HTML from user data.

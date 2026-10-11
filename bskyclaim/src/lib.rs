@@ -105,8 +105,9 @@ fn bind_code(component: &str, did: &str, address: &ComponentAddress, owner: &Ris
     s
 }
 
-/// (sender, amount, refund epoch, challenge window, required phrase, hold epochs, epoch made)
-type Dep = (RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64);
+/// (sender, amount, refund epoch, challenge window, required phrase, hold epochs, epoch made, envelope hash)
+/// The envelope hash is empty or the 32-byte hash of the sender's chosen envelope (style, note, cover, amount text).
+type Dep = (RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64, Bytes);
 
 fn key_hex(key: &RistrettoPublicKeyBytes) -> String {
     let mut s = String::new();
@@ -182,7 +183,7 @@ mod bskyclaim {
         /// started, repo snapshot time of the latest proof). Times are microseconds from the commit's `rev`.
         held: BTreeMap<String, (String, u64, u64, u64)>,
         /// DID -> the latest payments sent straight to its linked wallet: (sender, amount, refund epoch, window, epoch paid).
-        received: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)>>,
+        received: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64, Bytes)>>,
         /// DID -> network fees the sponsor vault paid for its claims. They are taken back out of what the account
         /// is paid (or refunded), so using sponsored fees costs the account's own escrow, never the vault.
         owed: BTreeMap<String, Amount>,
@@ -234,8 +235,10 @@ mod bskyclaim {
             window_epochs: u64,
             challenge: String,
             hold_epochs: u64,
+            envelope: Bytes,
             funds: Bucket,
         ) {
+            assert!(envelope.len() == 0 || envelope.len() == 32, "an envelope hash is 32 bytes");
             assert!(valid_did(&did), "not a did:plc identifier");
             assert!(hold_epochs <= MAX_HOLD_EPOCHS, "hold time above the maximum");
             assert!(hold_epochs == 0 || !challenge.is_empty(), "a hold time needs a challenge phrase");
@@ -249,7 +252,7 @@ mod bskyclaim {
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
             if window_epochs == 0 && challenge.is_empty() {
                 if let Some(to) = self.active_binding(&did) {
-                    self.note_received(&did, sender, amount, refund_epoch, window_epochs);
+                    self.note_received(&did, sender, amount, refund_epoch, window_epochs, envelope.clone());
                     ComponentManager::get(to).invoke("deposit", args![funds]);
                     return;
                 }
@@ -260,7 +263,7 @@ mod bskyclaim {
             if !challenge.is_empty() {
                 assert!(list.iter().filter(|e| !e.4.is_empty()).count() < MAX_PHRASE_DEPOSITS, "this account already has several gifts waiting on a phrase");
             }
-            list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs, Consensus::current_epoch()));
+            list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs, Consensus::current_epoch(), envelope));
             self.vault.deposit(funds);
         }
 
@@ -281,6 +284,14 @@ mod bskyclaim {
                 self.bindings.insert(did.clone(), (old, 0, old, old_owner, old_owner));
             }
             self.bind_proof.remove(&did);
+        }
+
+        /// Records the longest operation chain seen for `did` without doing anything else. Anyone may call it. A watcher
+        /// calls it when an account's chain grows, so that proofs made with an older chain (a stolen, rotated-away key)
+        /// are refused from then on.
+        pub fn observe_chain(&mut self, did: String, ops: Vec<Bytes>) {
+            let chain = self.check_chain(&did, &ops);
+            self.known_len.entry(did).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
         }
 
         /// The account `did`'s owner has bound, if one is in effect.
@@ -322,6 +333,12 @@ mod bskyclaim {
             let text = record_text(record.as_slice()).expect("record has no text");
             let code = bind_code(&CallerContext::current_component_address().to_string(), &did, &address, &owner);
             assert!(text.contains(&code), "the post does not contain the bind code");
+            // Payments are sent to this address by calling it, so it has to be an ordinary Tari account (the built-in
+            // account template), not a component someone wrote to fail or to take the call over.
+            assert!(
+                ComponentManager::get(address).get_template_address() == TemplateAddress::from_array([0; 32]),
+                "only a standard Tari account can be linked"
+            );
 
             let now = Consensus::current_epoch();
             let nothing = CallerContext::current_component_address();
@@ -593,7 +610,7 @@ mod bskyclaim {
             self.last_tip.insert(did, rkey);
             if window == 0 {
                 if let Some(to) = self.active_binding(&recipient) {
-                    self.note_received(&recipient, owner, amount, Consensus::current_epoch() + refund_after, window);
+                    self.note_received(&recipient, owner, amount, Consensus::current_epoch() + refund_after, window, Bytes::from_vec(Vec::new()));
                     let paid = self.vault.withdraw(amount);
                     ComponentManager::get(to).invoke("deposit", args![paid]);
                     return;
@@ -601,7 +618,7 @@ mod bskyclaim {
             }
             let list = self.deposits.entry(recipient).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
-            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new(), 0, Consensus::current_epoch()));
+            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new(), 0, Consensus::current_epoch(), Bytes::from_vec(Vec::new())));
         }
 
         fn begin_claim(
@@ -702,7 +719,7 @@ mod bskyclaim {
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
         pub fn refund(&mut self, did: String, index: u32) -> Bucket {
             let list = self.deposits.get_mut(&did).expect("no deposits for this account");
-            let (sender, amount, refund_epoch, _, _, _, _) = list.get(index as usize).cloned().expect("no such deposit");
+            let (sender, amount, refund_epoch, _, _, _, _, _) = list.get(index as usize).cloned().expect("no such deposit");
             require_signer(sender);
             assert!(Consensus::current_epoch() >= refund_epoch, "not refundable yet");
             list.remove(index as usize);
@@ -754,9 +771,9 @@ mod bskyclaim {
             take
         }
 
-        fn note_received(&mut self, did: &str, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64, window: u64) {
+        fn note_received(&mut self, did: &str, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64, window: u64, envelope: Bytes) {
             let list = self.received.entry(did.to_string()).or_default();
-            list.push((sender, amount, refund_epoch, window, Consensus::current_epoch()));
+            list.push((sender, amount, refund_epoch, window, Consensus::current_epoch(), envelope));
             if list.len() > MAX_RECEIVED_KEPT {
                 list.remove(0);
             }
@@ -810,7 +827,7 @@ mod bskyclaim {
         }
 
         /// Payments recently sent straight to `did`'s linked wallet.
-        pub fn received_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)> {
+        pub fn received_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64, Bytes)> {
             self.received.get(&did).cloned().unwrap_or_default()
         }
 

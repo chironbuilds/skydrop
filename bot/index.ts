@@ -19,7 +19,7 @@ import * as bskyLib from "../web/src/bsky";
 import { builtinWallet } from "../web/src/wallet";
 import type { Wallet } from "../web/src/wallet";
 import { fromHex } from "../web/src/cbor";
-import { shareLink, type EnvelopeRecord } from "../web/src/envelope-data";
+import { envelopeHash, shareLink, type EnvelopeRecord } from "../web/src/envelope-data";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMPONENT = CONFIG.component;
@@ -55,6 +55,8 @@ interface State {
   initialised: boolean;
   /** did -> payments already announced that went straight to a linked wallet */
   seenPaid?: Record<string, string[]>;
+  /** did -> when the account's operation chain was last checked against what the contract has seen */
+  observedAt?: Record<string, number>;
 }
 
 const STATE_FILE = join(here, "state.json");
@@ -77,6 +79,8 @@ interface Dep {
   window: number;
   challenge: string;
   hold: number;
+  /** Hash (hex) of the envelope the sender committed to. Empty when they chose none. */
+  envelope: string;
 }
 
 async function readDeposits(): Promise<Record<string, Dep[]>> {
@@ -88,7 +92,7 @@ async function readDeposits(): Promise<Record<string, Dep[]>> {
   for (const [did, list] of Object.entries(raw)) {
     out[did] = list.map((d) => {
       const sender = (d[0] as { hex: string }).hex;
-      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) };
+      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0), envelope: d[7] ? (d[7] as { hex: string }).hex : "" };
     });
   }
   return out;
@@ -158,6 +162,19 @@ async function handleTip(n: Notif, ref: { uri: string; cid: string }, root: { ur
   return true;
 }
 
+/** The envelope a deposit committed to. Only a record that hashes to the on-chain value is used. */
+async function lookupEnvelope(hash: string): Promise<EnvelopeRecord | null> {
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  try {
+    const r = await fetch(`${CLAIM_URL}/envelope?h=${hash}`);
+    if (!r.ok) return null;
+    const rec = (await r.json()) as EnvelopeRecord;
+    return (await envelopeHash(rec)) === hash ? rec : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A link with a preview card: the label in the text is made the link, and the card carries the envelope image. */
 interface Card {
   label: string;
@@ -218,6 +235,7 @@ interface Paid {
   key: string;
   fp: string;
   amount: bigint;
+  envelope: string;
 }
 
 /** Payments the contract sent straight to a linked wallet (state index 15). */
@@ -230,7 +248,7 @@ async function readReceived(): Promise<Record<string, Paid[]>> {
     out[did] = list.map((d) => {
       const sender = (d[0] as { hex: string }).hex;
       const fp = `${sender}:${d[1]}:${d[2]}:${d[3]}`;
-      return { key: `${fp}:${d[4]}`, fp, amount: BigInt(d[1] as number) };
+      return { key: `${fp}:${d[4]}`, fp, amount: BigInt(d[1] as number), envelope: d[5] ? (d[5] as { hex: string }).hex : "" };
     });
   }
   return out;
@@ -256,15 +274,8 @@ async function notifyReceived(): Promise<void> {
     if (handle === "handle.invalid") continue;
     let saved: EnvelopeRecord | null = null;
     for (const p of fresh) {
-      try {
-        const r = await fetch(`${CLAIM_URL}/envelope?fp=${encodeURIComponent(p.fp)}`);
-        if (r.ok) {
-          saved = (await r.json()) as EnvelopeRecord;
-          break;
-        }
-      } catch {
-        /* no envelope: plain card */
-      }
+      saved = await lookupEnvelope(p.envelope);
+      if (saved) break;
     }
     const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", `${fmt(total)} tTARI`, saved?.c ?? "");
     const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
@@ -341,6 +352,34 @@ async function watchClaims(): Promise<void> {
   }
 }
 
+/**
+ * Keeps the contract's record of each account's longest operation chain up to date, for accounts that matter most
+ * (linked wallets and tip budgets). Once the contract has seen a rotation, a proof made with the older chain by a
+ * stolen key is refused. Checked at most hourly per account; only costs a transaction when the chain has grown.
+ */
+async function observeChains(): Promise<void> {
+  if (!LIVE || !relayWallet) return;
+  const sub = await provider.getSubstate(COMPONENT);
+  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
+  const known = (comp?.body.state[5] ?? {}) as Record<string, number>;
+  const bindings = Object.keys((comp?.body.state[12] ?? {}) as Record<string, unknown>);
+  const budgets = Object.keys((comp?.body.state[8] ?? {}) as Record<string, unknown>).map((k) => k.split(":")[0]!);
+  state.observedAt ??= {};
+  for (const did of new Set([...bindings, ...budgets])) {
+    if (Date.now() - (state.observedAt[did] ?? 0) < 3600_000) continue;
+    state.observedAt[did] = Date.now();
+    try {
+      const now = await bskyLib.currentChain(did);
+      if (now.ops.length > Number(known[did] ?? 0)) {
+        const out = await chain.observeChain(relayWallet, did, now.ops, (s) => log("  ·", s));
+        log(`recorded a newer operation chain for ${did}: ${out.transactionId}`);
+      }
+    } catch (e) {
+      log(`couldn't check ${did}:`, e instanceof Error ? e.message : e);
+    }
+  }
+}
+
 async function notifyDeposits(): Promise<void> {
   const all = await readDeposits();
   const firstRun = !state.initialised;
@@ -376,15 +415,8 @@ async function notifyDeposits(): Promise<void> {
     // the envelope the sender picked, if their app registered one, so the mention shows the same card as their own link
     let saved: EnvelopeRecord | null = null;
     for (const d of fresh) {
-      try {
-        const r = await fetch(`${CLAIM_URL}/envelope?fp=${encodeURIComponent(d.fp)}`);
-        if (r.ok) {
-          saved = (await r.json()) as EnvelopeRecord;
-          break;
-        }
-      } catch {
-        /* no envelope: plain card */
-      }
+      saved = await lookupEnvelope(d.envelope);
+      if (saved) break;
     }
     const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", `${fmt(total)} tTARI`, saved?.c ?? "");
     const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
@@ -456,6 +488,7 @@ async function main() {
       try {
         await watchBindings();
         await watchClaims();
+        await observeChains();
       } catch (e) {
         log("chain watch failed:", e instanceof Error ? e.message : e);
       }

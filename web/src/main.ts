@@ -706,14 +706,13 @@ function renderSend(prefill?: string): void {
     const say = (s: string) => stage.appendChild(h("div", null, s));
     try {
       const esc = await chain.readEscrow(provider, profile.did);
-      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge(), hold: hold() }, esc.epoch, say);
-      // let the bot's mention and the "Remind them" link use the same envelope as the link shown after sending
-      void env.registerEnvelope(env.depositFp(toHex(wallet.publicKey), a, esc.epoch + CONFIG.refundAfterEpochs, windowEpochs), {
-        e: style.id,
-        m: env.cleanNote(noteInput.value),
-        c: coverId,
-        a: `${chain.formatTari(a)} ${CONFIG.symbol}`,
-      });
+      // the deposit commits to a hash of the envelope, so the bot's mention and the "Remind them" link can show it
+      // and nobody else can put something different in its place
+      const rec = { e: style.id, m: env.cleanNote(noteInput.value), c: coverId };
+      const plain = env.isPlainEnvelope(rec);
+      const envelope = plain ? "" : await env.envelopeHash(rec);
+      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge(), hold: hold(), envelope }, esc.epoch, say);
+      if (!plain) void env.registerEnvelope(rec);
       await refreshBalance();
       done(profile, a, windowEpochs);
     } catch (e) {
@@ -1531,8 +1530,7 @@ function renderSent(): void {
       );
     }
     const profiles = await Promise.all(data.items.map((d) => profileFor(d.did)));
-    const mineHex = toHex(wallet.publicKey);
-    const envelopes = await Promise.all(data.items.map((d) => env.fetchEnvelope(env.depositFp(mineHex, d.amount, d.refundEpoch, d.window))));
+    const envelopes = await Promise.all(data.items.map((d) => (d.envelope ? env.fetchEnvelope(d.envelope) : Promise.resolve(null))));
     const escs = new Map<string, chain.Escrow>();
     await Promise.all([...new Set(data.items.map((d) => d.did))].map(async (did) => { try { escs.set(did, await chain.readEscrow(provider, did)); } catch { /* status falls back to plain waiting */ } }));
     const rows = data.items.map((d, i) => {

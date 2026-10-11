@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (33 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (36 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
@@ -292,3 +292,9 @@ See `docs/SECURITY.md` for the review behind these rules.
 - `take_returned(sender)` (signed by the sender) withdraws everything returned to them; `returned_for(sender)` reads it.
 - `sweep(did)` (anyone) returns phrase deposits that are 72 epochs old to their senders, unless a claim for the account is in progress.
 - A sender can have at most 4 gifts waiting for one account, and at most 8 of an account's 32 slots may wait on a phrase. Deposits carry the epoch they were made (7th element).
+
+## Envelope commitment, account check, observe_chain
+
+- `deposit(did, sender, refund_epoch, window, challenge, hold, envelope, funds)`: `envelope` is empty or the 32-byte SHA-256 of `JSON.stringify([styleId, note, coverId])` (cleaned). It is stored as the deposit's 8th element and in `received` (6th element). The Worker's registry stores a record under that same hash (`POST /envelope` returns `{hash}`, `GET /envelope?h=<hash>`); a reader must recompute the hash before trusting a record.
+- `bind` only accepts an address whose template is the built-in account template.
+- `observe_chain(did, ops)` (anyone) raises the longest chain seen for `did`. The bot calls it for linked accounts and budget owners.

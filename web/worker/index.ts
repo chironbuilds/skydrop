@@ -3,7 +3,7 @@
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-expect-error wrangler turns .wasm imports into compiled modules
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
-import { cleanNote, isCoverId, styleOf, type Style } from "../src/envelope-data";
+import { cleanNote, envelopeHash, isCoverId, styleOf, type Style } from "../src/envelope-data";
 
 interface Env {
   ASSETS: { fetch(r: Request): Promise<Response> };
@@ -184,7 +184,7 @@ async function serveCover(url: URL, env: Env): Promise<Response> {
   return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
 }
 
-const FP_RE = /^[0-9a-f]{64}:\d{1,20}:\d{1,12}:\d{1,6}$/;
+const HASH_RE = /^[0-9a-f]{64}$/;
 
 /**
  * Remembers which envelope went with a deposit, keyed by the deposit's fingerprint (sender key, amount, refund
@@ -196,28 +196,26 @@ async function saveEnvelope(req: Request, env: Env): Promise<Response> {
   if (await overLimit(req, env, "envelope", 30)) return json({ error: "slow down" }, 429);
   const text = await req.text();
   if (text.length > 600) return json({ error: "too big" }, 413);
-  let body: { fp?: string; e?: string; m?: string; c?: string; a?: string };
+  let body: { e?: string; m?: string; c?: string };
   try {
     body = JSON.parse(text);
   } catch {
     return json({ error: "bad json" }, 400);
   }
-  if (!body.fp || !FP_RE.test(body.fp)) return json({ error: "bad fingerprint" }, 400);
-  const key = `env:${body.fp}`;
-  if (await env.COVERS.get(key, "arrayBuffer")) return json({ ok: true, kept: true });
-  const rec = {
-    e: styleOf(body.e).id,
-    m: cleanNote(body.m ?? ""),
-    c: isCoverId(body.c) ? body.c : "",
-    a: cleanAmount(body.a ?? null),
-  };
-  await env.COVERS.put(key, new TextEncoder().encode(JSON.stringify(rec)).buffer as ArrayBuffer, { expirationTtl: 60 * 60 * 24 * 90 });
-  return json({ ok: true });
+  // a record is stored under the hash of its own content, which is what a deposit commits to on-chain: it cannot be
+  // squatted, and nobody can store a different record where a gift's envelope belongs
+  const rec = { e: styleOf(body.e).id, m: cleanNote(body.m ?? ""), c: isCoverId(body.c) ? body.c : "" };
+  const hash = await envelopeHash(rec);
+  const key = `env:${hash}`;
+  if (!(await env.COVERS.get(key, "arrayBuffer"))) {
+    await env.COVERS.put(key, new TextEncoder().encode(JSON.stringify(rec)).buffer as ArrayBuffer, { expirationTtl: 60 * 60 * 24 * 90 });
+  }
+  return json({ ok: true, hash });
 }
 
 async function readEnvelope(url: URL, env: Env): Promise<Response> {
-  const fp = url.searchParams.get("fp") ?? "";
-  const buf = FP_RE.test(fp) ? await env.COVERS.get(`env:${fp}`, "arrayBuffer") : null;
+  const hash = url.searchParams.get("h") ?? "";
+  const buf = HASH_RE.test(hash) ? await env.COVERS.get(`env:${hash}`, "arrayBuffer") : null;
   if (!buf) return new Response("not found", { status: 404 });
   return new Response(buf, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }

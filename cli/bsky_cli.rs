@@ -243,7 +243,7 @@ async fn main() {
                         b.call_method(account, "withdraw", args![TARI_TOKEN, Amount::new(u128::from(amount))])
                             .put_last_instruction_output_on_workspace("funds")
                     })
-                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, challenge.clone(), hold, Workspace("funds")])
+                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, challenge.clone(), hold, Bytes::from_vec(Vec::new()), Workspace("funds")])
                     .pay_fee(fee)
                     .prepare()
             };

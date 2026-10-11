@@ -2,8 +2,8 @@
 export const CONFIG = {
   network: "esmeralda" as const,
   /** The BskyClaim escrow component (per-deposit challenge windows and challenge phrases). */
-  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_74f245afecf2dc938f20b3dda3d82499ef7b47c9f1734844616322ffb5150c0b",
-  template: "template_6633b62adfe9944767da67a75be2df3006e0a5719989e25ce75fa3e744410a10",
+  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_9075535254baad3451acbc951141c783f6c9f6e870518f931fd58a4154ca5b27",
+  template: "template_744ffdcca6afdc6bbcdc682f5e9f13e54b04f5ac22ecae74a2e33329db5cc44d",
   /** µT per tTARI. */
   unit: 1_000_000n,
   symbol: "tTARI",

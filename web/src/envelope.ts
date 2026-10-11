@@ -1,4 +1,5 @@
 import { h } from "./dom";
+import { envelopeHash } from "./envelope-data";
 import type { EnvelopeRecord, Style } from "./envelope-data";
 export * from "./envelope-data";
 
@@ -141,23 +142,25 @@ export async function presetCover(id: string): Promise<Blob> {
   return blob;
 }
 
-/** The fingerprint the bot and the app both use for a deposit: sender key, amount (µT), refund epoch, window. */
-export const depositFp = (senderHex: string, amount: bigint, refundEpoch: number, window: number): string => `${senderHex}:${amount}:${refundEpoch}:${window}`;
 
 
 /** Tells the Worker which envelope goes with a deposit. Best effort: a failure only means the bot uses the plain card. */
-export async function registerEnvelope(fp: string, rec: Partial<EnvelopeRecord>): Promise<void> {
+export async function registerEnvelope(rec: Partial<EnvelopeRecord>): Promise<void> {
   try {
-    await fetch("/envelope", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fp, ...rec }) });
+    await fetch("/envelope", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ e: rec.e, m: rec.m, c: rec.c }) });
   } catch {
     /* ignore */
   }
 }
 
-export async function fetchEnvelope(fp: string, base = ""): Promise<EnvelopeRecord | null> {
+/** The envelope a deposit committed to, if the registry has it and it really matches the on-chain hash. */
+export async function fetchEnvelope(hash: string, base = ""): Promise<EnvelopeRecord | null> {
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
   try {
-    const r = await fetch(`${base}/envelope?fp=${encodeURIComponent(fp)}`);
-    return r.ok ? ((await r.json()) as EnvelopeRecord) : null;
+    const r = await fetch(`${base}/envelope?h=${hash}`);
+    if (!r.ok) return null;
+    const rec = (await r.json()) as EnvelopeRecord;
+    return (await envelopeHash(rec)) === hash ? rec : null;
   } catch {
     return null;
   }

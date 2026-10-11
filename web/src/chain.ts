@@ -312,7 +312,7 @@ async function run(
 
 export async function sendTip(
   wallet: Wallet,
-  p: { did: string; amount: bigint; window: number; challenge?: string; hold?: number },
+  p: { did: string; amount: bigint; window: number; challenge?: string; hold?: number; envelope?: string },
   epoch: number,
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
@@ -321,7 +321,7 @@ export async function sendTip(
   const instructions = [
     call(owner, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
     toWorkspace,
-    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), lit(p.challenge ?? ""), lit(p.hold ?? 0), workspace0]),
+    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), lit(p.challenge ?? ""), lit(p.hold ?? 0), lit(p.envelope ? fromHex(p.envelope) : new Uint8Array()), workspace0]),
   ];
   return run(wallet, instructions, 30_000n, onStage);
 }
@@ -394,6 +394,11 @@ export async function confirmClaim(wallet: Wallet, proof: ClaimProof, onStage?: 
   return run(wallet, instructions, 120_000n, onStage);
 }
 
+/** Shows the contract an account's current operation chain, so proofs made with an older one are refused from then on. */
+export async function observeChain(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
+  return run(wallet, [call(CONFIG.component, "observe_chain", [lit(did), lit(ops)])], 120_000n, onStage);
+}
+
 /** Cancels a pending claim by presenting the account's newer operation chain (during its challenge window). */
 export async function challengeClaim(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
   return run(wallet, [call(CONFIG.component, "challenge", [lit(did), lit(ops)])], 120_000n, onStage);
@@ -435,6 +440,8 @@ export interface SentDeposit {
   window: number;
   challenge: string;
   hold: number;
+  /** Hash (hex) of the envelope the sender committed to, or empty. */
+  envelope: string;
 }
 
 /** Every deposit whose sender is `keyHex`, found by scanning component state index 3. */
@@ -446,7 +453,7 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
   const items: SentDeposit[] = [];
   for (const [did, list] of Object.entries(all)) {
     for (const d of list) {
-      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) });
+      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0), envelope: d[7] ? bytesHex(d[7]) : "" });
     }
   }
   return { epoch, items };
