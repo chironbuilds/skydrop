@@ -281,6 +281,22 @@ function profileCard(p: bsky.Profile): HTMLElement {
 }
 
 /** A handle field that resolves the account as you type. */
+const HANDLE_KEY = "skydrop.handle";
+function lastHandle(): string {
+  try {
+    return localStorage.getItem(HANDLE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+function saveHandle(handle: string): void {
+  try {
+    localStorage.setItem(HANDLE_KEY, handle);
+  } catch {
+    /* the handle just isn't remembered */
+  }
+}
+
 function handleField(initial: string, onProfile: (p: bsky.Profile | null) => void): { el: HTMLElement; input: HTMLInputElement; setValue: (v: string) => void } {
   const input = h("input", { class: "input", placeholder: "name.bsky.social", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Bluesky handle" }) as HTMLInputElement;
   const result = h("div");
@@ -633,12 +649,23 @@ function renderClaim(prefill?: string): void {
   let busy = false;
   let collected: bigint | null = null;
   let sponsorOk = false;
+  // The page does the waiting for you: it watches for the post, verifies, and collects when the payout is due.
+  // Anything that fails switches this off so you get the buttons and the error instead of a retry loop.
+  let autoVerify: (() => Promise<void>) | null = null;
+  let autoCollect: (() => Promise<void>) | null = null;
+  let autoOff = false;
+  let watching = true;
+  let checking = false;
+  const canAuto = (): boolean => !autoOff && wallet.kind === "builtin";
 
   const stepsEl = h("div");
-  const field = handleField(prefill ?? "", (p) => {
+  const field = handleField(prefill ?? lastHandle(), (p) => {
     profile = p;
     esc = null;
     collected = null;
+    autoOff = false;
+    watching = true;
+    if (p) saveHandle(p.handle);
     void load();
   });
 
@@ -663,6 +690,27 @@ function renderClaim(prefill?: string): void {
 
   const poll = window.setInterval(() => { if (profile && !busy) void reload(); }, 20_000);
   cleanups.push(() => clearInterval(poll));
+
+  const watch = window.setInterval(async () => {
+    if (!profile || !esc || busy || checking || autoOff || collected !== null || !esc.deposits.length) return;
+    if (esc.pending?.claimant === myKeyHex) {
+      if (canAuto() && chain.payableNow(esc, esc.pending.start).amount > 0n) void autoCollect?.();
+      return;
+    }
+    if (!watching) return;
+    checking = true;
+    try {
+      if (await bsky.findClaimPost(profile.did, code)) {
+        watching = false;
+        if (canAuto()) void autoVerify?.();
+        else toast("We found your post. Press Verify to continue.", "good");
+      }
+    } catch {
+      /* a failed look is retried on the next tick */
+    }
+    checking = false;
+  }, 5000);
+  cleanups.push(() => clearInterval(watch));
 
   const draw = (): void => {
     if (!profile || !esc) return;
@@ -695,7 +743,7 @@ function renderClaim(prefill?: string): void {
     const say = (s: string) => logEl.appendChild(h("div", null, s));
 
     const verifyBtn = h("button", { class: "btn primary" }, "I've posted it. Verify and claim") as HTMLButtonElement;
-    verifyBtn.addEventListener("click", async () => {
+    const runVerify = async (): Promise<void> => {
       if (busy) return;
       if (!sponsorOk && needsFunds()) return void toast("You need a little tTARI for network fees first.", "bad");
       busy = true;
@@ -724,16 +772,24 @@ function renderClaim(prefill?: string): void {
         toast("Verified on-chain", "good");
         busy = false;
         await reload();
+        if (canAuto() && esc?.pending?.claimant === myKeyHex && chain.payableNow(esc, esc.pending.start).amount > 0n) void autoCollect?.();
       } catch (err) {
         busy = false;
+        autoOff = true;
+        watching = true;
         toast(chain.friendly(err), "bad");
         verifyBtn.disabled = false;
         mount(verifyBtn, "I've posted it. Verify and claim");
       }
+    };
+    verifyBtn.addEventListener("click", () => {
+      autoOff = false;
+      void runVerify();
     });
+    autoVerify = runVerify;
 
     const collectBtn = h("button", { class: "btn primary block" }, `Collect ${chain.formatTari(pay.amount)} ${CONFIG.symbol}`) as HTMLButtonElement;
-    collectBtn.addEventListener("click", async () => {
+    const runCollect = async (): Promise<void> => {
       if (busy) return;
       busy = true;
       collectBtn.disabled = true;
@@ -780,11 +836,17 @@ function renderClaim(prefill?: string): void {
         }
       } catch (err) {
         busy = false;
+        autoOff = true;
         toast(chain.friendly(err), "bad");
         collectBtn.disabled = false;
         mount(collectBtn, `Collect ${chain.formatTari(pay.amount)} ${CONFIG.symbol}`);
       }
+    };
+    collectBtn.addEventListener("click", () => {
+      autoOff = false;
+      void runCollect();
     });
+    autoCollect = runCollect;
 
     const postText = `Claiming my ${CONFIG.symbol} on Tari. ${code}`;
     const maxWin = Math.max(...e.deposits.map((d) => d.window));
@@ -800,7 +862,7 @@ function renderClaim(prefill?: string): void {
         "div",
         { class: "steps" },
         h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards."), h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
-        h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, verifyBtn, logEl) : null)),
+        h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, canAuto() && !autoOff ? h("p", { class: "help" }, "Watching for your post. This continues by itself once it appears, and your tTARI is collected automatically when it's due.") : null, verifyBtn, logEl) : null)),
         h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
         h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, "4"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, "Your tTARI lands in your Skydrop wallet."))),
       ),
