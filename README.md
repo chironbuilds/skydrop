@@ -9,6 +9,7 @@ Live on Esmeralda at https://skydrop.tari.mw
 ## Docs
 
 - [Architecture](docs/ARCHITECTURE.md): the pieces, data model, claim and tip flows, trust model.
+- [Explainer video](video/README.md): how to regenerate the 31 second vertical video.
 - [Integration guide](docs/INTEGRATION.md): deep links, the TypeScript modules, the contract reference, relayers, running your own instance.
 
 ## How the proof works

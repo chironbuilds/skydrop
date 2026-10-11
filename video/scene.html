@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=DM+Mono:wght@400;500&family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,600..900,0..100,0..1;1,9..144,600..900,0..100,0..1&display=swap" rel="stylesheet" />
+<style>
+  :root { --bg:#f0e6d0; --card:#fffaf0; --well:#f6ecd6; --ink:#191730; --muted:#5a5470; --red:#d9362b; --blue:#2350d8; --sky:#1185fe; --hi:#f6d44c; --good:#1d7a52;
+    --serif: "Fraunces", Georgia, serif; --sans: "Bricolage Grotesque", system-ui, sans-serif; --mono: "DM Mono", ui-monospace, monospace;
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .1 0 0 0 0 .09 0 0 0 0 .2 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.09'/%3E%3C/svg%3E"); }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; background: var(--bg) var(--grain); font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+  #stage { position: absolute; inset: 0; overflow: hidden; }
+  .stripe { background: repeating-linear-gradient(-45deg, var(--red) 0 36px, var(--card) 36px 62px, var(--blue) 62px 98px, var(--card) 98px 124px); }
+  #progress { position: absolute; left: 0; top: 0; height: 26px; width: 0; z-index: 50; border-bottom: 5px solid var(--ink); }
+  #brand { position: absolute; left: 48px; top: 64px; display: flex; align-items: center; gap: 18px; z-index: 40; font-family: var(--serif); font-style: italic; font-weight: 800; font-size: 54px; letter-spacing: -1.5px; font-variation-settings: "SOFT" 100, "WONK" 1; }
+  #brand i { width: 76px; height: 76px; border-radius: 16px; background: var(--red); border: 5px solid var(--ink); box-shadow: 5px 5px 0 var(--ink); display: grid; place-items: center; transform: rotate(-6deg); }
+  #brand svg { width: 38px; height: 38px; fill: var(--card); }
+  .scene { position: absolute; inset: 0; display: none; }
+  .scene > .in { position: absolute; inset: 0; transform-origin: 50% 45%; }
+  .a { opacity: 0; }
+  .scene .in > .a { position: absolute; }
+
+  .cap { position: absolute; left: 60px; right: 60px; font-family: var(--serif); font-weight: 800; font-size: 150px; line-height: .93; letter-spacing: -5px; font-variation-settings: "SOFT" 100, "WONK" 1, "opsz" 144; }
+  .cap.m { font-size: 118px; letter-spacing: -3.5px; }
+  .cap em { font-style: italic; background: linear-gradient(transparent 58%, var(--hi) 58% 92%, transparent 92%); padding: 0 .06em; margin: 0 -.06em; }
+  .cap .r { color: var(--red); font-style: italic; }
+  .num { font-family: var(--mono); font-weight: 500; font-size: 40px; letter-spacing: 6px; color: var(--red); text-transform: uppercase; }
+  .card { position: absolute; background: var(--card); border: 6px solid var(--ink); border-radius: 24px; box-shadow: 16px 16px 0 var(--ink); }
+  .label { font-family: var(--mono); font-size: 32px; letter-spacing: 6px; text-transform: uppercase; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; border: 6px solid var(--ink); border-radius: 22px; background: var(--red); color: var(--card); font-weight: 800; font-size: 60px; box-shadow: 12px 12px 0 var(--ink); }
+  .chip { display: inline-block; border: 5px solid var(--ink); border-radius: 999px; padding: 8px 34px; font-family: var(--mono); font-size: 44px; background: var(--card); box-shadow: 6px 6px 0 var(--ink); }
+  .stampbox { display: inline-block; font-family: var(--mono); font-weight: 500; letter-spacing: 12px; text-transform: uppercase; color: var(--red); border: 10px double var(--red); border-radius: 14px; padding: 18px 40px 18px 54px; font-size: 76px; mix-blend-mode: multiply; }
+  .post { padding: 40px; }
+  .av { width: 110px; height: 110px; border-radius: 50%; border: 5px solid var(--ink); display: grid; place-items: center; font-family: var(--serif); font-weight: 800; font-size: 56px; flex: none; }
+  .row { display: flex; gap: 28px; align-items: center; }
+  .nm { font-weight: 800; font-size: 46px; line-height: 1.1; }
+  .hd { color: var(--muted); font-size: 36px; }
+  .ptxt { font-size: 54px; line-height: 1.22; margin-top: 28px; font-weight: 500; }
+  .ptxt b { background: var(--hi); padding: 0 8px; border-radius: 8px; font-family: var(--mono); font-size: 46px; font-weight: 500; }
+  .ptxt .mn, .mn { color: var(--sky); font-weight: 700; }
+  .cursor { display: inline-block; width: 6px; height: .9em; background: var(--ink); vertical-align: -6px; margin-left: 4px; }
+  .check { display: flex; align-items: center; gap: 28px; padding: 26px 34px; font-size: 56px; font-weight: 700; border: 6px solid var(--ink); border-radius: 22px; background: var(--card); box-shadow: 10px 10px 0 var(--ink); }
+  .check .tk { width: 74px; height: 74px; border-radius: 50%; background: var(--good); border: 5px solid var(--ink); display: grid; place-items: center; flex: none; }
+  .check .tk svg { width: 44px; height: 44px; stroke: var(--card); stroke-width: 6; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  #wipe { position: absolute; top: -10%; bottom: -10%; width: 130%; left: -150%; visibility: hidden; z-index: 60; border-left: 8px solid var(--ink); border-right: 8px solid var(--ink); transform: skewX(-12deg); }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; z-index: 70; pointer-events: none; }
+  .conf { position: absolute; width: 26px; height: 40px; border: 3px solid var(--ink); border-radius: 4px; }
+  svg.def { position: absolute; width: 0; height: 0; }
+</style>
+</head>
+<body>
+<svg class="def" aria-hidden="true">
+  <symbol id="chute" viewBox="0 0 144 170">
+    <g stroke="#191730" stroke-width="2" fill="none"><path d="M20 80 L72 134"/><path d="M52 84 L72 134"/><path d="M92 84 L72 134"/><path d="M124 80 L72 134"/></g>
+    <path d="M16 82 Q72 -14 128 82 Q110 96 92 84 Q72 98 52 84 Q34 96 16 82Z" fill="#d9362b" stroke="#191730" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M52 84 Q58 34 72 6 Q86 34 92 84 Q72 96 52 84Z" fill="#fff4dc" stroke="#191730" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="50" y="132" width="44" height="34" fill="#d9a566" stroke="#191730" stroke-width="3"/>
+    <rect x="67" y="132" width="10" height="34" fill="#f6d44c" stroke="#191730" stroke-width="2"/>
+  </symbol>
+</svg>
+<div id="stage">
+  <div id="progress" class="stripe"></div>
+  <div id="brand"><i><svg viewBox="0 0 24 24"><path d="M12 3c3.6 4.4 6 7.2 6 10.2a6 6 0 0 1-12 0C6 10.2 8.4 7.4 12 3z"/></svg></i>Skydrop</div>
+
+  <!-- 1 hook -->
+  <section class="scene" data-s="0" data-e="2.4"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Tari × Bluesky</div>
+    <div class="cap a" data-a="pop" data-d="0.05" style="top:330px">Send<br>Tari to</div>
+    <div class="cap a" data-a="pop" data-d="0.35" style="top:640px"><em>anyone</em></div>
+    <div class="cap a" data-a="pop" data-d="0.6" style="top:800px">on <span class="r">Bluesky</span></div>
+    <div class="a" data-a="slam" data-rot="-8" data-d="1.1" style="left:90px;top:1400px;width:900px;text-align:center"><span class="stampbox" style="white-space:nowrap;font-size:58px;letter-spacing:8px">No wallet needed</span></div>
+    <svg class="a" data-a="float" data-d="0.9" viewBox="0 0 144 170" style="left:620px;top:1010px;position:absolute;width:300px;height:354px"><use href="#chute"/></svg>
+  </div></section>
+
+  <!-- 2 handle -->
+  <section class="scene" data-s="2.4" data-e="4.9"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Step 1</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Type their <em>handle</em></div>
+    <div class="card a" data-a="up" data-d="0.3" style="left:60px;right:60px;top:760px;padding:44px">
+      <div class="label" style="margin-bottom:22px"><span style="color:var(--red)">▸</span> To (Bluesky handle)</div>
+      <div style="border:6px solid var(--ink);border-radius:18px;background:var(--well);padding:30px 34px;font-size:64px;font-weight:500;min-height:118px"><span class="a" data-a="type" data-text="alice.bsky.social" data-d="0.45" data-dur="1.0" style="opacity:1"></span></div>
+    </div>
+    <div class="card a" data-a="pop" data-d="1.55" style="left:60px;right:60px;top:1130px;padding:34px;display:flex;gap:30px;align-items:center">
+      <div class="av" style="background:var(--hi);width:140px;height:140px;font-size:70px">A</div>
+      <div><div class="nm" style="font-size:58px">Alice</div><div class="hd" style="font-size:42px">@alice.bsky.social</div>
+        <div style="margin-top:14px;font-family:var(--mono);font-size:26px;letter-spacing:4px;color:var(--good);border:4px solid var(--good);display:inline-block;padding:2px 12px;border-radius:8px;transform:rotate(-3deg)">VERIFIED HANDLE</div></div>
+    </div>
+  </div></section>
+
+  <!-- 3 amount -->
+  <section class="scene" data-s="4.9" data-e="6.9"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Step 2</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Pick an <em>amount</em></div>
+    <div class="card a" data-a="up" data-d="0.25" style="left:60px;right:60px;top:760px;padding:50px;text-align:center">
+      <div class="a" data-a="count" data-to="5" data-d="0.4" data-dur="0.7" style="opacity:1;font-family:var(--serif);font-weight:800;font-size:300px;line-height:1;letter-spacing:-12px;font-variation-settings:'SOFT' 100,'WONK' 1,'opsz' 144">0</div>
+      <div class="label" style="font-size:44px;margin-top:6px">tTARI</div>
+    </div>
+    <div class="a" data-a="pop" data-d="0.9" style="position:absolute;left:60px;right:60px;top:1260px;display:flex;gap:26px;justify-content:center"><span class="chip">0.1</span><span class="chip">1</span><span class="chip" style="background:var(--hi)">5</span></div>
+    <div class="a" data-a="up" data-d="1.2" style="position:absolute;left:60px;right:60px;top:1420px;border:6px solid var(--ink);border-radius:20px;background:var(--hi);padding:26px 34px;box-shadow:10px 10px 0 var(--ink);font-size:48px;font-weight:700">Instant <span style="font-family:var(--mono);font-size:30px;background:var(--ink);color:var(--hi);padding:2px 14px;border-radius:6px;vertical-align:6px;margin-left:10px">TIPS</span><div style="font-size:36px;font-weight:500;color:#3b3550;margin-top:6px">They collect the moment they verify</div></div>
+  </div></section>
+
+  <!-- 4 send -->
+  <section class="scene" data-s="6.9" data-e="9.3"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Step 3</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Hit <span class="r">send</span></div>
+    <div class="a" data-a="press" data-d="0.35" style="position:absolute;left:60px;right:60px;top:600px"><div class="btn" style="width:100%;height:150px">Send 5 tTARI to @alice</div></div>
+    <svg class="a" data-a="fall" data-d="0.85" viewBox="0 0 144 170" style="position:absolute;left:350px;top:760px;width:380px;height:449px"><use href="#chute"/></svg>
+    <div class="card a" data-a="pop" data-d="1.2" style="left:130px;right:130px;top:1250px;height:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--well)">
+      <div class="label" style="color:var(--red)">Escrow contract</div>
+      <div style="font-family:var(--serif);font-weight:800;font-size:76px;letter-spacing:-2px;margin-top:6px">5 tTARI locked</div>
+    </div>
+    <div class="a" data-a="slam" data-rot="-7" data-d="1.7" style="left:150px;top:1530px;width:780px;text-align:center"><span class="stampbox" style="font-size:70px">Dispatched</span></div>
+  </div></section>
+
+  <!-- 5 bot -->
+  <section class="scene" data-s="9.3" data-e="11.7"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Then</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">A bot <em>tells them</em></div>
+    <div class="card post a" data-a="up" data-d="0.35" style="left:60px;right:60px;top:760px">
+      <div class="row"><div class="av" style="background:var(--sky);color:#fff">T</div><div><div class="nm">taridrop</div><div class="hd">@taridrop.bsky.social</div></div></div>
+      <div class="ptxt"><span class="mn">@alice.bsky.social</span> 5 tTARI is waiting for you 🎁<br>Collect it → <span class="mn">skydrop.tari.mw</span></div>
+      <div class="row" style="margin-top:36px;font-size:40px;color:var(--muted);gap:60px"><span>💬 1</span><span>🔁 3</span><span class="a" data-a="pop" data-d="1.0" style="opacity:0">❤️ 24</span></div>
+    </div>
+    <div class="a" data-a="pop" data-d="1.4" style="position:absolute;left:60px;right:60px;top:1330px;font-size:54px;font-weight:700;text-align:center">She sees it. She taps it.</div>
+  </div></section>
+
+  <!-- 6 prove -->
+  <section class="scene" data-s="11.7" data-e="14.5"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Claim</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Post <em>one line</em><br>to prove it’s her</div>
+    <div class="card post a" data-a="up" data-d="0.4" style="left:60px;right:60px;top:880px">
+      <div class="row"><div class="av" style="background:var(--hi)">A</div><div><div class="nm">Alice</div><div class="hd">@alice.bsky.social</div></div></div>
+      <div class="ptxt">Claiming my tTARI on Tari.<br><b><span class="a" data-a="type" data-text="tari-claim:9f3a7c41e0b2" data-d="0.9" data-dur="0.9" style="opacity:1"></span></b></div>
+    </div>
+    <div class="a" data-a="pop" data-d="2.0" style="position:absolute;left:60px;right:60px;top:1400px;font-size:50px;font-weight:700;text-align:center;line-height:1.15">The code is tied to <span style="color:var(--red)">her wallet key</span></div>
+  </div></section>
+
+  <!-- 7 verify -->
+  <section class="scene" data-s="14.5" data-e="18.7"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">The magic</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">The contract<br>checks <em>Bluesky’s</em><br>own signatures</div>
+    <div style="position:absolute;left:60px;right:60px;top:880px;display:grid;gap:26px">
+      <div class="check a" data-a="up" data-d="0.5"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Identity history</div>
+      <div class="check a" data-a="up" data-d="0.95"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Repo signature</div>
+      <div class="check a" data-a="up" data-d="1.4"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Path to her post</div>
+      <div class="check a" data-a="up" data-d="1.85"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Claim code in the post</div>
+    </div>
+    <div class="a" data-a="slam" data-rot="-5" data-d="2.7" style="left:60px;top:1540px;width:960px;text-align:center"><span class="stampbox" style="font-size:48px;letter-spacing:5px;padding:16px 30px 16px 40px;white-space:nowrap">No oracle · No middleman</span></div>
+  </div></section>
+
+  <!-- 8 collect -->
+  <section class="scene" data-s="18.7" data-e="21.6"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Then</div>
+    <div class="cap a" data-a="pop" data-d="0.05" style="top:330px">She <span class="r">collects</span></div>
+    <div class="card a" data-a="pop" data-d="0.35" style="left:60px;right:60px;top:760px;padding:60px 40px;text-align:center">
+      <div class="a" data-a="count" data-to="5" data-d="0.5" data-dur="0.8" style="opacity:1;font-family:var(--serif);font-weight:800;font-size:380px;line-height:.95;letter-spacing:-16px;font-variation-settings:'SOFT' 100,'WONK' 1,'opsz' 144">0</div>
+      <div class="label" style="font-size:48px;margin-top:10px">tTARI in her wallet</div>
+    </div>
+    <div class="a" data-a="slam" data-rot="-8" data-d="1.25" style="left:100px;top:1330px;width:880px;text-align:center"><span class="stampbox" style="font-size:100px">Delivered</span></div>
+    <div id="confetti"></div>
+  </div></section>
+
+  <!-- 9 no wallet -->
+  <section class="scene" data-s="21.6" data-e="24.2"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Never had a wallet?</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Skydrop makes<br>one. <em>Fees are<br>covered.</em></div>
+    <div style="position:absolute;left:60px;right:60px;top:1050px;display:grid;gap:26px">
+      <div class="check a" data-a="up" data-d="0.6"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Wallet made in the browser</div>
+      <div class="check a" data-a="up" data-d="1.0"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Network fee paid for you</div>
+      <div class="check a" data-a="up" data-d="1.4"><span class="tk"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Nothing to install</div>
+    </div>
+  </div></section>
+
+  <!-- 10 tip -->
+  <section class="scene" data-s="24.2" data-e="27.6"><div class="in">
+    <div class="num a" data-a="up" data-d="0" style="left:60px;top:250px">Bonus</div>
+    <div class="cap m a" data-a="pop" data-d="0.05" style="top:330px">Or just <em>tip by<br>posting</em></div>
+    <div class="card post a" data-a="up" data-d="0.4" style="left:60px;right:60px;top:860px">
+      <div class="row"><div class="av" style="background:var(--hi)">A</div><div><div class="nm">Alice</div><div class="hd">@alice.bsky.social</div></div></div>
+      <div class="ptxt"><span class="mn">@taridrop.bsky.social</span> tip <span class="mn">@bob.bsky.social</span> <b><span class="a" data-a="type" data-text="1" data-d="0.9" data-dur="0.2" style="opacity:1"></span></b></div>
+    </div>
+    <div class="card post a" data-a="up" data-d="1.8" style="left:120px;right:60px;top:1230px;background:var(--well)">
+      <div class="row"><div class="av" style="background:var(--sky);color:#fff;width:90px;height:90px;font-size:44px">T</div><div class="nm" style="font-size:40px">taridrop</div></div>
+      <div class="ptxt" style="font-size:48px">✅ Tipped <b>1 tTARI</b> to <span class="mn">@bob.bsky.social</span></div>
+    </div>
+    <div class="a" data-a="pop" data-d="2.5" style="position:absolute;left:60px;right:60px;top:1560px;font-size:46px;font-weight:700;text-align:center">Her post is the proof. The bot can’t fake it.</div>
+  </div></section>
+
+  <!-- 11 cta -->
+  <section class="scene" data-s="27.6" data-e="31"><div class="in">
+    <div class="cap a" data-a="pop" data-d="0.05" style="top:300px;text-align:center">Try it<br><span class="r">now</span></div>
+    <div class="a" data-a="slam" data-rot="-4" data-d="0.5" style="left:40px;top:780px;width:1000px;text-align:center"><div class="card" style="position:relative;display:inline-block;padding:40px 60px"><div style="font-family:var(--serif);font-weight:800;font-size:112px;letter-spacing:-4px;font-variation-settings:'SOFT' 100,'WONK' 1">skydrop.tari.mw</div></div></div>
+    <div class="a" data-a="up" data-d="1.1" style="position:absolute;left:60px;right:60px;top:1130px;text-align:center;font-size:52px;font-weight:700;line-height:1.3">Send Tari to anyone on Bluesky.<br>They prove it’s them. They collect.</div>
+    <div class="a" data-a="pop" data-d="1.7" style="position:absolute;left:60px;right:60px;top:1420px;text-align:center"><span class="stampbox" style="font-size:38px;letter-spacing:4px;padding:14px 26px 14px 34px;border-width:8px;white-space:nowrap">Testnet · tTARI has no value</span></div>
+  </div></section>
+
+  <div id="wipe" class="stripe"></div>
+  <div id="flash"></div>
+</div>
+<script>
+  const TOTAL = 31;
+  const scenes = [...document.querySelectorAll(".scene")].map((el) => ({ el, s: +el.dataset.s, e: +el.dataset.e, anims: [...el.querySelectorAll("[data-a]")] }));
+  const cuts = scenes.slice(1).map((s) => s.s);
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const easeOutCubic = (p) => 1 - Math.pow(1 - p, 3);
+  const easeOutBack = (p) => { const c1 = 2.2, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
+  const easeOutExpo = (p) => (p === 1 ? 1 : 1 - Math.pow(2, -10 * p));
+
+  // confetti, seeded so every render is identical
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const conf = [];
+  const confHost = document.getElementById("confetti");
+  const colors = ["#d9362b", "#2350d8", "#f6d44c", "#fffaf0", "#1d7a52"];
+  for (let i = 0; i < 70; i++) {
+    const el = document.createElement("div");
+    el.className = "conf";
+    el.style.background = colors[i % colors.length];
+    confHost.appendChild(el);
+    conf.push({ el, x0: 540 + (rnd() - 0.5) * 200, y0: 1000, vx: (rnd() - 0.5) * 1700, vy: -(rnd() * 1500 + 500), r: rnd() * 720, vr: (rnd() - 0.5) * 900 });
+  }
+
+  function applyAnim(el, lt) {
+    const d = +el.dataset.d || 0, dur = +el.dataset.dur || 0.38, kind = el.dataset.a;
+    const raw = (lt - d) / dur, p = clamp(raw);
+    const rot = +el.dataset.rot || 0;
+    if (kind === "type") {
+      const txt = el.dataset.text, n = Math.round(txt.length * clamp(raw));
+      el.innerHTML = txt.slice(0, n).replace(/ /g, "&nbsp;") + (raw > 0 && raw < 1.6 ? '<span class="cursor"></span>' : "");
+      return;
+    }
+    if (kind === "count") {
+      el.textContent = Math.round(+el.dataset.to * easeOutCubic(p));
+      return;
+    }
+    if (raw <= 0) { el.style.opacity = 0; return; }
+    el.style.opacity = Math.min(1, p * 5);
+    if (kind === "pop") el.style.transform = `scale(${0.3 + 0.7 * easeOutBack(p)})`;
+    else if (kind === "up") el.style.transform = `translateY(${(1 - easeOutCubic(p)) * 110}px)`;
+    else if (kind === "slam") { const q = clamp(raw * 1.6); el.style.transform = `rotate(${rot}deg) scale(${1 + 2.2 * (1 - easeOutExpo(q))})`; el.style.opacity = q > 0 ? 1 : 0; }
+    else if (kind === "float") el.style.transform = `translateY(${Math.sin(lt * 4) * 16}px) rotate(${Math.sin(lt * 3) * 4}deg) scale(${0.5 + 0.5 * easeOutBack(p)})`;
+    else if (kind === "press") { const q = clamp((lt - d - 0.45) / 0.12); el.style.transform = `translateY(${(1 - easeOutCubic(p)) * 110 + (q < 1 ? q : 1 - clamp((lt - d - 0.6) / 0.12)) * 10}px) scale(${1 - 0.04 * (q < 1 ? q : 0)})`; }
+    else if (kind === "fall") { const y = (1 - easeOutCubic(clamp(raw / 2.2))) * -1000; el.style.transform = `translateY(${y}px) rotate(${Math.sin(lt * 6) * 3 * (1 - p)}deg) scale(${1 - 0.5 * clamp((lt - d - 0.2) / 0.9) * 0})`; el.style.opacity = 1; }
+  }
+
+  window.render = function (t) {
+    document.getElementById("progress").style.width = (t / TOTAL) * 100 + "%";
+    for (const sc of scenes) {
+      const on = t >= sc.s && t < sc.e;
+      sc.el.style.display = on ? "block" : "none";
+      if (!on) continue;
+      const lt = t - sc.s;
+      const inner = sc.el.firstElementChild;
+      inner.style.transform = `scale(${1 + 0.035 * (lt / (sc.e - sc.s))})`;
+      for (const el of sc.anims) applyAnim(el, lt);
+      if (sc.el.querySelector("#confetti")) {
+        const ct = Math.max(0, lt - 1.2);
+        for (const c of conf) {
+          c.el.style.opacity = ct > 0 ? 1 : 0;
+          c.el.style.transform = `translate(${c.x0 + c.vx * ct}px, ${c.y0 + c.vy * ct + 1900 * ct * ct * 0.5}px) rotate(${c.r + c.vr * ct}deg)`;
+        }
+      }
+    }
+    // stripe wipe across every cut, and a tiny flash on the slams
+    let w = -150, on = false;
+    for (const c of cuts) { const q = (t - (c - 0.13)) / 0.26; if (q > 0 && q < 1) { w = -150 + 270 * q; on = true; } }
+    const wp = document.getElementById("wipe");
+    wp.style.left = w + "%";
+    wp.style.visibility = on ? "visible" : "hidden";
+    const slams = [1.1, 8.6, 17.2, 19.95, 28.1];
+    let f = 0;
+    for (const s of slams) { const q = (t - s) / 0.12; if (q > 0 && q < 1) f = Math.max(f, 0.35 * (1 - q)); }
+    document.getElementById("flash").style.opacity = f;
+  };
+  window.TOTAL = TOTAL;
+  window.CUTS = cuts;
+  window.ready = document.fonts.ready.then(() => { window.render(0); return true; });
+</script>
+</body>
+</html>

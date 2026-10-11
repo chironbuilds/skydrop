@@ -1,0 +1,1 @@
+{"name":"skydrop-video","private":true,"type":"module","scripts":{"build":"node build.mjs"},"dependencies":{"ffmpeg-static":"^5.2.0","puppeteer-core":"^23.11.1"}}
