@@ -80,7 +80,12 @@ export interface Deposit {
   challenge: string;
   /** Epochs the claim post must stay up after the claim starts (0 for none). */
   hold: number;
+  /** The epoch the gift was made. A phrase gift nobody answers for about three days can be swept back. */
+  created: number;
 }
+
+/** After this many epochs an unanswered phrase gift can be returned to its sender by anyone. */
+export const SWEEP_AFTER_EPOCHS = 72;
 
 export interface Pending {
   claimant: string;
@@ -99,6 +104,8 @@ export interface Escrow {
   binding: string | null;
   /** The claim post's rkey, the epoch it was last proven, and the repo snapshot times (µs) at the start and at the last proof. */
   held: { rkey: string; epoch: number; startRev: number; rev: number } | null;
+  /** The owner key (hex) of the linked wallet: the key that signs a decline. */
+  bindingOwner: string | null;
   /** A link that has been submitted but has not taken effect yet. */
   bindingPending: { address: string; epoch: number } | null;
 }
@@ -120,10 +127,11 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
   return {
     epoch,
     maxWindow: Number(state[2]),
-    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) })),
+    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0), created: Number(d[6] ?? 0) })),
     pending: pend ? { claimant: bytesHex(pend[0]), len: Number(pend[2]), start: Number(pend[3]) } : null,
     claimText: String((state[11] as Record<string, string> | undefined)?.[did] ?? ""),
     binding: bindingOf(state[12], did, epoch),
+    bindingOwner: bindingOwnerOf(state[12], did, epoch),
     bindingPending: pendingBindingOf(state[12], did, epoch),
     held: heldOf(state[15], did),
   };
@@ -152,6 +160,13 @@ function bindingOf(map: Cbor, did: string, epoch: number): string | null {
   return old === CONFIG.component ? null : old;
 }
 
+function bindingOwnerOf(map: Cbor, did: string, epoch: number): string | null {
+  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+  if (!b) return null;
+  if (epoch >= Number(b[1])) return bytesHex(b[3]);
+  return addressText(b[2]) === CONFIG.component ? null : bytesHex(b[4]);
+}
+
 function pendingBindingOf(map: Cbor, did: string, epoch: number): { address: string; epoch: number } | null {
   const b = (map as Record<string, Cbor[]> | undefined)?.[did];
   return b && epoch < Number(b[1]) ? { address: addressText(b[0]), epoch: Number(b[1]) } : null;
@@ -165,9 +180,9 @@ export async function readBinding(provider: IndexerProvider, did: string): Promi
 }
 
 /** Links the Bluesky account in `proof` to `address`: the proof is a post that carries the bind code for that address. */
-export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: string, owner: Uint8Array, onStage?: (s: string) => void): Promise<TxOutcome> {
   const instructions = [
-    call(CONFIG.component, "bind", [lit(proof.did), componentAddressLiteral(address as never), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
+    call(CONFIG.component, "bind", [lit(proof.did), componentAddressLiteral(address as never), lit(owner), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
   ];
   return run(wallet, instructions, 120_000n, onStage);
 }
@@ -331,6 +346,43 @@ export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: s
   const owner = wallet.componentAddress;
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
   return run(wallet, instructions, 30_000n, onStage, payableByEpoch);
+}
+
+/** The owner key inside a wallet address (otl_…). */
+export const ownerOf = (walletAddress: string): Uint8Array => new Uint8Array(parseOotleAddress(walletAddress).owner_key);
+
+/** Gifts returned to `keyHex` (declined or swept), by component state index 18. */
+export async function readReturnedFor(provider: IndexerProvider, keyHex: string): Promise<bigint> {
+  const sub = await provider.getSubstate(CONFIG.component);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  const map = (comp?.body.state[18] ?? {}) as Record<string, number>;
+  return BigInt(map[keyHex] ?? 0);
+}
+
+/** Takes back everything that was returned to this wallet. */
+export async function takeReturned(wallet: Wallet, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const instructions = [call(CONFIG.component, "take_returned", [lit(wallet.publicKey)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];
+  return run(wallet, instructions, 40_000n, onStage);
+}
+
+/** Declines a waiting gift (from the linked wallet). It goes back to its sender. */
+export async function declineDeposit(wallet: Wallet, did: string, d: Deposit, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const args = [lit(did), lit(fromHex(d.sender)), amountLiteral(d.amount), lit(d.refundEpoch)];
+  return run(wallet, [call(CONFIG.component, "decline", args)], 60_000n, onStage);
+}
+
+export async function declineDepositSponsored(wallet: Wallet, did: string, d: Deposit, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  return sendSponsored(
+    account,
+    (b) => b.addFeeInstruction(call(CONFIG.component, "decline_sponsored", [lit(did), lit(fromHex(d.sender)), amountLiteral(d.amount), lit(d.refundEpoch), amountLiteral(SPONSOR_FEE)])),
+    onStage,
+  );
+}
+
+/** Sends phrase gifts nobody answered for about three days back to their senders. Anyone may do it. */
+export async function sweepDeposits(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  return run(wallet, [call(CONFIG.component, "sweep", [lit(did)])], 60_000n, onStage);
 }
 
 /** The account component behind a wallet address (otl_…). */

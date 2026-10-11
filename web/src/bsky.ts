@@ -49,9 +49,12 @@ export async function claimCode(component: string, did: string, claimant: Uint8A
 }
 
 /** What an owner posts to link `did` to the Ootle account `address`. */
-export async function bindCode(component: string, did: string, address: string): Promise<string> {
-  const enc = new TextEncoder();
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(`tari-bsky-bind:v1:${component}:${did}:${address}`)));
+export async function bindCode(component: string, did: string, address: string, owner: Uint8Array): Promise<string> {
+  const head = new TextEncoder().encode(`tari-bsky-bind:v1:${component}:${did}:${address}:`);
+  const data = new Uint8Array(head.length + owner.length);
+  data.set(head);
+  data.set(owner, head.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return `tari-bind:${toHex(digest.slice(0, 16))}`;
 }
 

@@ -14,13 +14,11 @@ Reviewed 2026-10-11: the escrow contract (`bskyclaim`), the verifier (`atp-verif
 | 5 | Medium | **Bot could be pointed at internal addresses (SSRF).** The data host used to fetch a post comes from the account's own identity record, so any account owner could choose it, including `127.0.0.1` where other services listen. Responses were also unbounded. | Only public `https` hosts are contacted (no addresses, no internal names, no odd ports, no redirects), with a 1 MB limit and 15 s timeout. The systemd unit also denies the bot all loopback and private ranges except the local DNS stub, so a DNS trick cannot reach them. |
 | 6 | Medium | **The bot repeated sender-chosen text as live mentions and links.** A challenge phrase like `@someone buy http://…` was echoed by the bot's account and made clickable. | Sender text is quoted but never turned into mentions or links. |
 | 7 | Low | **Envelope registry records could be pre-registered by anyone**, including the amount text shown on the preview. | The bot and the sender's own list always show the real on-chain amount. The registry now has a per-address rate limit. (See open items for the rest.) |
+| 9 | Medium | **Spam could fill an account's 32 deposit slots**, and unanswered phrase deposits could not be cleared by the owner. | At most 4 gifts per sender and 8 phrase gifts per account; the owner of a linked wallet can decline a gift (it goes back to its sender); phrase gifts nobody acts on for about 3 days can be swept back by anyone. |
 | 8 | Low | **`/og` image rendering could be driven with unlimited unique queries** (CPU, font downloads), and the cache key included junk parameters. | The cache key is built from the cleaned values only; new pictures are rate limited per address. |
 
 ## Open items (known, not fixed)
 
-- **Dust and phrase spam can fill an account's 32 deposit slots.** Deposits whose phrase is never posted cannot be
-  cleared by the account owner, only refunded by their sender, so a cheap attacker can block new gifts to someone.
-  Plan: let the account owner decline a deposit (refunding the sender) with a signed post, and raise the minimum deposit.
 - **Envelope notes can be pre-registered by anyone** (first write wins) for a predictable deposit. The text is cleaned
   and capped at 80 characters, but it can be offensive or misleading. Plan: commit a hash of the envelope in the
   deposit so the registry can be checked against the chain.

@@ -390,6 +390,27 @@ impl Env {
         })
     }
 
+    fn decline(&mut self, who: &User, acct: &Account, sender: &User, amount: u64, refund_epoch: u64) -> Option<String> {
+        let (c, did, key) = (self.component, acct.did.clone(), sender.id);
+        self.run(who, |t| t.call_method(c, "decline", args![did, key, Amount::from(amount), refund_epoch]))
+    }
+
+    fn returned(&mut self, sender: &User) -> Amount {
+        self.test.call_method(self.component, "returned_for", args![sender.id], vec![])
+    }
+
+    fn take_returned(&mut self, sender: &User) -> Option<String> {
+        let (c, id, account) = (self.component, sender.id, sender.account);
+        self.run(sender, |t| {
+            t.call_method(c, "take_returned", args![id]).put_last_instruction_output_on_workspace("back").call_method(account, "deposit", args![Workspace("back")])
+        })
+    }
+
+    fn sweep(&mut self, who: &User, did: &str) -> Option<String> {
+        let (c, did) = (self.component, did.to_string());
+        self.run(who, |t| t.call_method(c, "sweep", args![did]))
+    }
+
     fn challenge_bind(&mut self, who: &User, acct: &Account) -> Option<String> {
         let (c, did, ops) = (self.component, acct.did.clone(), bytes_list(&acct.ops));
         self.run(who, |t| t.call_method(c, "challenge_bind", args![did, ops]))
@@ -410,17 +431,17 @@ impl Env {
 
     /// Links `who`'s own account to `acct`'s DID with an early post, so later claim posts count as challenge posts.
     fn link_first(&mut self, who: &User, acct: &Account) {
-        let post = self.bind_post(acct, who.account, "3k0000000000a");
-        assert_eq!(self.bind(who, acct, who.account, &post), None);
+        let post = self.bind_post(acct, who.account, who.id, "3k0000000000a");
+        assert_eq!(self.bind(who, acct, who.account, who.id, &post), None);
         // a binding only takes effect after its delay
         set_epoch(&mut self.test, 3);
     }
 
-    fn bind_text(&mut self, did: &str, address: ComponentAddress) -> String {
-        self.test.call_method(self.component, "expected_bind_text", args![did.to_string(), address], vec![])
+    fn bind_text(&mut self, did: &str, address: ComponentAddress, owner: RistrettoPublicKeyBytes) -> String {
+        self.test.call_method(self.component, "expected_bind_text", args![did.to_string(), address, owner], vec![])
     }
 
-    fn bind(&mut self, who: &User, acct: &Account, address: ComponentAddress, post: &Post) -> Option<String> {
+    fn bind(&mut self, who: &User, acct: &Account, address: ComponentAddress, owner: RistrettoPublicKeyBytes, post: &Post) -> Option<String> {
         let c = self.component;
         let did = acct.did.clone();
         let (ops, commit, nodes, record, rkey) = (
@@ -430,15 +451,15 @@ impl Env {
             Bytes::from_vec(post.record.clone()),
             post.rkey.clone(),
         );
-        self.run(who, |t| t.call_method(c, "bind", args![did, address, ops, commit, nodes, record, rkey]))
+        self.run(who, |t| t.call_method(c, "bind", args![did, address, owner, ops, commit, nodes, record, rkey]))
     }
 
     fn bound(&mut self, did: &str) -> Option<ComponentAddress> {
         self.test.call_method(self.component, "binding_for", args![did.to_string()], vec![])
     }
 
-    fn bind_post(&mut self, acct: &Account, address: ComponentAddress, rkey: &str) -> Post {
-        let code = self.bind_text(&acct.did, address);
+    fn bind_post(&mut self, acct: &Account, address: ComponentAddress, owner: RistrettoPublicKeyBytes, rkey: &str) -> Post {
+        let code = self.bind_text(&acct.did, address, owner);
         acct.post(&format!("linking my wallet {code}"), rkey)
     }
 
@@ -847,7 +868,7 @@ impl Env {
         self.test.call_method(self.component, "budget_for", args![did.to_string(), owner], vec![])
     }
 
-    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)> {
+    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64)> {
         self.test.call_method(self.component, "deposits_for", args![did.to_string()], vec![])
     }
 }
@@ -1127,9 +1148,9 @@ fn a_bound_account_is_paid_directly_when_nothing_is_asked_of_it() {
     let (sender, wallet, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
     assert_eq!(env.bound(&acct.did), None);
-    let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
+    let post = env.bind_post(&acct, wallet.account, wallet.id, "3kaaaaaaaaaaa");
     // anyone can relay the bind: the post is the authority
-    assert_eq!(env.bind(&relayer, &acct, wallet.account, &post), None);
+    assert_eq!(env.bind(&relayer, &acct, wallet.account, wallet.id, &post), None);
     set_epoch(&mut env.test, 3);
     assert_eq!(env.bound(&acct.did), Some(wallet.account));
 
@@ -1153,8 +1174,8 @@ fn a_claim_for_a_bound_account_pays_the_bound_address() {
     let mut env = Env::new();
     let (sender, wallet, claimant) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
-    assert_eq!(env.bind(&claimant, &acct, wallet.account, &post), None);
+    let post = env.bind_post(&acct, wallet.account, wallet.id, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&claimant, &acct, wallet.account, wallet.id, &post), None);
     set_epoch(&mut env.test, 3);
     assert_eq!(env.deposit_with(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari"), None);
 
@@ -1173,14 +1194,14 @@ fn a_new_binding_waits_and_an_old_post_cannot_move_it_back() {
     let mut env = Env::new();
     let (sender, first, second, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    let p1 = env.bind_post(&acct, first.account, "3kaaaaaaaaaaa");
-    assert_eq!(env.bind(&relayer, &acct, first.account, &p1), None);
+    let p1 = env.bind_post(&acct, first.account, first.id, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&relayer, &acct, first.account, first.id, &p1), None);
     // nothing is bound until the delay has passed
     assert_eq!(env.bound(&acct.did), None);
     set_epoch(&mut env.test, 3);
     assert_eq!(env.bound(&acct.did), Some(first.account));
-    let p2 = env.bind_post(&acct, second.account, "3kbbbbbbbbbbb");
-    assert_eq!(env.bind(&relayer, &acct, second.account, &p2), None);
+    let p2 = env.bind_post(&acct, second.account, second.id, "3kbbbbbbbbbbb");
+    assert_eq!(env.bind(&relayer, &acct, second.account, second.id, &p2), None);
     // the old binding still applies until the delay passes
     assert_eq!(env.bound(&acct.did), Some(first.account));
     let f0 = env.balance(&first);
@@ -1194,7 +1215,7 @@ fn a_new_binding_waits_and_an_old_post_cannot_move_it_back() {
     assert_eq!(env.balance(&second), s0 + Amount::from(1_000_000u64));
 
     // replaying the earlier post is refused
-    expect_err(env.bind(&relayer, &acct, first.account, &p1), "already used");
+    expect_err(env.bind(&relayer, &acct, first.account, first.id, &p1), "already used");
 }
 
 #[test]
@@ -1203,13 +1224,13 @@ fn a_bind_needs_the_owners_post_for_that_exact_address() {
     let (wallet, other, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
     // a post for a different address does not bind this one
-    let wrong = env.bind_post(&acct, other.account, "3kaaaaaaaaaaa");
-    expect_err(env.bind(&relayer, &acct, wallet.account, &wrong), "bind code");
+    let wrong = env.bind_post(&acct, other.account, other.id, "3kaaaaaaaaaaa");
+    expect_err(env.bind(&relayer, &acct, wallet.account, wallet.id, &wrong), "bind code");
     // someone else's post, even with the right text, fails for this DID
     let intruder = Account::new();
-    let code = env.bind_text(&acct.did, wallet.account);
+    let code = env.bind_text(&acct.did, wallet.account, wallet.id);
     let forged = intruder.post(&format!("hi {code}"), "3kaaaaaaaaaaa");
-    assert!(env.bind(&relayer, &acct, wallet.account, &forged).is_some());
+    assert!(env.bind(&relayer, &acct, wallet.account, wallet.id, &forged).is_some());
     assert_eq!(env.bound(&acct.did), None);
 }
 
@@ -1219,8 +1240,8 @@ fn binding_state_survives_a_realistic_epoch() {
     set_epoch(&mut env.test, 12_125);
     let (sender, wallet, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
-    let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
-    assert_eq!(env.bind(&relayer, &acct, wallet.account, &post), None);
+    let post = env.bind_post(&acct, wallet.account, wallet.id, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&relayer, &acct, wallet.account, wallet.id, &post), None);
     set_epoch(&mut env.test, 12127);
     let other = Account::new();
     assert_eq!(env.deposit(&sender, &other.did, 1_000_000, 12_200, WINDOW), None);
@@ -1303,8 +1324,8 @@ fn a_linked_account_claims_with_just_the_phrase_and_anyone_can_finish_it() {
     expect_err(env.start_claim(&helper, helper.id, &acct, &bare), "claim code");
 
     // link first, then the phrase alone is enough
-    let link = env.bind_post(&acct, wallet.account, "3kbbbbbbbbbbb");
-    assert_eq!(env.bind(&helper, &acct, wallet.account, &link), None);
+    let link = env.bind_post(&acct, wallet.account, wallet.id, "3kbbbbbbbbbbb");
+    assert_eq!(env.bind(&helper, &acct, wallet.account, wallet.id, &link), None);
     set_epoch(&mut env.test, 3);
     let post = acct.post("Make Tari Great Again", "3kccccccccccc");
     assert_eq!(env.start_claim(&helper, helper.id, &acct, &post), None);
@@ -1340,9 +1361,9 @@ fn a_phrase_deposit_needs_a_linked_wallet_and_a_separate_post() {
     assert_eq!(env.escrowed(), Amount::from(2_000_000u64));
 
     // one post that both links and carries the phrase links, but does not count as the challenge
-    let bind = env.bind_text(&acct.did, alice.account);
+    let bind = env.bind_text(&acct.did, alice.account, alice.id);
     let both = acct.post(&format!("I love Tari {bind}"), "3kbbbbbbbbbbb");
-    assert_eq!(env.bind(&alice, &acct, alice.account, &both), None);
+    assert_eq!(env.bind(&alice, &acct, alice.account, alice.id, &both), None);
     set_epoch(&mut env.test, 3);
     assert_eq!(env.start_claim(&alice, alice.id, &acct, &both), None);
     expect_err(env.finalize(&alice, &acct.did), "required phrase");
@@ -1366,8 +1387,8 @@ fn a_stale_key_cannot_bind_instantly_and_a_newer_chain_cancels_it() {
     acct.rotate_repo_key();
 
     // the thief binds the account to their own address with the old chain
-    let post = env.bind_post(&stale, attacker.account, "3kaaaaaaaaaaa");
-    assert_eq!(env.bind(&helper, &stale, attacker.account, &post), None);
+    let post = env.bind_post(&stale, attacker.account, attacker.id, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&helper, &stale, attacker.account, attacker.id, &post), None);
     // it does not take effect at once, so a gift sent now is escrowed, not paid to the thief
     assert_eq!(env.bound(&acct.did), None);
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
@@ -1379,11 +1400,11 @@ fn a_stale_key_cannot_bind_instantly_and_a_newer_chain_cancels_it() {
     set_epoch(&mut env.test, 6);
     assert_eq!(env.bound(&acct.did), None);
     // and the old chain is refused from then on
-    let again = env.bind_post(&stale, attacker.account, "3kbbbbbbbbbbb");
-    expect_err(env.bind(&helper, &stale, attacker.account, &again), "stale operation chain");
+    let again = env.bind_post(&stale, attacker.account, attacker.id, "3kbbbbbbbbbbb");
+    expect_err(env.bind(&helper, &stale, attacker.account, attacker.id, &again), "stale operation chain");
     // the real owner can still bind with the current chain
-    let mine = env.bind_post(&acct, victim.account, "3kccccccccccc");
-    assert_eq!(env.bind(&helper, &acct, victim.account, &mine), None);
+    let mine = env.bind_post(&acct, victim.account, victim.id, "3kccccccccccc");
+    assert_eq!(env.bind(&helper, &acct, victim.account, victim.id, &mine), None);
     // a shorter (stale) chain cannot cancel a binding made with the current one
     expect_err(env.challenge_bind(&helper, &stale), "shorter");
     set_epoch(&mut env.test, 8);
@@ -1406,4 +1427,87 @@ fn sponsored_fees_are_paid_back_from_the_account_that_used_them() {
     let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
     expect_err(sponsored_start(&mut env, &sk, id, &acct, &post), "too small to cover");
     assert_eq!(env.fee_balance(), Amount::from(2_000_000u64));
+}
+
+#[test]
+fn a_linked_owner_declines_a_gift_and_the_sender_takes_it_back() {
+    let mut env = Env::new();
+    let (sender, owner, stranger) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    // an account that has not linked a wallet cannot decline
+    assert_eq!(env.deposit_with(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari"), None);
+    expect_err(env.decline(&owner, &acct, &sender, 2_000_000, 100), "link your wallet first");
+
+    env.link_first(&owner, &acct);
+    // only the linked wallet's owner can decline
+    assert!(env.decline(&stranger, &acct, &sender, 2_000_000, 100).is_some());
+    assert_eq!(env.escrowed(), Amount::from(2_000_000u64));
+    assert_eq!(env.decline(&owner, &acct, &sender, 2_000_000, 100), None);
+    // the slot is free and the money is the sender's to take back
+    assert_eq!(env.deposits_for(&acct.did).len(), 0);
+    assert_eq!(env.returned(&sender), Amount::from(2_000_000u64));
+    expect_err(env.take_returned(&stranger), "nothing has been returned");
+    let before = env.balance(&sender);
+    assert_eq!(env.take_returned(&sender), None);
+    assert_eq!(env.balance(&sender), before + Amount::from(2_000_000u64));
+    assert_eq!(env.escrowed(), Amount::zero());
+    assert_eq!(env.returned(&sender), Amount::zero());
+    // and a deposit that is not there cannot be declined twice
+    expect_err(env.decline(&owner, &acct, &sender, 2_000_000, 100), "no deposits for this account");
+}
+
+#[test]
+fn phrase_gifts_nobody_answers_are_swept_back_and_cannot_fill_an_account() {
+    let mut env = Env::new();
+    let (sender, helper) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    // one sender cannot fill the list by themselves
+    for _ in 0..4 {
+        assert_eq!(env.deposit_with(&sender, &acct.did, 1_000_000, 100, 0, "never posted"), None);
+    }
+    expect_err(env.deposit_with(&sender, &acct.did, 1_000_000, 100, 0, "never posted"), "several gifts waiting");
+    // and only a few of an account's slots can wait on a phrase
+    for _ in 0..4 {
+        let other = user(&mut env.test);
+        assert_eq!(env.deposit_with(&other, &acct.did, 1_000_000, 100, 0, "never posted"), None);
+    }
+    let last = user(&mut env.test);
+    expect_err(env.deposit_with(&last, &acct.did, 1_000_000, 100, 0, "never posted"), "waiting on a phrase");
+    // plain gifts still get in
+    assert_eq!(env.deposit(&last, &acct.did, 1_000_000, 100, 0), None);
+
+    // nothing is swept early; after about three days anyone can send the phrase gifts back
+    expect_err(env.sweep(&helper, &acct.did), "nothing has expired");
+    set_epoch(&mut env.test, 80);
+    assert_eq!(env.sweep(&helper, &acct.did), None);
+    assert_eq!(env.returned(&sender), Amount::from(4_000_000u64));
+    assert_eq!(env.deposits_for(&acct.did).len(), 1, "the plain gift stays");
+    assert_eq!(env.take_returned(&sender), None);
+}
+
+#[test]
+fn a_sponsored_decline_is_paid_back_out_of_the_returned_gift() {
+    let mut env = Env::new();
+    let (sender, funder) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    env.fund_sponsor(&funder, 2_000_000);
+    let (sk, id) = bare_claimant(&mut env);
+    let (c, did, key) = (env.component, acct.did.clone(), sender.id);
+    // a wallet with no account of its own links first; its account is created by the first sponsored payout elsewhere,
+    // so link a funded user's address with the bare key as the owner
+    let owner_user = user(&mut env.test);
+    let post = env.bind_post(&acct, owner_user.account, id, "3k0000000000a");
+    assert_eq!(env.bind(&owner_user, &acct, owner_user.account, id, &post), None);
+    set_epoch(&mut env.test, 3);
+    assert_eq!(env.deposit_with(&sender, &acct.did, 1_000_000, 100, 0, "I love Tari"), None);
+    env.test.enable_fees();
+    let tx = Transaction::builder_localnet(env.test.current_epoch())
+        .with_fee_instructions_builder(|b| b.call_method(c, "decline_sponsored", args![did, key, Amount::from(1_000_000u64), 100u64, Amount::from(60_000u64)]))
+        .with_seal_signer_authorized(true)
+        .build_and_seal(&sk);
+    let r = env.test.execute_and_commit_on_success(tx, vec![]);
+    env.test.disable_fees();
+    assert_eq!(r.finalize.result.any_reject().map(|x| format!("{x:?}")), None);
+    assert_eq!(env.returned(&sender), Amount::from(1_000_000u64 - 60_000));
+    assert!(env.fee_balance() > Amount::from(1_900_000u64), "the vault is repaid");
 }

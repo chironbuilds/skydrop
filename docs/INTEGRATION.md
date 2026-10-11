@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (30 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (33 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
@@ -284,3 +284,11 @@ For a linked account the claim post needs no `tari-claim:` code, only the sender
 **Sponsored fees.** Each sponsored call is recorded against the account (state index 17) and repaid out of its payout or refund; its escrow must cover everything it has drawn.
 
 See `docs/SECURITY.md` for the review behind these rules.
+
+## Declining, returned gifts and sweeping
+
+- `bind(did, address, owner, …)` now also commits to the **owner key of the linked wallet** (the bind code covers address and owner), and the binding stores it (state index 12 holds `(address, effective epoch, replaced address, owner, replaced owner)`).
+- `decline(did, sender, amount, refund_epoch)` must be signed by that owner key, so an account has to link a wallet before it can decline. It removes the deposit from the list (freeing the slot) and credits `returned[sender]` (state index 18). `decline_sponsored(…, fee)` does the same from the fee phase, with the fee repaid out of the returned amount.
+- `take_returned(sender)` (signed by the sender) withdraws everything returned to them; `returned_for(sender)` reads it.
+- `sweep(did)` (anyone) returns phrase deposits that are 72 epochs old to their senders, unless a claim for the account is in progress.
+- A sender can have at most 4 gifts waiting for one account, and at most 8 of an account's 32 slots may wait on a phrase. Deposits carry the epoch they were made (7th element).

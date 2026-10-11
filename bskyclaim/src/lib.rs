@@ -24,6 +24,9 @@
 //!   link post (the link post itself never counts), so linking and the challenge are two separate steps.
 //! * For a linked account the claim post needs no claim code: whoever submits it, the money goes to the
 //!   linked address. Such a claim can only be restarted by a newer post, so a copied old post cannot reset it.
+//! * A linked account's owner can decline a waiting deposit by signing from the linked wallet (an account that has
+//!   not linked a wallet has to link first). The money goes into a returned balance its sender takes back. Phrase
+//!   deposits nobody answers for a few days can be swept back to their senders by anyone.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
 use atp_verify::{commit_rev_micros, record_text, sha256, verify_plc_chain, verify_record};
@@ -39,6 +42,12 @@ const COLLECTION: &str = "app.bsky.feed.post";
 const MAX_OPS: usize = 16;
 const MAX_NODES: usize = 32;
 const MAX_DEPOSITS_PER_DID: usize = 32;
+/// Gifts one sender may have waiting for one account, and how many of an account's slots may wait on a phrase, so
+/// a few cheap deposits cannot fill an account up.
+const MAX_PER_SENDER: usize = 4;
+const MAX_PHRASE_DEPOSITS: usize = 8;
+/// A phrase deposit nobody has acted on for this many epochs (about three days) can be swept back to its sender.
+const SWEEP_AFTER_EPOCHS: u64 = 72;
 /// Longest challenge phrase a sender may attach to a deposit (bytes).
 const MAX_CHALLENGE: usize = 80;
 /// Longest claim post the contract keeps for checking challenges (bytes). Bluesky allows 3000.
@@ -78,17 +87,30 @@ fn claim_code(component: &str, did: &str, claimant: &RistrettoPublicKeyBytes) ->
     s
 }
 
-/// The text an owner must post to bind `did` to the account `address` here: `tari-bind:` plus this code.
-fn bind_code(component: &str, did: &str, address: &ComponentAddress) -> String {
+/// The text an owner must post to bind `did` to the account `address` (whose owner key is `owner`) here.
+fn bind_code(component: &str, did: &str, address: &ComponentAddress, owner: &RistrettoPublicKeyBytes) -> String {
     let mut data = BIND_DOMAIN.to_vec();
     data.extend_from_slice(component.as_bytes());
     data.push(b':');
     data.extend_from_slice(did.as_bytes());
     data.push(b':');
     data.extend_from_slice(address.to_string().as_bytes());
+    data.push(b':');
+    data.extend_from_slice(&owner.into_array());
     let digest = sha256(&data);
     let mut s = String::from("tari-bind:");
     for b in &digest[..16] {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// (sender, amount, refund epoch, challenge window, required phrase, hold epochs, epoch made)
+type Dep = (RistrettoPublicKeyBytes, Amount, u64, u64, String, u64, u64);
+
+fn key_hex(key: &RistrettoPublicKeyBytes) -> String {
+    let mut s = String::new();
+    for b in key.into_array() {
         s.push_str(&format!("{b:02x}"));
     }
     s
@@ -129,7 +151,7 @@ mod bskyclaim {
         /// the window for their own deposit: 0 for a small tip, longer for a large transfer. An empty phrase
         /// means none is required.
         /// The last element is how many epochs the claim post must stay up (0 for none; needs a phrase).
-        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)>>,
+        deposits: BTreeMap<String, Vec<Dep>>,
         /// DID -> (claimant, hash of the chain tip, chain length, epoch the claim started).
         pending: BTreeMap<String, (RistrettoPublicKeyBytes, Bytes, u32, u64)>,
         /// DID -> longest valid operation chain seen. A claim must present a chain at least this long.
@@ -150,7 +172,8 @@ mod bskyclaim {
         claim_text: BTreeMap<String, String>,
         /// DID -> (bound account, epoch it takes effect, the account it replaces). A first binding "replaces" this
         /// component's own address, which means nothing is bound until it takes effect.
-        bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress)>,
+        /// Each also carries the owner key of the bound wallet and of the one it replaces: that key signs a decline.
+        bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress, RistrettoPublicKeyBytes, RistrettoPublicKeyBytes)>,
         /// DID -> (tip of the operation chain a binding relied on, its length), so a longer or different chain can cancel it.
         bind_proof: BTreeMap<String, (Bytes, u32)>,
         /// DID -> rkey of the last bind post used. Bind posts must have a larger rkey.
@@ -163,6 +186,8 @@ mod bskyclaim {
         /// DID -> network fees the sponsor vault paid for its claims. They are taken back out of what the account
         /// is paid (or refunded), so using sponsored fees costs the account's own escrow, never the vault.
         owed: BTreeMap<String, Amount>,
+        /// Sender key (hex) -> money returned to them by declined or swept deposits, taken back with `take_returned`.
+        returned: BTreeMap<String, Amount>,
     }
 
     impl BskyClaim {
@@ -193,6 +218,7 @@ mod bskyclaim {
                 held: BTreeMap::new(),
                 received: BTreeMap::new(),
                 owed: BTreeMap::new(),
+                returned: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -230,7 +256,11 @@ mod bskyclaim {
             }
             let list = self.deposits.entry(did).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
-            list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs));
+            assert!(list.iter().filter(|e| e.0 == sender).count() < MAX_PER_SENDER, "you already have several gifts waiting for this account");
+            if !challenge.is_empty() {
+                assert!(list.iter().filter(|e| !e.4.is_empty()).count() < MAX_PHRASE_DEPOSITS, "this account already has several gifts waiting on a phrase");
+            }
+            list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs, Consensus::current_epoch()));
             self.vault.deposit(funds);
         }
 
@@ -238,7 +268,7 @@ mod bskyclaim {
         /// least as long as the one the binding relied on and differs from it (for example a key rotation the binder
         /// left out). Anyone may call. The previous binding, if there was one, stays.
         pub fn challenge_bind(&mut self, did: String, ops: Vec<Bytes>) {
-            let (_, since, old) = self.bindings.get(&did).cloned().expect("no binding");
+            let (_, since, old, _, old_owner) = self.bindings.get(&did).cloned().expect("no binding");
             assert!(Consensus::current_epoch() < since, "the binding is already in effect");
             let (tip, len) = self.bind_proof.get(&did).cloned().expect("no binding");
             let chain = self.check_chain(&did, &ops);
@@ -248,7 +278,7 @@ mod bskyclaim {
             if old == CallerContext::current_component_address() {
                 self.bindings.remove(&did);
             } else {
-                self.bindings.insert(did.clone(), (old, 0, old));
+                self.bindings.insert(did.clone(), (old, 0, old, old_owner, old_owner));
             }
             self.bind_proof.remove(&did);
         }
@@ -259,8 +289,8 @@ mod bskyclaim {
         }
 
         /// The exact text an owner must post to bind `did` to `address`.
-        pub fn expected_bind_text(&self, did: String, address: ComponentAddress) -> String {
-            bind_code(&CallerContext::current_component_address().to_string(), &did, &address)
+        pub fn expected_bind_text(&self, did: String, address: ComponentAddress, owner: RistrettoPublicKeyBytes) -> String {
+            bind_code(&CallerContext::current_component_address().to_string(), &did, &address, &owner)
         }
 
         /// Binds `did` to the Ootle account `address`. The proof is a post in the DID's repo containing the bind
@@ -270,6 +300,7 @@ mod bskyclaim {
             &mut self,
             did: String,
             address: ComponentAddress,
+            owner: RistrettoPublicKeyBytes,
             ops: Vec<Bytes>,
             commit: Bytes,
             mst_nodes: Vec<Bytes>,
@@ -289,15 +320,15 @@ mod bskyclaim {
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
                 .expect("invalid repo proof");
             let text = record_text(record.as_slice()).expect("record has no text");
-            let code = bind_code(&CallerContext::current_component_address().to_string(), &did, &address);
+            let code = bind_code(&CallerContext::current_component_address().to_string(), &did, &address, &owner);
             assert!(text.contains(&code), "the post does not contain the bind code");
 
             let now = Consensus::current_epoch();
             let nothing = CallerContext::current_component_address();
-            let entry = match self.active_binding(&did) {
-                Some(c) if c == address => (address, now, address),
-                Some(c) => (address, now + BIND_DELAY_EPOCHS, c),
-                None => (address, now + BIND_DELAY_EPOCHS, nothing),
+            let entry = match self.active_binding_full(&did) {
+                Some((c, co)) if c == address && co == owner => (address, now, address, owner, owner),
+                Some((c, co)) => (address, now + BIND_DELAY_EPOCHS, c, owner, co),
+                None => (address, now + BIND_DELAY_EPOCHS, nothing, owner, owner),
             };
             self.known_len.insert(did.clone(), chain.len);
             self.last_bind.insert(did.clone(), rkey);
@@ -570,7 +601,7 @@ mod bskyclaim {
             }
             let list = self.deposits.entry(recipient).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
-            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new(), 0));
+            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new(), 0, Consensus::current_epoch()));
         }
 
         fn begin_claim(
@@ -671,7 +702,7 @@ mod bskyclaim {
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
         pub fn refund(&mut self, did: String, index: u32) -> Bucket {
             let list = self.deposits.get_mut(&did).expect("no deposits for this account");
-            let (sender, amount, refund_epoch, _, _, _) = list.get(index as usize).cloned().expect("no such deposit");
+            let (sender, amount, refund_epoch, _, _, _, _) = list.get(index as usize).cloned().expect("no such deposit");
             require_signer(sender);
             assert!(Consensus::current_epoch() >= refund_epoch, "not refundable yet");
             list.remove(index as usize);
@@ -682,7 +713,7 @@ mod bskyclaim {
             self.vault.withdraw(amount - took)
         }
 
-        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)> {
+        pub fn deposits_for(&self, did: String) -> Vec<Dep> {
             self.deposits.get(&did).cloned().unwrap_or_default()
         }
 
@@ -731,20 +762,96 @@ mod bskyclaim {
             }
         }
 
+        /// Declines a waiting deposit and returns it to its sender. Only the owner of the account's linked wallet can
+        /// sign this, so an account has to link a wallet first.
+        pub fn decline(&mut self, did: String, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64) {
+            self.do_decline(&did, sender, amount, refund_epoch);
+        }
+
+        /// `decline`, with the network fee paid from the sponsor vault and taken back out of the returned amount.
+        /// Call it from the fee phase of a transaction signed by the linked wallet.
+        pub fn decline_sponsored(&mut self, did: String, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64, fee: Amount) {
+            assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
+            let used = self.sponsored.get(&did).map_or(0, |s| s.1);
+            assert!(used < MAX_SPONSORED_FINALS, "this account has used its sponsored payouts");
+            self.charge_sponsored(&did, fee);
+            self.do_decline(&did, sender, amount, refund_epoch);
+            self.sponsored.entry(did).or_insert((0, 0, 0)).1 += 1;
+            self.fee_vault.pay_fee(fee);
+        }
+
+        /// Takes back everything that was returned to `sender`: declined gifts and swept ones.
+        pub fn take_returned(&mut self, sender: RistrettoPublicKeyBytes) -> Bucket {
+            require_signer(sender);
+            let amount = self.returned.remove(&key_hex(&sender)).expect("nothing has been returned to you");
+            self.vault.withdraw(amount)
+        }
+
+        pub fn returned_for(&self, sender: RistrettoPublicKeyBytes) -> Amount {
+            self.returned.get(&key_hex(&sender)).copied().unwrap_or(Amount::zero())
+        }
+
+        /// Returns phrase deposits that nobody has acted on for about three days to their senders. Anyone may call it;
+        /// it does nothing while a claim for the account is in progress.
+        pub fn sweep(&mut self, did: String) -> u32 {
+            assert!(!self.pending.contains_key(&did), "a claim for this account is in progress");
+            let now = Consensus::current_epoch();
+            let list = self.deposits.remove(&did).unwrap_or_default();
+            let (old, keep): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| !e.4.is_empty() && now >= e.6 + SWEEP_AFTER_EPOCHS);
+            assert!(!old.is_empty(), "nothing has expired");
+            if !keep.is_empty() {
+                self.deposits.insert(did.clone(), keep);
+            }
+            for e in &old {
+                let took = self.reimburse(&did, e.1);
+                self.credit_returned(e.0, e.1 - took);
+            }
+            old.len() as u32
+        }
+
         /// Payments recently sent straight to `did`'s linked wallet.
         pub fn received_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)> {
             self.received.get(&did).cloned().unwrap_or_default()
         }
 
         fn active_binding(&self, did: &str) -> Option<ComponentAddress> {
-            let (address, since, old) = self.bindings.get(did)?;
+            self.active_binding_full(did).map(|b| b.0)
+        }
+
+        /// The bound account and its owner key, if a binding is in effect.
+        fn active_binding_full(&self, did: &str) -> Option<(ComponentAddress, RistrettoPublicKeyBytes)> {
+            let (address, since, old, owner, old_owner) = self.bindings.get(did)?;
             if Consensus::current_epoch() >= *since {
-                Some(*address)
+                Some((*address, *owner))
             } else if *old == CallerContext::current_component_address() {
                 None
             } else {
-                Some(*old)
+                Some((*old, *old_owner))
             }
+        }
+
+        fn credit_returned(&mut self, sender: RistrettoPublicKeyBytes, amount: Amount) {
+            if amount.is_positive() {
+                let key = key_hex(&sender);
+                let had = self.returned.get(&key).copied().unwrap_or(Amount::zero());
+                self.returned.insert(key, had + amount);
+            }
+        }
+
+        fn do_decline(&mut self, did: &str, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64) {
+            let (_, owner) = self.active_binding_full(did).expect("link your wallet first, then you can decline");
+            require_signer(owner);
+            let list = self.deposits.get_mut(did).expect("no deposits for this account");
+            let at = list.iter().position(|e| e.0 == sender && e.1 == amount && e.2 == refund_epoch).expect("no such deposit");
+            list.remove(at);
+            if list.is_empty() {
+                self.deposits.remove(did);
+                self.pending.remove(did);
+                self.claim_text.remove(did);
+                self.held.remove(did);
+            }
+            let took = self.reimburse(did, amount);
+            self.credit_returned(sender, amount - took);
         }
 
         fn check_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::ChainInfo {
@@ -759,7 +866,7 @@ mod bskyclaim {
 
 /// A deposit pays out once its challenge window has run since the claim started, the claim post (of a linked
 /// account) said what the sender asked for, and (if asked) the post was proven to still be up `hold` epochs after the claim started.
-fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64, gap: u64, bound: bool) -> bool {
+fn payable(e: &Dep, now: u64, start: u64, text: &str, seen: u64, gap: u64, bound: bool) -> bool {
     now >= start + e.3
         && (e.4.is_empty() || (bound && text.contains(e.4.as_str())))
         && seen >= start + e.5

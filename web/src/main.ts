@@ -933,6 +933,8 @@ function renderLink(prefill?: string, flow = false): void {
   let current: string | null = null;
   // the account to link: this wallet by default, or any account the owner pastes
   let target = wallet.componentAddress;
+  // the key that owns the linked wallet: it is what signs a later decline
+  let targetOwner = pubKey;
   let changing = false;
   let submitted = "";
   let addrProblem = "";
@@ -950,30 +952,34 @@ function renderLink(prefill?: string, flow = false): void {
   const load = async (): Promise<void> => {
     if (!profile) return mount(stepsEl);
     mount(stepsEl, h("div", { class: "skel" }));
-    code = await bsky.bindCode(CONFIG.component, profile.did, mine());
+    code = await bsky.bindCode(CONFIG.component, profile.did, mine(), targetOwner);
     current = await chain.readBinding(provider, profile.did);
     draw();
   };
 
   const useAddress = async (raw: string): Promise<void> => {
-    let a = raw.trim();
+    const a = raw.trim();
     addrProblem = "";
-    if (a.startsWith("otl_")) {
+    let account = "";
+    let owner: Uint8Array | null = null;
+    if (!a.startsWith("otl_")) addrProblem = "Paste a Tari wallet address (it starts with otl_).";
+    else {
       const bad = chain.addressProblem(a, wallet.walletAddress);
       if (bad && bad !== "That's this wallet's own address.") addrProblem = bad;
-      else a = chain.accountOf(a);
-    }
-    if (!addrProblem && !/^component_[0-9a-f]{64}$/.test(a)) addrProblem = "Paste a Tari wallet address (starts with otl_) or an account address (starts with component_).";
-    else if (!addrProblem) {
-      try {
-        await provider.getSubstate(a);
-      } catch {
-        addrProblem = "That account doesn't exist on this network yet. Send it some tTARI first, then link it.";
+      else {
+        account = chain.accountOf(a);
+        owner = chain.ownerOf(a);
+        try {
+          await provider.getSubstate(account);
+        } catch {
+          addrProblem = "That wallet doesn't exist on this network yet. Send it some tTARI first, then link it.";
+        }
       }
     }
-    if (!addrProblem && profile) {
-      target = a;
-      code = await bsky.bindCode(CONFIG.component, profile.did, target);
+    if (!addrProblem && profile && owner) {
+      target = account;
+      targetOwner = owner;
+      code = await bsky.bindCode(CONFIG.component, profile.did, target, targetOwner);
       changing = false;
     }
     draw();
@@ -993,7 +999,7 @@ function renderLink(prefill?: string, flow = false): void {
       say("Fetching the signed copy of your post");
       const proof = await bsky.buildClaimProof(profile.did, found.rkey);
       say("Submitting the proof. The contract checks every signature itself");
-      await chain.bindAccount(wallet, proof, mine(), say);
+      await chain.bindAccount(wallet, proof, mine(), targetOwner, say);
       await refreshBalance();
       submitted = target;
       toast("Wallet linked", "good");
@@ -1036,7 +1042,7 @@ function renderLink(prefill?: string, flow = false): void {
   const draw = (): void => {
     if (!profile) return;
     const p = profile;
-    const addrInput = h("input", { class: "input", placeholder: "otl_… or component_…", "aria-label": "Address to link" }) as HTMLInputElement;
+    const addrInput = h("input", { class: "input", placeholder: "otl_…", "aria-label": "Address to link" }) as HTMLInputElement;
     const changer = changing
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
       : h("button", { class: "btn ghost sm", onclick: () => { changing = true; draw(); } }, "Change address");
@@ -1387,12 +1393,77 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
     const pct = maxWin ? Math.min(100, Math.round((elapsed / maxWin) * 100)) : 100;
 
+    // declining returns a gift to its sender; it needs the linked wallet, so an account links first
+    const ownerHere = !!e.binding && e.bindingOwner === myKeyHex;
+    const expired = !e.pending && e.deposits.some((d) => d.challenge && e.epoch >= d.created + chain.SWEEP_AFTER_EPOCHS);
+    const runDecline = async (d: chain.Deposit, btn: HTMLButtonElement): Promise<void> => {
+      if (busy || !window.confirm("Decline this gift? The money goes back to the sender.")) return;
+      busy = true;
+      btn.disabled = true;
+      mount(btn, ...spinnerLabel("Declining…"));
+      try {
+        if (sponsorOk) {
+          try {
+            await chain.declineDepositSponsored(wallet, p.did, d, say);
+          } catch (err) {
+            if (needsFunds()) throw err;
+            await chain.declineDeposit(wallet, p.did, d, say);
+          }
+        } else {
+          await chain.declineDeposit(wallet, p.did, d, say);
+        }
+        toast("Declined. It's on its way back to the sender.", "good");
+        busy = false;
+        await reload();
+      } catch (err) {
+        busy = false;
+        toast(chain.friendly(err), "bad");
+        btn.disabled = false;
+        mount(btn, "Decline");
+      }
+    };
+    const sweepBtn = h("button", { class: "btn ghost sm" }, "Return expired gifts") as HTMLButtonElement;
+    sweepBtn.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      sweepBtn.disabled = true;
+      try {
+        await chain.sweepDeposits(wallet, p.did, say);
+        toast("Expired gifts were sent back to their senders", "good");
+      } catch (err) {
+        toast(chain.friendly(err), "bad");
+      }
+      busy = false;
+      await reload();
+    });
+    const declineBox = h(
+      "details",
+      { class: "opt", style: "margin-top:12px" },
+      h("summary", null, "Not interested? Decline a gift"),
+      h(
+        "div",
+        { class: "stack", style: "margin-top:12px" },
+        h("p", { class: "help", style: "margin:0" }, e.binding ? "Declining sends the gift back to the person who sent it. You do it from your linked wallet." : "To decline a gift you link your wallet first (one post, once). Then you can send gifts back to their senders."),
+        ...e.deposits.map((d) => {
+          const btn = h("button", { class: "btn ghost sm" }, "Decline") as HTMLButtonElement;
+          btn.addEventListener("click", () => void runDecline(d, btn));
+          return h(
+            "div",
+            { class: "row", style: "justify-content:space-between;align-items:center;flex-wrap:nowrap" },
+            h("div", null, h("b", null, `${chain.formatTari(d.amount)} ${CONFIG.symbol}`), d.challenge ? h("div", { class: "help", style: "margin:0" }, `asks for “${d.challenge}”`) : null),
+            !e.binding ? h("a", { class: "btn ghost sm", href: `#/link/${p.handle}?flow=1` }, "Link first") : ownerHere ? btn : h("span", { class: "help", style: "margin:0" }, "Use your linked wallet"),
+          );
+        }),
+        expired ? sweepBtn : null,
+      ),
+    );
     const challenged = e.deposits.some((d) => d.challenge);
     mount(
       stepsEl,
       doneCard,
       challenged ? h("div", { style: "margin-top:16px" }, flowBar(!e.binding ? 1 : mine && pay.amount > 0n ? 3 : 2)) : null,
       holdNote,
+      declineBox,
       pay.needLink > 0n && e.bindingPending ? h("div", { class: "note warn", style: "margin-top:12px" }, `Your link is being confirmed and takes effect in about ${eta(Math.max(0, e.bindingPending.epoch - e.epoch))}. The short wait lets anyone stop it if it was made with a stolen key. After that, post the phrase.`) : null,
       pay.needLink > 0n && !e.bindingPending ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
       e.binding && codeNow() === "" ? h("div", { class: "note good", style: "margin-top:12px" }, "Your wallet is linked, so the challenge post needs only the phrase below. Your money goes to your linked wallet.") : null,
@@ -1452,7 +1523,8 @@ function renderSent(): void {
     }
     noteEpoch(data.epoch);
     const delivered = await chain.readDeliveredBy(provider, myKeyHex).catch(() => [] as chain.Delivered[]);
-    if (!data.items.length && !delivered.length) {
+    const returnedAmt = await chain.readReturnedFor(provider, myKeyHex).catch(() => 0n);
+    if (!data.items.length && !delivered.length && returnedAmt === 0n) {
       return mount(
         listEl,
         h("div", { class: "card" }, h("h3", { style: "margin:0 0 6px;font-family:var(--serif);font-size:26px" }, "Nothing waiting"), h("p", { class: "sub", style: "margin:0 0 14px" }, "Anything you send that nobody has collected yet shows up here, and you can take it back after its refund time."), h("a", { class: "btn primary", href: "#/send" }, "Send some")),
@@ -1526,7 +1598,30 @@ function renderSent(): void {
           }),
         ]
       : [];
-    mount(listEl, ...(rows.length ? rows : [h("div", { class: "note" }, "Nothing is waiting. Everything you've sent has been delivered or collected.")]), ...deliveredEls);
+    const takeBtn = h("button", { class: "btn primary" }, "Take it back") as HTMLButtonElement;
+    takeBtn.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      takeBtn.disabled = true;
+      mount(takeBtn, ...spinnerLabel("Taking it back…"));
+      try {
+        await chain.takeReturned(wallet);
+        await refreshBalance();
+        toast(`${chain.formatTari(returnedAmt)} ${CONFIG.symbol} is back in your wallet`, "good");
+        busy = false;
+        await load();
+      } catch (err) {
+        busy = false;
+        toast(chain.friendly(err), "bad");
+        takeBtn.disabled = false;
+        mount(takeBtn, "Take it back");
+      }
+    });
+    const returnedEl =
+      returnedAmt > 0n
+        ? h("div", { class: "card success", style: "padding:20px" }, h("div", { class: "delivered" }, "Returned"), h("div", { class: "amount", style: "font-size:34px" }, chain.formatTari(returnedAmt), h("small", null, CONFIG.symbol)), h("p", { class: "sub", style: "margin:8px 0 14px" }, "Gifts that were declined, or that nobody answered, are waiting for you."), takeBtn)
+        : null;
+    mount(listEl, returnedEl, ...(rows.length ? rows : [h("div", { class: "note" }, "Nothing is waiting. Everything you've sent has been delivered or collected.")]), ...deliveredEls);
   };
 
   const poll = window.setInterval(() => { if (!busy) void load(); }, 60_000);

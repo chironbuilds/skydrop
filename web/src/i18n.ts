@@ -288,6 +288,18 @@ const ZH: Record<string, string> = {
   Theme: "主题",
   Light: "浅色",
   Auto: "自动",
+  "Not interested? Decline a gift": "不感兴趣？拒绝礼物",
+  "Decline": "拒绝",
+  "Declining…": "正在拒绝…",
+  "Link first": "先关联",
+  "Use your linked wallet": "请用关联的钱包操作",
+  "Return expired gifts": "退回已过期的礼物",
+  "Returned": "已退回",
+  "Declined. It's on its way back to the sender.": "已拒绝，款项正在退回给发送者。",
+  "Declining sends the gift back to the person who sent it. You do it from your linked wallet.": "拒绝会把礼物退回给发送者，需要用你关联的钱包操作。",
+  "To decline a gift you link your wallet first (one post, once). Then you can send gifts back to their senders.": "要拒绝礼物，需要先关联钱包（发一条帖子，只需一次），之后就能把礼物退回给发送者。",
+  "Gifts that were declined, or that nobody answered, are waiting for you.": "被拒绝或无人响应的礼物正在等你取回。",
+  "Paste a Tari wallet address (it starts with otl_).": "请粘贴 Tari 钱包地址（以 otl_ 开头）。",
 };
 
 type Pattern = [RegExp, (m: RegExpMatchArray) => string];
