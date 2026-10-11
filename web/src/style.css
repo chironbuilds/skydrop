@@ -362,3 +362,21 @@ footer code { font-family: var(--mono); font-size: 12px; }
 .lang:hover { background: var(--hi); }
 .lang:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 html[lang="zh-CN"] em, html[lang="zh-CN"] i { font-style: normal; }
+
+/* the link -> phrase -> paid steps of a challenge gift */
+.flow { list-style: none; display: flex; gap: 8px; margin: 0 0 14px; padding: 0; flex-wrap: wrap; }
+.flow li { flex: 1 1 140px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 2px solid var(--line-strong); border-radius: 8px; background: var(--card); color: var(--muted); font-size: 14px; font-weight: 600; }
+.flow li .fn { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; border: 2px solid currentColor; font-family: var(--mono); font-size: 12px; }
+.flow li.active { color: var(--text); border-color: var(--edge); background: var(--well); box-shadow: 3px 3px 0 var(--edge); }
+.flow li.active .fn { background: #f4c542; border-color: var(--edge); color: #191730; }
+.flow li.done { color: var(--text); }
+.flow li.done .fn { background: #2e9a5b; border-color: #2e9a5b; color: #fff; }
+
+.flow li { flex: 1 1 0; min-width: 0; }
+@media (max-width: 560px) {
+  .flow { flex-wrap: nowrap; gap: 6px; }
+  .flow li { padding: 8px 10px; justify-content: center; }
+  .flow li:not(.active) { flex: 0 0 auto; }
+  .flow li:not(.active) .ft { display: none; }
+  .flow li.active { flex: 1 1 auto; justify-content: flex-start; }
+}

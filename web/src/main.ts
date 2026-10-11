@@ -797,7 +797,17 @@ function renderTips(prefill?: string): void {
 // link a wallet to a Bluesky account
 // ---------------------------------------------------------------------------------------------------------
 
-function renderLink(prefill?: string): void {
+/** The three steps of a challenge gift, shown on the link and collect pages so people always know where they are. */
+function flowBar(now: 1 | 2 | 3): HTMLElement {
+  const labels = ["Link your wallet", "Post the phrase", "Get paid"];
+  return h(
+    "ol",
+    { class: "flow", "aria-label": "Steps" },
+    labels.map((t, i) => h("li", { class: i + 1 < now ? "done" : i + 1 === now ? "active" : "" }, h("span", { class: "fn" }, i + 1 < now ? icons.check(14) : String(i + 1)), h("span", { class: "ft" }, t))),
+  );
+}
+
+function renderLink(prefill?: string, flow = false): void {
   let profile: bsky.Profile | null = null;
   let code = "";
   let busy = false;
@@ -870,6 +880,12 @@ function renderLink(prefill?: string): void {
       toast("Wallet linked", "good");
       confetti();
       current = await chain.readBinding(provider, profile.did);
+      // coming from a challenge gift: carry on to the next step by itself
+      if (flow && current === mine()) {
+        const handle = profile.handle;
+        const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 2200);
+        cleanups.push(() => clearTimeout(t));
+      }
     } catch (e) {
       toast(chain.friendly(e), "bad");
     }
@@ -900,25 +916,26 @@ function renderLink(prefill?: string): void {
     }
     const where = target === wallet.componentAddress ? "this wallet" : short(target, 14, 6);
     if (current === mine()) {
-      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, "Collect what's waiting")), profileCard(p)), changer);
+      mount(stepsEl, flow ? flowBar(2) : null, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, flow ? "Next: post the phrase" : "Collect what's waiting")), profileCard(p)), changer);
       return;
     }
     mount(
       stepsEl,
+      flow ? flowBar(1) : null,
       current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes over after about one epoch; until then the old one keeps receiving.`) : null,
       h("div", { class: "note" }, `Linking ${where}.`),
       h("div", { style: "margin:0 0 4px" }, changer),
       h(
         "div",
         { class: "steps", style: "margin-top:8px" },
-        h("div", { class: "step active" }, h("div", { class: "num" }, "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
-        h("div", { class: "step active" }, h("div", { class: "num" }, "2"), h("div", null, h("h3", null, "Link it"), h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
+        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "a" : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
       ),
     );
   };
 
   mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
-  layout("link", h("h2", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
+  layout("link", h("h2", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
   if (!prefill) field.input.focus();
   void load();
 }
@@ -1042,7 +1059,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const start = mine ? e.pending!.start : e.epoch;
     const pay = chain.payableNow(e, start);
     if (!e.binding && pay.needLink === chain.total(e.deposits)) {
-      mount(stepsEl, doneCard, h("div", { class: "card", style: "margin-top:16px" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(pay.needLink), h("small", null, CONFIG.symbol)), h("h3", { style: "margin:12px 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `The sender asked for a challenge (${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}). To collect, link your wallet first (one post, once). Then post the phrase as a separate post and it's released to that wallet.`), h("a", { class: "btn primary", href: `#/link/${p.handle}` }, "Link my wallet")));
+      mount(stepsEl, doneCard, h("div", { style: "margin-top:16px" }, flowBar(1)), h("div", { class: "card", style: "margin-top:12px" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(pay.needLink), h("small", null, CONFIG.symbol)), h("h3", { style: "margin:12px 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `The sender asked for a challenge (${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}). To collect, link your wallet first (one post, once). Then post the phrase as a separate post and it's released to that wallet.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")));
       return;
     }
 
@@ -1214,11 +1231,13 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
     const pct = maxWin ? Math.min(100, Math.round((elapsed / maxWin) * 100)) : 100;
 
+    const challenged = e.deposits.some((d) => d.challenge);
     mount(
       stepsEl,
       doneCard,
+      challenged ? h("div", { style: "margin-top:16px" }, flowBar(!e.binding ? 1 : mine && pay.amount > 0n ? 3 : 2)) : null,
       holdNote,
-      pay.needLink > 0n ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}` }, "Link my wallet")) : null,
+      pay.needLink > 0n ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
       e.binding && codeNow() === "" ? h("div", { class: "note good", style: "margin-top:12px" }, "Your wallet is linked, so the challenge post needs only the phrase below. Your money goes to your linked wallet.") : null,
       e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
@@ -1227,7 +1246,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       h(
         "div",
         { class: "steps" },
-        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards."), pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It leads the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, codeNow() ? "Post this on Bluesky" : "Post the phrase"), h("p", null, codeNow() ? "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards." : "Your wallet is linked. Post this as a new post from your account, separate from the link post, and the money goes to your linked wallet."), pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It leads the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
         h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, canAuto() && !autoOff ? h("p", { class: "help" }, "Watching for your post. This continues by itself once it appears, and your tTARI is collected automatically when it's due.") : null, verifyBtn, logEl) : null)),
         h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
         h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, "4"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, "Your tTARI lands in your Skydrop wallet."))),
@@ -1376,7 +1395,7 @@ function route(): void {
   if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
   else if (kind === "tips") renderTips(param || undefined);
-  else if (kind === "link") renderLink(param || undefined);
+  else if (kind === "link") renderLink(param || undefined, q.get("flow") === "1");
   else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();
   else renderHome();
