@@ -161,7 +161,7 @@ export function makeAudio(path, total, cuts, slams, voice = []) {
     out[i] = v;
     peak = Math.max(peak, Math.abs(v));
   }
-  const g = 0.89 / peak;
+  const g = 0.8 / peak;
 
   const buf = Buffer.alloc(44 + n * 4);
   buf.write("RIFF", 0); buf.writeUInt32LE(36 + n * 4, 4); buf.write("WAVE", 8); buf.write("fmt ", 12);

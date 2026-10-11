@@ -1,7 +1,7 @@
 // Renders scene.html frame by frame in headless Chrome, pipes the frames into ffmpeg and muxes the soundtrack.
 //   node build.mjs                 full render -> skydrop-explainer.mp4
 //   node build.mjs --still 3.5     one frame at t=3.5s -> still.png (to check a scene)
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,11 +39,22 @@ if (stillIdx > 0) {
 
 const slams = [1.1, 8.6, 17.2, 19.95, 28.1];
 const wav = join(here, "audio.wav");
-const voice = process.argv.includes("--no-voice") ? [] : loadVoice();
+const argOf = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; };
+const voiceName = argOf("--voice") || process.env.VOICE || "en-US-AvaMultilingualNeural";
+const voice = process.argv.includes("--no-voice") ? [] : loadVoice(voiceName);
 makeAudio(wav, total, cuts, slams, voice);
 console.log("audio ready");
 
-const out = join(here, process.argv.includes("--no-voice") ? "skydrop-explainer-silent.mp4" : "skydrop-explainer-voice.mp4");
+const out = join(here, argOf("--out") || (process.argv.includes("--no-voice") ? "skydrop-explainer-silent.mp4" : "skydrop-explainer-voice.mp4"));
+const reuse = argOf("--reuse");
+if (reuse) {
+  // same pictures, new soundtrack: no need to render the frames again
+  const r = spawnSync(ffmpegPath, ["-y", "-loglevel", "error", "-i", join(here, reuse), "-i", wav, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out], { stdio: "inherit" });
+  await browser.close();
+  if (r.status !== 0) throw new Error("ffmpeg failed");
+  console.log("wrote", out);
+  process.exit(0);
+}
 const ff = spawn(ffmpegPath, [
   "-y", "-loglevel", "error",
   "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",

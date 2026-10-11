@@ -189,7 +189,7 @@
   </div></section>
 
   <!-- 11 cta -->
-  <section class="scene" data-s="27.6" data-e="31"><div class="in">
+  <section class="scene" data-s="27.6" data-e="33"><div class="in">
     <div class="cap a" data-a="pop" data-d="0.05" style="top:300px;text-align:center">Try it<br><span class="r">now</span></div>
     <div class="a" data-a="slam" data-rot="-4" data-d="0.5" style="left:40px;top:780px;width:1000px;text-align:center"><div class="card" style="position:relative;display:inline-block;padding:40px 60px"><div style="font-family:var(--serif);font-weight:800;font-size:112px;letter-spacing:-4px;font-variation-settings:'SOFT' 100,'WONK' 1">skydrop.tari.mw</div></div></div>
     <div class="a" data-a="up" data-d="1.1" style="position:absolute;left:60px;right:60px;top:1130px;text-align:center;font-size:52px;font-weight:700;line-height:1.3">Send Tari to anyone on Bluesky.<br>They prove it’s them. They collect.</div>
@@ -200,7 +200,7 @@
   <div id="flash"></div>
 </div>
 <script>
-  const TOTAL = 31;
+  const TOTAL = 33;
   const scenes = [...document.querySelectorAll(".scene")].map((el) => ({ el, s: +el.dataset.s, e: +el.dataset.e, anims: [...el.querySelectorAll("[data-a]")] }));
   const cuts = scenes.slice(1).map((s) => s.s);
   const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
