@@ -255,7 +255,7 @@ async function notifyDeposits(): Promise<void> {
     let text =
       `@${handle} 🎁 You have ${fmt(total)} tTARI waiting for you on Tari (testnet).\n` +
       `Prove you own this account and collect it. No wallet needed:\n${label} ↗${careful}`;
-    const withAsk = ask ? `${text}\nThe sender asks you to say: “${ask}”${keep}` : text;
+    const withAsk = ask ? `${text}\nLink your wallet first, then post what the sender asks: “${ask}”${keep}` : text;
     if ([...withAsk].length <= 295) text = withAsk;
     await post(text, undefined, {
       label,

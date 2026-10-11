@@ -391,6 +391,12 @@ impl Env {
         self.run(who, |t| t.call_method(c, "confirm_claim", args![did, ops, commit, nodes, record, rkey]))
     }
 
+    /// Links `who`'s own account to `acct`'s DID with an early post, so later claim posts count as challenge posts.
+    fn link_first(&mut self, who: &User, acct: &Account) {
+        let post = self.bind_post(acct, who.account, "3k0000000000a");
+        assert_eq!(self.bind(who, acct, who.account, &post), None);
+    }
+
     fn bind_text(&mut self, did: &str, address: ComponentAddress) -> String {
         self.test.call_method(self.component, "expected_bind_text", args![did.to_string(), address], vec![])
     }
@@ -1007,6 +1013,7 @@ fn a_deposit_with_a_challenge_only_pays_when_the_claim_post_says_it() {
     let mut env = Env::new();
     let (sender, alice) = (user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
+    env.link_first(&alice, &acct);
     assert_eq!(env.deposit_with(&sender, &acct.did, 5_000_000, 100, 0, "I love Tari"), None);
     let code = env.code_for(&acct.did, &alice);
 
@@ -1055,6 +1062,7 @@ fn two_deposits_with_different_phrases_can_be_claimed_together_or_one_at_a_time(
     let mut env = Env::new();
     let (s1, s2, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
+    env.link_first(&alice, &acct);
     assert_eq!(env.deposit_with(&s1, &acct.did, 3_000_000, 100, 0, "I love Tari"), None);
     assert_eq!(env.deposit_with(&s2, &acct.did, 2_000_000, 100, 0, "gm Ootle"), None);
     let code = env.code_for(&acct.did, &alice);
@@ -1081,6 +1089,7 @@ fn one_post_with_both_phrases_releases_both_deposits() {
     let mut env = Env::new();
     let (s1, s2, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
+    env.link_first(&alice, &acct);
     assert_eq!(env.deposit_with(&s1, &acct.did, 3_000_000, 100, 0, "I love Tari"), None);
     assert_eq!(env.deposit_with(&s2, &acct.did, 2_000_000, 100, 0, "gm Ootle"), None);
     let code = env.code_for(&acct.did, &alice);
@@ -1192,6 +1201,7 @@ fn a_post_that_must_stay_up_is_only_paid_after_it_is_proven_again() {
     let mut env = Env::new();
     let (sender, alice) = (user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
+    env.link_first(&alice, &acct);
     // a hold time needs a phrase
     expect_err(env.deposit_hold(&sender, &acct.did, 1_000_000, 100, 0, "", 3), "needs a challenge phrase");
     expect_err(env.deposit_hold(&sender, &acct.did, 1_000_000, 100, 0, "I love Tari", 73), "above the maximum");
@@ -1219,6 +1229,7 @@ fn proving_the_post_too_early_does_not_release_a_held_deposit() {
     let mut env = Env::new();
     let (sender, alice) = (user(&mut env.test), user(&mut env.test));
     let acct = Account::new();
+    env.link_first(&alice, &acct);
     assert_eq!(env.deposit_hold(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari", 3), None);
     let code = env.code_for(&acct.did, &alice);
     let post = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
@@ -1260,4 +1271,36 @@ fn a_linked_account_claims_with_just_the_phrase_and_anyone_can_finish_it() {
     assert_eq!(env.balance(&wallet), w0 + Amount::from(2_000_000u64));
     assert_eq!(env.balance(&stranger), s0);
     assert_eq!(env.escrowed(), Amount::zero());
+}
+
+#[test]
+fn a_phrase_deposit_needs_a_linked_wallet_and_a_separate_post() {
+    let mut env = Env::new();
+    let (sender, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
+    assert_eq!(env.deposit_with(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari"), None);
+
+    // not linked: the claim code and the phrase together only release the plain deposit
+    let code = env.code_for(&acct.did, &alice);
+    let first = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &first), None);
+    let before = env.balance(&alice);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(1_000_000u64));
+    assert_eq!(env.escrowed(), Amount::from(2_000_000u64));
+
+    // one post that both links and carries the phrase links, but does not count as the challenge
+    let bind = env.bind_text(&acct.did, alice.account);
+    let both = acct.post(&format!("I love Tari {bind}"), "3kbbbbbbbbbbb");
+    assert_eq!(env.bind(&alice, &acct, alice.account, &both), None);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &both), None);
+    expect_err(env.finalize(&alice, &acct.did), "required phrase");
+
+    // a separate, later post with the phrase does
+    let later = acct.post("I love Tari", "3kcccccccccccc".get(..13).unwrap());
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &later), None);
+    let before = env.balance(&alice);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(2_000_000u64));
 }

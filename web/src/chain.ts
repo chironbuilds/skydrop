@@ -160,17 +160,21 @@ export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: st
 }
 
 /** What is payable right now to a claim that started at `start`. */
-export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null; missing: string[]; holding: bigint; confirmAt: number | null } {
+export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null; missing: string[]; holding: bigint; confirmAt: number | null; needLink: bigint } {
   let amount = 0n;
   let waitingAmount = 0n;
   let next: number | null = null;
   let holding = 0n;
   let confirmAt: number | null = null;
+  let needLink = 0n;
   const seen = e.held?.epoch ?? start;
   const missing = new Set<string>();
   for (const d of e.deposits) {
     const ready = start + d.window;
-    if (d.challenge && !e.claimText.includes(d.challenge)) {
+    if (d.challenge && !e.binding) {
+      // a challenge deposit only pays an account that has linked a wallet
+      needLink += d.amount;
+    } else if (d.challenge && !e.claimText.includes(d.challenge)) {
       // pays only once the claim post says it; the claimant has to post again
       missing.add(d.challenge);
     } else if (seen < start + d.hold) {
@@ -183,7 +187,7 @@ export function payableNow(e: Escrow, start: number): { amount: bigint; waitingA
       next = next === null ? ready : Math.min(next, ready);
     }
   }
-  return { amount, waitingAmount, nextEpoch: next, missing: [...missing], holding, confirmAt };
+  return { amount, waitingAmount, nextEpoch: next, missing: [...missing], holding, confirmAt, needLink };
 }
 
 /** TARI left in the vault that pays claimants' network fees. */
@@ -222,6 +226,7 @@ export function friendly(e: unknown): string {
     [/already claimed/i, "This wallet already used the faucet."],
     [/deposit below the minimum/i, `The smallest amount you can send is ${Number(CONFIG.minDeposit) / Number(CONFIG.unit)} ${CONFIG.symbol}.`],
     [/challenge window above the maximum/i, "That safety level isn't available."],
+    [/required phrase was not posted/i, "The challenge phrase wasn't in a post made after you linked your wallet. Post it as a new post and try again."],
     [/hold time above the maximum/i, "That hold time is too long."],
     [/not the post the claim was made with/i, "That isn't the post you claimed with. Keep the original post up and try again."],
     [/Timed out/i, "The network is slow right now. Please try again."],

@@ -541,7 +541,11 @@ function renderSend(prefill?: string): void {
     const a = amount();
     const short = needsFunds(a ?? 0n);
     const problem = challengeProblem();
-    mount(challengeNote, problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null);
+    mount(
+      challengeNote,
+      problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null,
+      !problem && challenge() && profile && !bound ? h("div", { class: "note", style: "margin-top:8px" }, `@${profile.handle} hasn't linked a wallet yet. To collect a challenge gift they'll first link one (one post), then post your phrase.`) : null,
+    );
     const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem && !uploading;
     sendBtn.disabled = !ok;
     const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
@@ -558,7 +562,10 @@ function renderSend(prefill?: string): void {
     try {
       const esc = await chain.readEscrow(provider, p.did);
       noteEpoch(esc.epoch);
-      if (profile?.did === p.did) bound = esc.binding;
+      if (profile?.did === p.did) {
+        bound = esc.binding;
+        update();
+      }
       mount(
         waiting,
         esc.deposits.length ? h("div", { class: "note good", style: "margin-top:12px" }, `${chain.formatTari(chain.total(esc.deposits))} ${CONFIG.symbol} is already waiting for @${p.handle}.`) : null,
@@ -606,7 +613,7 @@ function renderSend(prefill?: string): void {
     confetti();
     const note = env.cleanNote(noteInput.value);
     const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId);
-    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, include this in your claim post: ${challenge()}${hold() ? ` (and keep the post up for ${eta(hold())})` : ""}` : "");
+    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, link your wallet first, then post this: ${challenge()}${hold() ? ` (and keep the post up for ${eta(hold())})` : ""}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
       card,
@@ -893,7 +900,7 @@ function renderLink(prefill?: string): void {
     }
     const where = target === wallet.componentAddress ? "this wallet" : short(target, 14, 6);
     if (current === mine()) {
-      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything else still waits for you to collect it, and is paid there too.`), profileCard(p)), changer);
+      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, "Collect what's waiting")), profileCard(p)), changer);
       return;
     }
     mount(
@@ -946,7 +953,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   const canAuto = (): boolean => !autoOff && wallet.kind === "builtin";
   // Phrases senders asked for. The post has to contain the ones that fit in it; deposits whose phrase didn't fit stay escrowed.
   const claimPost = (): { text: string; used: string[]; dropped: number } =>
-    bsky.claimPostText(CONFIG.symbol, codeNow(), [...new Set((esc?.deposits ?? []).map((d) => d.challenge).filter(Boolean))]);
+    bsky.claimPostText(CONFIG.symbol, codeNow(), esc?.binding ? [...new Set((esc?.deposits ?? []).map((d) => d.challenge).filter(Boolean))] : []);
   // A linked account's payouts go to its linked address, so its challenge post needs the sender's phrase only.
   const codeNow = (): string => (esc?.binding && esc.deposits.some((d) => d.challenge) ? "" : code);
 
@@ -1033,6 +1040,10 @@ function renderClaim(prefill?: string, gift?: Gift): void {
 
     const start = mine ? e.pending!.start : e.epoch;
     const pay = chain.payableNow(e, start);
+    if (!e.binding && pay.needLink === chain.total(e.deposits)) {
+      mount(stepsEl, doneCard, h("div", { class: "card", style: "margin-top:16px" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(pay.needLink), h("small", null, CONFIG.symbol)), h("h3", { style: "margin:12px 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `The sender asked for a challenge (${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}). To collect, link your wallet first (one post, once). Then post the phrase as a separate post and it's released to that wallet.`), h("a", { class: "btn primary", href: `#/link/${p.handle}` }, "Link my wallet")));
+      return;
+    }
 
     const stepClass = (n: number, cur: number) => `step ${n < cur ? "done" : n === cur ? "active" : "locked"}`;
     // a claim whose post missed a phrase a sender asked for pays nothing on that deposit: post again
@@ -1206,7 +1217,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       stepsEl,
       doneCard,
       holdNote,
-      !e.binding && e.deposits.some((d) => d.challenge) ? h("div", { class: "note warn", style: "margin-top:12px" }, "Tip: link your wallet first (one post, once). After that, the sender's challenge needs just their phrase, with no code in your post. ", h("a", { href: `#/link/${p.handle}` }, "Link my wallet"), ".") : null,
+      pay.needLink > 0n ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}` }, "Link my wallet")) : null,
       e.binding && codeNow() === "" ? h("div", { class: "note good", style: "margin-top:12px" }, "Your wallet is linked, so the challenge post needs only the phrase below. Your money goes to your linked wallet.") : null,
       e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),

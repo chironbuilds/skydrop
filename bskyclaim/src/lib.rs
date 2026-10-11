@@ -20,6 +20,8 @@
 //!   one only after a delay, and a post can be used once, so an old post cannot move the binding back.
 //! * A deposit with a phrase may also ask that the claim post stay up for some epochs. The claimant then
 //!   re-proves the same post (`confirm_claim`) once that time has passed, and only then is it paid.
+//! * A deposit with a challenge phrase only pays out to a linked account, and only for a post made after the
+//!   link post (the link post itself never counts), so linking and the challenge are two separate steps.
 //! * For a linked account the claim post needs no claim code: whoever submits it, the money goes to the
 //!   linked address. Such a claim can only be restarted by a newer post, so a copied old post cannot reset it.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
@@ -371,7 +373,7 @@ mod bskyclaim {
             let text = self.claim_text.get(&did).map(|t| t.as_str()).unwrap_or("");
             let seen = self.held.get(&did).map_or(start, |h| h.1);
             assert!(
-                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text, seen))),
+                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text, seen, self.active_binding(&did).is_some()))),
                 "nothing is payable yet"
             );
             let used = self.sponsored.get(&did).map_or(0, |s| s.1);
@@ -560,7 +562,10 @@ mod bskyclaim {
 
             assert!(text.len() <= MAX_CLAIM_TEXT, "claim post too long");
             self.known_len.insert(did.clone(), chain.len);
-            self.claim_text.insert(did.clone(), text.to_string());
+            // The link post (or anything older) can never be the challenge post: linking and the challenge are separate.
+            let is_link_post = text.contains("tari-bind:") || self.last_bind.get(&did).is_some_and(|lb| rkey.as_str() <= lb.as_str());
+            let stored = if is_link_post { String::new() } else { text.to_string() };
+            self.claim_text.insert(did.clone(), stored);
             self.held.insert(did.clone(), (rkey, Consensus::current_epoch()));
             self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, Consensus::current_epoch()));
         }
@@ -593,7 +598,7 @@ mod bskyclaim {
             let list = self.deposits.remove(&did).unwrap_or_default();
             let text = self.claim_text.get(&did).cloned().unwrap_or_default();
             let seen = self.held.get(&did).map_or(start, |h| h.1);
-            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen));
+            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen, bound.is_some()));
             assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
             if waiting.is_empty() {
@@ -654,10 +659,10 @@ mod bskyclaim {
     }
 }
 
-/// A deposit pays out once its challenge window has run since the claim started, the claim post said what the
-/// sender asked for, and (if asked) the post was proven to still be up `hold` epochs after the claim started.
-fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64) -> bool {
-    now >= start + e.3 && (e.4.is_empty() || text.contains(e.4.as_str())) && seen >= start + e.5
+/// A deposit pays out once its challenge window has run since the claim started, the claim post (of a linked
+/// account) said what the sender asked for, and (if asked) the post was proven to still be up `hold` epochs after the claim started.
+fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64, bound: bool) -> bool {
+    now >= start + e.3 && (e.4.is_empty() || (bound && text.contains(e.4.as_str()))) && seen >= start + e.5
 }
 
 fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {
