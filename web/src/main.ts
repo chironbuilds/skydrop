@@ -170,6 +170,48 @@ function openWallet(): void {
     }
   });
 
+  // withdraw: send tTARI out of the built-in wallet to any Tari address
+  const wAddr = h("input", { class: "input", placeholder: "otl_…", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Address to withdraw to", style: "font-size:15px;font-family:var(--mono)" }) as HTMLInputElement;
+  const wAmt = h("input", { class: "input", inputmode: "decimal", placeholder: "0.0", "aria-label": "Amount to withdraw", style: "padding-right:80px" }) as HTMLInputElement;
+  const wBtn = h("button", { class: "btn primary block" }, "Withdraw") as HTMLButtonElement;
+  const wNote = h("div", { style: "margin-top:10px" });
+  let wBusy = false;
+  const wRoom = (): bigint => (balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n);
+  const wUpdate = (): void => {
+    const addr = wAddr.value.trim();
+    const amt = chain.parseTari(wAmt.value);
+    const addrErr = addr ? chain.addressProblem(addr, walletAddress) : null;
+    let msg: string | null = addrErr;
+    if (!msg && amt !== null && amt > wRoom()) msg = wRoom() > 0n ? `You can withdraw up to ${chain.formatTari(wRoom())} ${CONFIG.symbol}. A small network fee stays behind.` : "There isn't enough here to cover the network fee.";
+    wBtn.disabled = wBusy || !addr || !!addrErr || !amt || amt <= 0n || amt > wRoom();
+    if (!wBusy) mount(wBtn, amt && addr && !addrErr ? `Withdraw ${chain.formatTari(amt)} ${CONFIG.symbol}` : "Withdraw");
+    mount(wNote, msg ? h("div", { class: "note warn" }, msg) : null);
+  };
+  wAddr.addEventListener("input", wUpdate);
+  wAmt.addEventListener("input", wUpdate);
+  wBtn.addEventListener("click", async () => {
+    const addr = wAddr.value.trim();
+    const amt = chain.parseTari(wAmt.value);
+    if (!amt || wBusy) return;
+    wBusy = true;
+    wBtn.disabled = true;
+    mount(wBtn, ...spinnerLabel("Withdrawing…"));
+    try {
+      await chain.withdrawTo(wallet, addr, amt);
+      await new Promise((r) => setTimeout(r, 1500));
+      await refreshBalance();
+      toast(`Sent ${chain.formatTari(amt)} ${CONFIG.symbol} to ${short(addr, 10, 6)}`, "good");
+      wAmt.value = "";
+      wAddr.value = "";
+      wBusy = false;
+      render();
+    } catch (e) {
+      wBusy = false;
+      toast(chain.friendly(e), "bad");
+      wUpdate();
+    }
+  });
+
   const useSapient = async (): Promise<void> => {
     try {
       const w = await wallets.connectSapient(true);
@@ -225,6 +267,11 @@ function openWallet(): void {
       h("div", { class: "row" }, faucetBtn),
       faucetNote,
       h("hr", { style: "border:0;border-top:1px solid var(--line);margin:22px 0" }),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Withdraw")),
+      h("p", { class: "help", style: "margin:-6px 0 10px" }, "Send tTARI out of Skydrop to any Tari address, such as your Sapient wallet."),
+      h("div", { class: "stack" }, wAddr, h("div", { class: "field" }, wAmt, h("a", { href: "#", class: "suffix", style: "pointer-events:auto;font-weight:700", onclick: (e: Event) => { e.preventDefault(); wAmt.value = chain.formatTari(wRoom()); wUpdate(); } }, "Max")), wBtn),
+      wNote,
+      h("hr", { style: "border:0;border-top:1px solid var(--line);margin:22px 0" }),
       h("div", { class: "kv" }, h("div", { class: "k" }, "Prefer your own wallet?")),
       h("div", { class: "row" }, h("button", { class: "btn ghost sm", onclick: useSapient }, "Connect Sapient")),
       h("p", { class: "help" }, "Sapient is a Tari browser wallet. Your keys stay in the extension and you approve each transaction there."),
@@ -257,6 +304,7 @@ function openWallet(): void {
   };
 
   render();
+  wUpdate();
   document.body.appendChild(scrim);
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -497,6 +545,7 @@ function renderSend(prefill?: string): void {
         h("a", { class: "btn primary bsky", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Tell them on Bluesky", icons.external()),
         h("button", { class: "btn ghost", onclick: () => copy(link, "Link copied") }, icons.copy(), "Copy claim link"),
         h("a", { class: "btn ghost", href: "#/send", onclick: () => setTimeout(() => location.reload(), 0) }, "Send another"),
+        h("a", { class: "btn ghost", href: "#/sent" }, "Your sends"),
       ),
       h("p", { class: "help" }, `If they haven't collected it in about ${eta(CONFIG.refundAfterEpochs)}, you can take it back.`),
     );
@@ -511,7 +560,7 @@ function renderSend(prefill?: string): void {
   );
   drawChoices();
   update();
-  layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account."), card);
+  layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account. ", h("a", { href: "#/sent" }, "Your sends")), card);
   if (!prefill) field.input.focus();
 }
 
@@ -895,6 +944,91 @@ function renderClaim(prefill?: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// your sends: what this wallet has put in escrow, and taking it back
+// ---------------------------------------------------------------------------------------------------------
+
+const profileCache = new Map<string, bsky.Profile | null>();
+async function profileFor(did: string): Promise<bsky.Profile | null> {
+  if (profileCache.has(did)) return profileCache.get(did)!;
+  try {
+    const p = await bsky.lookupProfile(did);
+    profileCache.set(did, p);
+    return p;
+  } catch {
+    profileCache.set(did, null);
+    return null;
+  }
+}
+
+function renderSent(): void {
+  const listEl = h("div", { class: "stack" });
+  let busy = false;
+
+  const load = async (): Promise<void> => {
+    mount(listEl, h("div", { class: "skel" }), h("div", { class: "skel" }));
+    let data: Awaited<ReturnType<typeof chain.readSentBy>>;
+    try {
+      data = await chain.readSentBy(provider, myKeyHex);
+    } catch (e) {
+      return mount(listEl, h("div", { class: "note bad" }, chain.friendly(e)));
+    }
+    noteEpoch(data.epoch);
+    if (!data.items.length) {
+      return mount(
+        listEl,
+        h("div", { class: "card" }, h("h3", { style: "margin:0 0 6px;font-family:var(--serif);font-size:26px" }, "Nothing waiting"), h("p", { class: "sub", style: "margin:0 0 14px" }, "Anything you send that nobody has collected yet shows up here, and you can take it back after its refund time."), h("a", { class: "btn primary", href: "#/send" }, "Send some")),
+      );
+    }
+    const profiles = await Promise.all(data.items.map((d) => profileFor(d.did)));
+    const rows = data.items.map((d, i) => {
+      const p = profiles[i];
+      const left = d.refundEpoch - data.epoch;
+      const ready = left <= 0;
+      const handle = p ? `@${p.handle}` : short(d.did, 14, 6);
+      const btn = h("button", { class: "btn primary sm" }, "Take it back") as HTMLButtonElement;
+      const say = h("div", { class: "log" });
+      btn.addEventListener("click", async () => {
+        if (busy) return;
+        busy = true;
+        btn.disabled = true;
+        mount(btn, ...spinnerLabel("Taking it back…"));
+        try {
+          await chain.refundDeposit(wallet, provider, d, (s) => say.appendChild(h("div", null, s)));
+          await refreshBalance();
+          toast(`${chain.formatTari(d.amount)} ${CONFIG.symbol} is back in your wallet`, "good");
+          busy = false;
+          await load();
+        } catch (e) {
+          busy = false;
+          toast(chain.friendly(e), "bad");
+          btn.disabled = false;
+          mount(btn, "Take it back");
+        }
+      });
+      const link = `${location.origin}${location.pathname}#/claim/${p?.handle ?? d.did}`;
+      const nudge = `@${p?.handle ?? ""} there's ${chain.formatTari(d.amount)} ${CONFIG.symbol} waiting for you on Tari 🎁 Collect it here:\n${link}`;
+      return h(
+        "div",
+        { class: "card", style: "padding:20px" },
+        h("div", { class: "row", style: "justify-content:space-between;align-items:flex-start" },
+          h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect"))),
+          h("div", { class: "amount", style: "font-size:34px" }, chain.formatTari(d.amount), h("small", null, CONFIG.symbol)),
+        ),
+        h("div", { class: "note", style: "margin-top:14px" }, ready ? "Nobody has collected this. You can take it back now." : `Waiting for them to collect. You can take it back in ${eta(left)}.`),
+        h("div", { class: "row", style: "margin-top:12px" }, ready ? btn : null, p ? h("a", { class: "btn ghost sm", href: bsky.composeUrl(nudge), target: "_blank", rel: "noopener" }, "Remind them", icons.external(14)) : null, h("a", { class: "btn ghost sm", href: `#/claim/${p?.handle ?? ""}` }, "Open claim page")),
+        say,
+      );
+    });
+    mount(listEl, ...rows);
+  };
+
+  const poll = window.setInterval(() => { if (!busy) void load(); }, 60_000);
+  cleanups.push(() => clearInterval(poll));
+  layout("send", h("h2", { class: "page" }, "Your sends"), h("p", { class: "sub" }, "Everything this wallet has put in escrow that nobody has collected yet."), listEl);
+  void load();
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // how it works
 // ---------------------------------------------------------------------------------------------------------
 
@@ -934,6 +1068,7 @@ function route(): void {
   if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined);
   else if (kind === "tips") renderTips(param || undefined);
+  else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();
   else renderHome();
 }

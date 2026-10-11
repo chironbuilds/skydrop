@@ -17,6 +17,7 @@ import {
 } from "@tari-project/ootle";
 import type { IndexerProvider } from "@tari-project/ootle-indexer";
 import { CONFIG } from "./config";
+import { parseOotleAddress } from "@tari-project/ootle-wasm";
 import { fromHex, lit, toHex } from "./cbor";
 import type { ClaimProof } from "./bsky";
 import type { Wallet } from "./wallet";
@@ -248,6 +249,63 @@ export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: s
   const owner = wallet.componentAddress;
   const instructions = [call(CONFIG.component, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
   return run(wallet, instructions, 30_000n, onStage, payableByEpoch);
+}
+
+/** Why `address` can't be paid from `own` (a wallet address on the same network), or null when it can. */
+export function addressProblem(address: string, own: string): string | null {
+  if (!address) return "Paste the address you want to send to.";
+  try {
+    parseOotleAddress(address);
+  } catch {
+    return "That doesn't look like a Tari address. It should start with otl_.";
+  }
+  const net = (a: string) => a.split("_").slice(0, 2).join("_");
+  if (net(address) !== net(own)) return "That address is for a different Tari network.";
+  if (address === own) return "That's this wallet's own address.";
+  return null;
+}
+
+/** Sends tTARI from the built-in wallet to any Tari address. A recipient with no account yet gets one. */
+export async function withdrawTo(wallet: Wallet, address: string, amount: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  onStage?.("Sending to the network…");
+  const res = (await account.send(address, TARI_RESOURCE_ADDRESS, amount, 30_000n)) as { transaction_id?: unknown; transactionId?: unknown };
+  assertAccepted(res);
+  return { transactionId: String(res.transaction_id ?? res.transactionId ?? "") };
+}
+
+/** A deposit this wallet made, anywhere in the escrow. */
+export interface SentDeposit {
+  did: string;
+  amount: bigint;
+  refundEpoch: number;
+  window: number;
+}
+
+/** Every deposit whose sender is `keyHex`, found by scanning component state index 3. */
+export async function readSentBy(provider: IndexerProvider, keyHex: string): Promise<{ epoch: number; items: SentDeposit[] }> {
+  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(CONFIG.component)]);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  if (!comp) throw new Error("The escrow contract could not be read");
+  const all = comp.body.state[3] as Record<string, Cbor[][]>;
+  const items: SentDeposit[] = [];
+  for (const [did, list] of Object.entries(all)) {
+    for (const d of list) {
+      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]) });
+    }
+  }
+  return { epoch, items };
+}
+
+/** Takes a deposit back. The contract wants its position in the recipient's list, so find it fresh each time. */
+export async function refundDeposit(wallet: Wallet, provider: IndexerProvider, d: SentDeposit, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const esc = await readEscrow(provider, d.did);
+  const mine = toHex(wallet.publicKey);
+  const index = esc.deposits.findIndex((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.window === d.window);
+  if (index < 0) throw new ChainError("That deposit was already collected or taken back.");
+  if (esc.epoch < d.refundEpoch) throw new ChainError("It can't be taken back yet.");
+  const instructions = [call(CONFIG.component, "refund", [lit(d.did), lit(index)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];
+  return run(wallet, instructions, 30_000n, onStage);
 }
 
 // ---- tip budgets ------------------------------------------------------------------------------------------
