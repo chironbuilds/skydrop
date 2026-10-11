@@ -1,9 +1,9 @@
 /** Everything deployment-specific lives here. */
 export const CONFIG = {
   network: "esmeralda" as const,
-  /** The BskyClaim escrow component (per-deposit challenge windows). */
-  component: "component_0752fceb69628e0310315ece70ec11282d1b71e8532eb0fa23c1d3e1b2e3d1ce",
-  template: "template_868f2f457194c84fcab14ef4d2b76888836549635a2a7fc048938b513e1f560f",
+  /** The BskyClaim escrow component (per-deposit challenge windows and challenge phrases). */
+  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_fa644838352c2101dcd6d541fd86eb69c6a5c83583e814b2a2256052f682bbca",
+  template: "template_bec94d99246102295e5479427125e25b15c336eb84c9061354e283734bb871dc",
   /** µT per tTARI. */
   unit: 1_000_000n,
   symbol: "tTARI",
@@ -13,6 +13,8 @@ export const CONFIG = {
   minDeposit: 1000n,
   /** Largest challenge window the component accepts. */
   maxWindow: 10,
+  /** Longest challenge phrase the component accepts (bytes). */
+  maxChallenge: 80,
   /** The bot account that relays tip posts. */
   botHandle: "taridrop.bsky.social",
   botDid: "did:plc:lsdjnz7b7du3e3rkawynfsqd",

@@ -16,12 +16,12 @@ console.log("balance", formatTari(await w.balance()));
 if (!process.env.REFUND) {
   CONFIG.refundAfterEpochs = 1;
   const esc = await chain.readEscrow(provider, DID);
-  await chain.sendTip(w, { did: DID, amount: 10_000n, window: 0 }, esc.epoch, (s) => console.log("  ·", s));
+  await chain.sendTip(w, { did: DID, amount: 10_000n, window: 0, challenge: process.env.CHALLENGE ?? "" }, esc.epoch, (s) => console.log("  ·", s));
   console.log("deposited 0.01, epoch", esc.epoch);
   await new Promise((r) => setTimeout(r, 3000));
 }
 const sent = await chain.readSentBy(provider, key);
-console.log("epoch", sent.epoch, "sent:", sent.items.map((d) => `${formatTari(d.amount)} to ${d.did.slice(0, 16)} refundEpoch ${d.refundEpoch}`));
+console.log("epoch", sent.epoch, "sent:", sent.items.map((d) => `${formatTari(d.amount)} to ${d.did.slice(0, 16)} refundEpoch ${d.refundEpoch} challenge ${JSON.stringify(d.challenge)}`));
 if (process.env.REFUND) {
   for (const d of sent.items) {
     try {

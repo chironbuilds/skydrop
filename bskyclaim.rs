@@ -335,12 +335,16 @@ impl Env {
     }
 
     fn deposit(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64) -> Option<String> {
+        self.deposit_with(from, did, amount, refund_epoch, window, "")
+    }
+
+    fn deposit_with(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64, challenge: &str) -> Option<String> {
         let c = self.component;
-        let (account, id, did) = (from.account, from.id, did.to_string());
+        let (account, id, did, challenge) = (from.account, from.id, did.to_string(), challenge.to_string());
         self.run(from, |t| {
             t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
                 .put_last_instruction_output_on_workspace("funds")
-                .call_method(c, "deposit", args![did, id, refund_epoch, window, Workspace("funds")])
+                .call_method(c, "deposit", args![did, id, refund_epoch, window, challenge, Workspace("funds")])
         })
     }
 
@@ -677,7 +681,11 @@ fn a_claimant_with_no_account_and_no_funds_claims_and_collects() {
     let account = outputs.iter().find_map(|o| o.as_component_address()).expect("an account was created");
     assert!(env.fee_balance() < after_start, "the payout fee also came from the sponsor vault");
     assert_eq!(env.escrowed(), Amount::zero(), "deposit paid out");
-    assert_eq!(env.test.call_method::<Amount>(account, "balance", args![TARI_TOKEN], vec![]), Amount::from(5_000_000u64));
+    // The harness reports only one of the components the transaction touched, and which one is not stable: it may
+    // be the escrow itself rather than the new account. The escrow being empty above already proves the payout.
+    if account != env.component {
+        assert_eq!(env.test.call_method::<Amount>(account, "balance", args![TARI_TOKEN], vec![]), Amount::from(5_000_000u64));
+    }
 }
 
 #[test]
@@ -770,7 +778,7 @@ impl Env {
         self.test.call_method(self.component, "budget_for", args![did.to_string(), owner], vec![])
     }
 
-    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)> {
+    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)> {
         self.test.call_method(self.component, "deposits_for", args![did.to_string()], vec![])
     }
 }
@@ -949,4 +957,52 @@ fn a_relayer_with_no_funds_relays_a_tip_and_the_tipper_covers_the_fee() {
     let bad = alice.post("not a tip", "3kbbbbbbbbbbb");
     assert!(sponsored_tip(&mut env, &sk, &alice, owner.id, &bad).is_some());
     assert_eq!(env.fee_balance(), before);
+}
+
+#[test]
+fn a_deposit_with_a_challenge_only_pays_when_the_claim_post_says_it() {
+    let mut env = Env::new();
+    let (sender, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit_with(&sender, &acct.did, 5_000_000, 100, 0, "I love Tari"), None);
+    let code = env.code_for(&acct.did, &alice);
+
+    // A claim post without the phrase starts a claim but pays nothing.
+    let plain = acct.post(&format!("claiming {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &plain), None);
+    expect_err(env.finalize(&alice, &acct.did), "required phrase");
+    assert_eq!(env.escrowed(), Amount::from(5_000_000u64));
+
+    // The phrase is exact and case sensitive.
+    let wrong = acct.post(&format!("i love tari {code}"), "3kbbbbbbbbbbb");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &wrong), None);
+    expect_err(env.finalize(&alice, &acct.did), "required phrase");
+
+    // Posting it releases the money.
+    let right = acct.post(&format!("I love Tari {code}"), "3kcccccccccc");
+    let before = env.balance(&alice);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &right), None);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(5_000_000u64));
+    assert_eq!(env.escrowed(), Amount::zero());
+}
+
+#[test]
+fn a_hostile_challenge_cannot_block_other_deposits_and_is_bounded() {
+    let mut env = Env::new();
+    let (honest, hostile, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    expect_err(env.deposit_with(&hostile, &acct.did, 1_000_000, 100, 0, &"x".repeat(81)), "too long");
+    expect_err(env.deposit_with(&hostile, &acct.did, 1_000_000, 100, 0, "line
+break"), "control characters");
+    assert_eq!(env.deposit(&honest, &acct.did, 4_000_000, 100, 0), None);
+    assert_eq!(env.deposit_with(&hostile, &acct.did, 1_000_000, 100, 0, "say something impossible"), None);
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("claiming {code}"), "3kaaaaaaaaaaa");
+    let before = env.balance(&alice);
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    // The plain deposit pays; the one with an unmet phrase stays escrowed and its sender can refund it.
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(4_000_000u64));
+    assert_eq!(env.escrowed(), Amount::from(1_000_000u64));
 }

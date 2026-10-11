@@ -97,7 +97,7 @@ Component methods. "Signer" is a key that must have signed the transaction.
 
 | Method | Arguments | Signer | Returns |
 |---|---|---|---|
-| `deposit` | `did`, `sender`, `refund_epoch`, `window_epochs`, `funds: Bucket` | `sender` | none |
+| `deposit` | `did`, `sender`, `refund_epoch`, `window_epochs`, `challenge: String` (optional phrase the claim post must contain, max 80 bytes, `""` for none), `funds: Bucket` | `sender` | none |
 | `start_claim` | `did`, `claimant`, `ops`, `commit`, `mst_nodes`, `record`, `rkey` | `claimant` | none |
 | `start_claim_sponsored` | as above plus `fee: Amount` | `claimant` | none. Call in the fee phase |
 | `finalize_claim` | `did` | the pending claimant | `Bucket` |
@@ -126,7 +126,7 @@ The component is an ordinary Ootle component with `allow_all` access rules, so a
 code = "tari-claim:" + hex( sha256( "tari-bsky-claim:v1:" ‖ component_address ‖ ":" ‖ did ‖ ":" ‖ claimant_key_32_bytes )[0..16] )
 ```
 
-`component_address` is the full string (`component_0752…`), `did` is the UTF-8 DID, and the key is the raw 32 bytes. The post text only has to contain the code anywhere. `expected_post_text` on the component returns the same value, which is a quick way to test your implementation.
+`component_address` is the full string (`component_fa64…`), `did` is the UTF-8 DID, and the key is the raw 32 bytes. The post text only has to contain the code anywhere. `expected_post_text` on the component returns the same value, which is a quick way to test your implementation.
 
 ### Tip post format
 
@@ -214,7 +214,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (15 engine tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (17 engine tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>

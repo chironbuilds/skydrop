@@ -5,7 +5,7 @@
 //!   bsky_cli addr | balance
 //!   bsky_cli publish <bskyclaim.wasm>
 //!   bsky_cli new <template> [min_deposit_µT] [window_epochs] [bot_did]
-//!   bsky_cli deposit <component> <did> <amount_µT> <refund_in_epochs> [sender_wallet] [window_epochs]
+//!   bsky_cli deposit <component> <did> <amount_µT> <refund_in_epochs> [sender_wallet] [window_epochs] [challenge_phrase]
 //!   bsky_cli code <component> <did> [claimant_wallet]        the text the claimant must post
 //!   bsky_cli claim <component> <did> <proof.json> [claimant_wallet] [--submit]
 //!   bsky_cli challenge <component> <did> <proof.json> [--submit]
@@ -226,6 +226,7 @@ async fn main() {
             let amount: u64 = args[3].parse().unwrap();
             let refund_in: u64 = args[4].parse().unwrap();
             let window: u64 = arg(6, "2").parse().unwrap();
+            let challenge = arg(7, "");
             let sender = load_named(&arg(5, "wallet"));
             let sender_id = identity_bytes(&sender);
             let account = sender.to_address().to_account_address();
@@ -239,7 +240,7 @@ async fn main() {
                         b.call_method(account, "withdraw", args![TARI_TOKEN, Amount::new(u128::from(amount))])
                             .put_last_instruction_output_on_workspace("funds")
                     })
-                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, Workspace("funds")])
+                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, challenge.clone(), Workspace("funds")])
                     .pay_fee(fee)
                     .prepare()
             };

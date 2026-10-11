@@ -11,6 +11,9 @@
 //! * The proof cannot show that the operation log is complete. A stale chain could come from a former key
 //!   holder, so a claim only pays out after a challenge window in which anyone can submit a conflicting
 //!   chain (for example the owner's key-rotation operation) to cancel it.
+//! * A deposit may carry a challenge phrase. It is only paid out if the claim post also contained that
+//!   phrase, so a sender can ask for something specific to be said publicly. Deposits whose phrase was not
+//!   posted stay escrowed (the claimant can post again), which keeps a hostile phrase from blocking others.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
 use atp_verify::{record_text, sha256, verify_plc_chain, verify_record};
@@ -26,6 +29,10 @@ const COLLECTION: &str = "app.bsky.feed.post";
 const MAX_OPS: usize = 16;
 const MAX_NODES: usize = 32;
 const MAX_DEPOSITS_PER_DID: usize = 32;
+/// Longest challenge phrase a sender may attach to a deposit (bytes).
+const MAX_CHALLENGE: usize = 80;
+/// Longest claim post the contract keeps for checking challenges (bytes). Bluesky allows 3000.
+const MAX_CLAIM_TEXT: usize = 4096;
 const MAX_BLOCK_LEN: usize = 16 * 1024;
 /// Ceiling on the fee one sponsored call may offer from the sponsor vault (µT).
 const MAX_SPONSORED_FEE: u64 = 100_000;
@@ -80,9 +87,10 @@ mod bskyclaim {
         /// Epochs a started claim must wait before it can be finalised.
         /// Longest challenge window a sender may ask for on a deposit.
         max_window_epochs: u64,
-        /// DID -> (sender, amount, refund epoch, challenge window in epochs). Each sender picks the window for
-        /// their own deposit: 0 for a small tip, longer for a large transfer.
-        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)>>,
+        /// DID -> (sender, amount, refund epoch, challenge window in epochs, required phrase). Each sender picks
+        /// the window for their own deposit: 0 for a small tip, longer for a large transfer. An empty phrase
+        /// means none is required.
+        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)>>,
         /// DID -> (claimant, hash of the chain tip, chain length, epoch the claim started).
         pending: BTreeMap<String, (RistrettoPublicKeyBytes, Bytes, u32, u64)>,
         /// DID -> longest valid operation chain seen. A claim must present a chain at least this long.
@@ -99,6 +107,8 @@ mod bskyclaim {
         last_tip: BTreeMap<String, String>,
         /// The bot account that tip posts mention: `@bot tip @someone 5`.
         bot_did: String,
+        /// DID -> text of the post the pending claim was proven with, checked against deposit phrases at payout.
+        claim_text: BTreeMap<String, String>,
     }
 
     impl BskyClaim {
@@ -122,6 +132,7 @@ mod bskyclaim {
                 budgets: BTreeMap::new(),
                 last_tip: BTreeMap::new(),
                 bot_did,
+                claim_text: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -135,10 +146,13 @@ mod bskyclaim {
             sender: RistrettoPublicKeyBytes,
             refund_epoch: u64,
             window_epochs: u64,
+            challenge: String,
             funds: Bucket,
         ) {
             assert!(valid_did(&did), "not a did:plc identifier");
             assert!(window_epochs <= self.max_window_epochs, "challenge window above the maximum");
+            assert!(challenge.len() <= MAX_CHALLENGE, "challenge phrase too long");
+            assert!(!challenge.chars().any(|c| c.is_control()), "challenge phrase has control characters");
             require_signer(sender);
             assert_eq!(funds.resource_address(), self.vault.resource_address(), "wrong resource");
             let amount = funds.amount();
@@ -146,7 +160,7 @@ mod bskyclaim {
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
             let list = self.deposits.entry(did).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
-            list.push((sender, amount, refund_epoch, window_epochs));
+            list.push((sender, amount, refund_epoch, window_epochs, challenge));
             self.vault.deposit(funds);
         }
 
@@ -200,8 +214,9 @@ mod bskyclaim {
             let (claimant, _, _, start) = self.pending.get(&did).cloned().expect("no pending claim");
             require_signer(claimant);
             let now = Consensus::current_epoch();
+            let text = self.claim_text.get(&did).map(|t| t.as_str()).unwrap_or("");
             assert!(
-                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| now >= start + e.3)),
+                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text))),
                 "nothing is payable yet"
             );
             let used = self.sponsored.get(&did).map_or(0, |s| s.1);
@@ -344,7 +359,7 @@ mod bskyclaim {
             self.last_tip.insert(did, rkey);
             let list = self.deposits.entry(recipient).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
-            list.push((owner, amount, Consensus::current_epoch() + refund_after, window));
+            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new()));
         }
 
         fn begin_claim(
@@ -372,7 +387,9 @@ mod bskyclaim {
             let code = claim_code(&CallerContext::current_component_address().to_string(), &did, &claimant);
             assert!(text.contains(&code), "the post does not contain the claim code");
 
+            assert!(text.len() <= MAX_CLAIM_TEXT, "claim post too long");
             self.known_len.insert(did.clone(), chain.len);
+            self.claim_text.insert(did.clone(), text.to_string());
             self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, Consensus::current_epoch()));
         }
 
@@ -387,6 +404,7 @@ mod bskyclaim {
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the claim already relies on");
             self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
             self.pending.remove(&did);
+            self.claim_text.remove(&did);
         }
 
         /// Pays out every deposit whose challenge window has passed since the claim started. Deposits with a
@@ -396,11 +414,13 @@ mod bskyclaim {
             require_signer(claimant);
             let now = Consensus::current_epoch();
             let list = self.deposits.remove(&did).unwrap_or_default();
-            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| now >= start + e.3);
-            assert!(!ready.is_empty(), "the challenge window is still open");
+            let text = self.claim_text.get(&did).cloned().unwrap_or_default();
+            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text));
+            assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
             if waiting.is_empty() {
                 self.pending.remove(&did);
+                self.claim_text.remove(&did);
             } else {
                 self.deposits.insert(did, waiting);
             }
@@ -410,7 +430,7 @@ mod bskyclaim {
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
         pub fn refund(&mut self, did: String, index: u32) -> Bucket {
             let list = self.deposits.get_mut(&did).expect("no deposits for this account");
-            let (sender, amount, refund_epoch, _) = *list.get(index as usize).expect("no such deposit");
+            let (sender, amount, refund_epoch, _, _) = list.get(index as usize).cloned().expect("no such deposit");
             require_signer(sender);
             assert!(Consensus::current_epoch() >= refund_epoch, "not refundable yet");
             list.remove(index as usize);
@@ -420,7 +440,7 @@ mod bskyclaim {
             self.vault.withdraw(amount)
         }
 
-        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64)> {
+        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)> {
             self.deposits.get(&did).cloned().unwrap_or_default()
         }
 
@@ -441,6 +461,12 @@ mod bskyclaim {
             verify_plc_chain(did, &ops).expect("invalid operation chain")
         }
     }
+}
+
+/// A deposit pays out once its challenge window has run since the claim started and the claim post said what
+/// the sender asked for.
+fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String), now: u64, start: u64, text: &str) -> bool {
+    now >= start + e.3 && (e.4.is_empty() || text.contains(e.4.as_str()))
 }
 
 fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {

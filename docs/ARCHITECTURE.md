@@ -43,7 +43,7 @@ The component state is a CBOR array. Indexes are append-only across versions, so
 
 ### Send
 
-The sender signs one transaction: withdraw from their account, call `deposit(did, sender_key, refund_epoch, window, funds)`. The sender chooses the challenge window per deposit. They can refund themselves after `refund_epoch`.
+The sender signs one transaction: withdraw from their account, call `deposit(did, sender_key, refund_epoch, window, challenge, funds)`. `challenge` is an optional phrase (up to 80 bytes, empty for none): the deposit only pays out if the claim post contains it exactly, and the contract keeps the claim post text to check this. A deposit whose phrase was not posted stays escrowed and the claimant can post again, so a hostile phrase cannot block other deposits. The sender chooses the challenge window per deposit. They can refund themselves after `refund_epoch`.
 
 ### Claim
 

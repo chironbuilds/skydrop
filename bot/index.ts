@@ -72,6 +72,7 @@ interface Dep {
   fp: string;
   amount: bigint;
   window: number;
+  challenge: string;
 }
 
 async function readDeposits(): Promise<Record<string, Dep[]>> {
@@ -83,7 +84,7 @@ async function readDeposits(): Promise<Record<string, Dep[]>> {
   for (const [did, list] of Object.entries(raw)) {
     out[did] = list.map((d) => {
       const sender = (d[0] as { hex: string }).hex;
-      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]) };
+      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? "") };
     });
   }
   return out;
@@ -198,9 +199,13 @@ async function notifyDeposits(): Promise<void> {
     }
     if (handle === "handle.invalid") continue;
     const careful = fresh.some((d) => d.window > 0) ? "\nA short safety window protects larger transfers." : "";
-    const text =
+    const ask = fresh.find((d) => d.challenge)?.challenge;
+    let text =
       `@${handle} 🎁 You have ${fmt(total)} tTARI waiting for you on Tari (testnet).\n` +
       `Prove you own this account and collect it. No wallet needed:\n${CLAIM_URL}/#/claim/${handle}${careful}`;
+    const withAsk = ask ? `${text}
+The sender asks you to say: “${ask}”` : text;
+    if ([...withAsk].length <= 295) text = withAsk;
     await post(text);
     state.lastNotified[did] = Date.now();
   }

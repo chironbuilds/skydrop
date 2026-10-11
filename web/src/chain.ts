@@ -74,6 +74,8 @@ export interface Deposit {
   amount: bigint;
   refundEpoch: number;
   window: number;
+  /** A phrase the claim post must contain for this deposit to pay out. Empty if none. */
+  challenge: string;
 }
 
 export interface Pending {
@@ -87,6 +89,8 @@ export interface Escrow {
   deposits: Deposit[];
   pending: Pending | null;
   maxWindow: number;
+  /** The text of the post the pending claim was proven with. */
+  claimText: string;
 }
 
 type Cbor = unknown;
@@ -103,25 +107,30 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
   return {
     epoch,
     maxWindow: Number(state[2]),
-    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]) })),
+    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? "") })),
     pending: pend ? { claimant: bytesHex(pend[0]), len: Number(pend[2]), start: Number(pend[3]) } : null,
+    claimText: String((state[11] as Record<string, string> | undefined)?.[did] ?? ""),
   };
 }
 
 /** What is payable right now to a claim that started at `start`. */
-export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null } {
+export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null; missing: string[] } {
   let amount = 0n;
   let waitingAmount = 0n;
   let next: number | null = null;
+  const missing = new Set<string>();
   for (const d of e.deposits) {
     const ready = start + d.window;
-    if (e.epoch >= ready) amount += d.amount;
+    if (d.challenge && !e.claimText.includes(d.challenge)) {
+      // pays only once the claim post says it; the claimant has to post again
+      missing.add(d.challenge);
+    } else if (e.epoch >= ready) amount += d.amount;
     else {
       waitingAmount += d.amount;
       next = next === null ? ready : Math.min(next, ready);
     }
   }
-  return { amount, waitingAmount, nextEpoch: next };
+  return { amount, waitingAmount, nextEpoch: next, missing: [...missing] };
 }
 
 /** TARI left in the vault that pays claimants' network fees. */
@@ -215,7 +224,7 @@ async function run(
 
 export async function sendTip(
   wallet: Wallet,
-  p: { did: string; amount: bigint; window: number },
+  p: { did: string; amount: bigint; window: number; challenge?: string },
   epoch: number,
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
@@ -224,7 +233,7 @@ export async function sendTip(
   const instructions = [
     call(owner, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
     toWorkspace,
-    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), workspace0]),
+    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), lit(p.challenge ?? ""), workspace0]),
   ];
   return run(wallet, instructions, 30_000n, onStage);
 }
@@ -280,6 +289,7 @@ export interface SentDeposit {
   amount: bigint;
   refundEpoch: number;
   window: number;
+  challenge: string;
 }
 
 /** Every deposit whose sender is `keyHex`, found by scanning component state index 3. */
@@ -291,7 +301,7 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
   const items: SentDeposit[] = [];
   for (const [did, list] of Object.entries(all)) {
     for (const d of list) {
-      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]) });
+      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? "") });
     }
   }
   return { epoch, items };
@@ -301,7 +311,7 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
 export async function refundDeposit(wallet: Wallet, provider: IndexerProvider, d: SentDeposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const esc = await readEscrow(provider, d.did);
   const mine = toHex(wallet.publicKey);
-  const index = esc.deposits.findIndex((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.window === d.window);
+  const index = esc.deposits.findIndex((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.window === d.window && x.challenge === d.challenge);
   if (index < 0) throw new ChainError("That deposit was already collected or taken back.");
   if (esc.epoch < d.refundEpoch) throw new ChainError("It can't be taken back yet.");
   const instructions = [call(CONFIG.component, "refund", [lit(d.did), lit(index)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];

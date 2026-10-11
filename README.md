@@ -35,7 +35,7 @@ The template verifies all of it inside WASM (`atp-verify/`). No ZK proof or orac
 |---|---|
 | `atp-verify/` | `no_std` Rust verifier: DAG-CBOR, PLC chain, MST, signatures |
 | `bskyclaim/` | The Ootle template (escrow component) |
-| `bskyclaim.rs` | Engine tests (synthetic atproto account), 15 tests |
+| `bskyclaim.rs` | Engine tests (synthetic atproto account), 17 tests |
 | `cli/bsky_cli.rs` | Esmeralda CLI: publish, new, deposit, fundfees, claim, finalize |
 | `src/` | Node proof assembler (PLC log plus repo CAR) |
 | `web/` | Skydrop frontend (Vite and TypeScript) |

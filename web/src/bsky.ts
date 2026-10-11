@@ -67,14 +67,14 @@ async function plcLog(did: string): Promise<Record<string, unknown>[]> {
 }
 
 /** Finds the user's post containing `code`, newest first. */
-export async function findClaimPost(did: string, code: string): Promise<{ uri: string; rkey: string } | null> {
+export async function findClaimPost(did: string, code: string, phrases: string[] = []): Promise<{ uri: string; rkey: string } | null> {
   const r = await fetch(
     `${CONFIG.publicApi}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=50&filter=posts_no_replies`,
   );
   if (!r.ok) throw new Error(`Couldn't read your posts (${r.status})`);
   const feed = (await r.json()) as { feed: { post: { uri: string; author: { did: string }; record?: { text?: string } } }[] };
   for (const { post } of feed.feed) {
-    if (post.author.did === did && (post.record?.text ?? "").includes(code)) {
+    if (post.author.did === did && (post.record?.text ?? "").includes(code) && phrases.every((p) => (post.record?.text ?? "").includes(p))) {
       const rkey = post.uri.split("/").pop()!;
       return { uri: post.uri, rkey };
     }
@@ -112,3 +112,17 @@ export async function buildClaimProof(did: string, rkey: string): Promise<ClaimP
 }
 
 export { toHex, fromHex };
+
+/** The claim post to suggest: the code, then each phrase the senders asked for, as long as a post can hold. */
+export function claimPostText(symbol: string, code: string, phrases: string[]): { text: string; used: string[]; dropped: number } {
+  let text = `Claiming my ${symbol} on Tari. ${code}`;
+  const used: string[] = [];
+  let dropped = 0;
+  for (const p of phrases) {
+    if ([...(text + "\n" + p)].length <= 290) {
+      text += "\n" + p;
+      used.push(p);
+    } else dropped++;
+  }
+  return { text, used, dropped };
+}

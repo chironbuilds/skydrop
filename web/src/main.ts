@@ -461,6 +461,14 @@ function renderSend(prefill?: string): void {
   const fundsEl = h("div");
   const card = h("div", { class: "card stack" });
   const noteInput = h("input", { class: "input", maxlength: String(env.MAX_NOTE), placeholder: "Happy birthday! Buy yourself a coffee.", "aria-label": "Note on the envelope" }) as HTMLInputElement;
+  const challengeInput = h("input", { class: "input", placeholder: "e.g. I love Tari", "aria-label": "Phrase they must post" }) as HTMLInputElement;
+  const challengeNote = h("div");
+  const challenge = (): string => challengeInput.value.replace(/\s+/g, " ").trim();
+  const challengeProblem = (): string => {
+    const c = challenge();
+    if (new TextEncoder().encode(c).length > CONFIG.maxChallenge) return `Keep it under ${CONFIG.maxChallenge} bytes (about ${CONFIG.maxChallenge} letters, fewer for non-Latin text).`;
+    return "";
+  };
   const pickEl = h("div", { class: "env-pick", role: "radiogroup", "aria-label": "Envelope" });
   const previewEl = h("div", { class: "env-preview" });
   const drawEnvelope = (): void => {
@@ -493,7 +501,9 @@ function renderSend(prefill?: string): void {
   const update = (): void => {
     const a = amount();
     const short = needsFunds(a ?? 0n);
-    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short;
+    const problem = challengeProblem();
+    mount(challengeNote, problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null);
+    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem;
     sendBtn.disabled = !ok;
     const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
     mount(
@@ -517,6 +527,7 @@ function renderSend(prefill?: string): void {
 
   amountInput.addEventListener("input", () => { update(); drawEnvelope(); });
   noteInput.addEventListener("input", drawEnvelope);
+  challengeInput.addEventListener("input", update);
   amountInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !sendBtn.disabled) sendBtn.click();
   });
@@ -530,7 +541,7 @@ function renderSend(prefill?: string): void {
     const say = (s: string) => stage.appendChild(h("div", null, s));
     try {
       const esc = await chain.readEscrow(provider, profile.did);
-      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs }, esc.epoch, say);
+      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge() }, esc.epoch, say);
       await refreshBalance();
       done(profile, a, windowEpochs);
     } catch (e) {
@@ -544,7 +555,7 @@ function renderSend(prefill?: string): void {
     confetti();
     const note = env.cleanNote(noteInput.value);
     const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`);
-    const noteLine = note ? `\n“${note}”` : "";
+    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, include this in your claim post: ${challenge()}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
       card,
@@ -574,6 +585,7 @@ function renderSend(prefill?: string): void {
     h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
     h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
     h("div", null, h("label", { class: "f" }, "Envelope"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("p", { class: "help" }, "Optional. The envelope and note travel in the claim link you share, so they see it when they open it.")),
+    h("div", null, h("label", { class: "f" }, "Challenge (optional)"), challengeInput, challengeNote, h("p", { class: "help" }, "Make them post something specific. The money is only released if their claim post contains this exact phrase (capital letters and all), and the contract checks it. If they never post it, you can take your money back after the refund time.")),
     h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
     h("div", null, sendBtn, stage),
   );
@@ -751,6 +763,9 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
   let watching = true;
   let checking = false;
   const canAuto = (): boolean => !autoOff && wallet.kind === "builtin";
+  // Phrases senders asked for. The post has to contain the ones that fit in it; deposits whose phrase didn't fit stay escrowed.
+  const claimPost = (): { text: string; used: string[]; dropped: number } =>
+    bsky.claimPostText(CONFIG.symbol, code, [...new Set((esc?.deposits ?? []).map((d) => d.challenge).filter(Boolean))]);
 
   const stepsEl = h("div");
   const field = handleField(prefill ?? lastHandle(), (p) => {
@@ -794,7 +809,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
     if (!watching) return;
     checking = true;
     try {
-      if (await bsky.findClaimPost(profile.did, code)) {
+      if (await bsky.findClaimPost(profile.did, code, claimPost().used)) {
         watching = false;
         if (canAuto()) void autoVerify?.();
         else toast("We found your post. Press Verify to continue.", "good");
@@ -831,7 +846,9 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
     const pay = chain.payableNow(e, start);
 
     const stepClass = (n: number, cur: number) => `step ${n < cur ? "done" : n === cur ? "active" : "locked"}`;
-    const cur = !mine ? 1 : pay.amount > 0n ? 4 : 3;
+    // a claim whose post missed a phrase a sender asked for pays nothing on that deposit: post again
+    const needPhrase = mine && pay.missing.length > 0 && pay.amount === 0n && pay.waitingAmount === 0n;
+    const cur = !mine || needPhrase ? 1 : pay.amount > 0n ? 4 : 3;
 
     const logEl = h("div", { class: "log" });
     const say = (s: string) => logEl.appendChild(h("div", null, s));
@@ -845,7 +862,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
       mount(verifyBtn, ...spinnerLabel("Verifying…"));
       try {
         say("Looking for your post on Bluesky");
-        const post = await bsky.findClaimPost(p.did, code);
+        const post = await bsky.findClaimPost(p.did, code, claimPost().used);
         if (!post) throw new Error("We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
@@ -942,7 +959,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
     });
     autoCollect = runCollect;
 
-    const postText = `Claiming my ${CONFIG.symbol} on Tari. ${code}`;
+    const { text: postText, dropped } = claimPost();
     const maxWin = Math.max(...e.deposits.map((d) => d.window));
     const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
     const pct = maxWin ? Math.min(100, Math.round((elapsed / maxWin) * 100)) : 100;
@@ -955,7 +972,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
       h(
         "div",
         { class: "steps" },
-        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards."), h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards."), pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It is already in the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
         h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, canAuto() && !autoOff ? h("p", { class: "help" }, "Watching for your post. This continues by itself once it appears, and your tTARI is collected automatically when it's due.") : null, verifyBtn, logEl) : null)),
         h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
         h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, "4"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, "Your tTARI lands in your Skydrop wallet."))),
