@@ -124,7 +124,8 @@ export { toHex, fromHex };
 
 /** The claim post to suggest: the code, then each phrase the senders asked for, as long as a post can hold. */
 export function claimPostText(symbol: string, code: string, phrases: string[]): { text: string; used: string[]; dropped: number } {
-  const tail = code ? `Claiming my ${symbol} on Tari. ${code}` : `Claiming my ${symbol} on Tari.`;
+  // a linked account posts the sender's phrase alone
+  const tail = code ? `Claiming my ${symbol} on Tari. ${code}` : "";
   const used: string[] = [];
   let dropped = 0;
   let len = [...tail].length;
@@ -136,7 +137,7 @@ export function claimPostText(symbol: string, code: string, phrases: string[]): 
     } else dropped++;
   }
   // the senders' phrases lead the post, the claim line follows
-  return { text: [...used, tail].join("\n"), used, dropped };
+  return { text: [...used, tail].filter(Boolean).join("\n"), used, dropped };
 }
 
 /** Why no post matched: a claim post for another wallet, or one missing a phrase. Empty if there is no claim post at all. */
