@@ -110,6 +110,7 @@ const ZH: Record<string, string> = {
   "Yes, once your wallet is linked: open Collect, pick \"Decline a gift\" and sign from your wallet. The money goes back to the sender, who takes it back from Your sends. Phrase gifts nobody answers for about three days can be sent back by anyone.": "可以，关联钱包之后：打开「领取」，选择「拒绝礼物」，用你的钱包签名。款项会退回给发送者，对方在「我的发送」里取回。无人响应的口令礼物约三天后可由任何人退回。",
   "What if my Bluesky key was stolen?": "如果我的 Bluesky 密钥被盗了怎么办？",
   "A proof can't show an account's history is complete, so links and claims wait out a short delay during which anyone, and the Skydrop bot, can cancel them by showing the account's newer history. Larger gifts can add a longer safety window.": "证明无法说明账号的历史记录是完整的，所以关联和领取都要先经过一小段等待期，期间任何人（包括 Skydrop 机器人）都可以出示账号更新的历史记录来取消。大额礼物还可以设置更长的安全期。",
+  "Not interested? Link your wallet first, then you can decline the gift and it goes back to the sender.": "不感兴趣？先关联钱包，之后就能拒绝这份礼物，款项会退回给发送者。",
   Refundable: "可取回",
   "Claim started": "已开始领取",
   "Needs a link": "需先关联",
