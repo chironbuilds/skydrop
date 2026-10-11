@@ -74,6 +74,7 @@ interface Dep {
   amount: bigint;
   window: number;
   challenge: string;
+  hold: number;
 }
 
 async function readDeposits(): Promise<Record<string, Dep[]>> {
@@ -85,7 +86,7 @@ async function readDeposits(): Promise<Record<string, Dep[]>> {
   for (const [did, list] of Object.entries(raw)) {
     out[did] = list.map((d) => {
       const sender = (d[0] as { hex: string }).hex;
-      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? "") };
+      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) };
     });
   }
   return out;
@@ -230,7 +231,10 @@ async function notifyDeposits(): Promise<void> {
     }
     if (handle === "handle.invalid") continue;
     const careful = fresh.some((d) => d.window > 0) ? "\nA short safety window protects larger transfers." : "";
-    const ask = fresh.find((d) => d.challenge)?.challenge;
+    const asked = fresh.find((d) => d.challenge);
+    const ask = asked?.challenge;
+    // an epoch is about an hour
+    const keep = asked?.hold ? ` and keep the post up for about ${asked.hold} hour${asked.hold === 1 ? "" : "s"}` : "";
     // the envelope the sender picked, if their app registered one, so the mention shows the same card as their own link
     let saved: EnvelopeRecord | null = null;
     for (const d of fresh) {
@@ -251,7 +255,7 @@ async function notifyDeposits(): Promise<void> {
     let text =
       `@${handle} 🎁 You have ${fmt(total)} tTARI waiting for you on Tari (testnet).\n` +
       `Prove you own this account and collect it. No wallet needed:\n${label} ↗${careful}`;
-    const withAsk = ask ? `${text}\nThe sender asks you to say: “${ask}”` : text;
+    const withAsk = ask ? `${text}\nThe sender asks you to say: “${ask}”${keep}` : text;
     if ([...withAsk].length <= 295) text = withAsk;
     await post(text, undefined, {
       label,

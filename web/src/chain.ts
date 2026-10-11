@@ -78,6 +78,8 @@ export interface Deposit {
   window: number;
   /** A phrase the claim post must contain for this deposit to pay out. Empty if none. */
   challenge: string;
+  /** Epochs the claim post must stay up after the claim starts (0 for none). */
+  hold: number;
 }
 
 export interface Pending {
@@ -95,6 +97,8 @@ export interface Escrow {
   claimText: string;
   /** The Ootle account this Bluesky account has linked, if one is in effect now. Funds that need no window or phrase go straight to it. */
   binding: string | null;
+  /** The claim post's rkey and the epoch it was last proven to exist. */
+  held: { rkey: string; epoch: number } | null;
 }
 
 type Cbor = unknown;
@@ -111,11 +115,18 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
   return {
     epoch,
     maxWindow: Number(state[2]),
-    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? "") })),
+    deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) })),
     pending: pend ? { claimant: bytesHex(pend[0]), len: Number(pend[2]), start: Number(pend[3]) } : null,
     claimText: String((state[11] as Record<string, string> | undefined)?.[did] ?? ""),
     binding: bindingOf(state[12], did, epoch),
+    held: heldOf(state[14], did),
   };
+}
+
+/** Component state index 14: DID -> [rkey of the claim post, epoch it was last proven to exist]. */
+function heldOf(map: Cbor, did: string): { rkey: string; epoch: number } | null {
+  const h = (map as Record<string, Cbor[]> | undefined)?.[did];
+  return h ? { rkey: String(h[0]), epoch: Number(h[1]) } : null;
 }
 
 /** A component address as the state stores it, written the way the wallet writes it. */
@@ -149,23 +160,30 @@ export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: st
 }
 
 /** What is payable right now to a claim that started at `start`. */
-export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null; missing: string[] } {
+export function payableNow(e: Escrow, start: number): { amount: bigint; waitingAmount: bigint; nextEpoch: number | null; missing: string[]; holding: bigint; confirmAt: number | null } {
   let amount = 0n;
   let waitingAmount = 0n;
   let next: number | null = null;
+  let holding = 0n;
+  let confirmAt: number | null = null;
+  const seen = e.held?.epoch ?? start;
   const missing = new Set<string>();
   for (const d of e.deposits) {
     const ready = start + d.window;
     if (d.challenge && !e.claimText.includes(d.challenge)) {
       // pays only once the claim post says it; the claimant has to post again
       missing.add(d.challenge);
+    } else if (seen < start + d.hold) {
+      // the post has to be proven to still be up once the hold time has passed
+      holding += d.amount;
+      confirmAt = confirmAt === null ? start + d.hold : Math.min(confirmAt, start + d.hold);
     } else if (e.epoch >= ready) amount += d.amount;
     else {
       waitingAmount += d.amount;
       next = next === null ? ready : Math.min(next, ready);
     }
   }
-  return { amount, waitingAmount, nextEpoch: next, missing: [...missing] };
+  return { amount, waitingAmount, nextEpoch: next, missing: [...missing], holding, confirmAt };
 }
 
 /** TARI left in the vault that pays claimants' network fees. */
@@ -204,6 +222,8 @@ export function friendly(e: unknown): string {
     [/already claimed/i, "This wallet already used the faucet."],
     [/deposit below the minimum/i, `The smallest amount you can send is ${Number(CONFIG.minDeposit) / Number(CONFIG.unit)} ${CONFIG.symbol}.`],
     [/challenge window above the maximum/i, "That safety level isn't available."],
+    [/hold time above the maximum/i, "That hold time is too long."],
+    [/not the post the claim was made with/i, "That isn't the post you claimed with. Keep the original post up and try again."],
     [/Timed out/i, "The network is slow right now. Please try again."],
   ];
   for (const [re, text] of rules) if (re.test(m)) return text;
@@ -259,7 +279,7 @@ async function run(
 
 export async function sendTip(
   wallet: Wallet,
-  p: { did: string; amount: bigint; window: number; challenge?: string },
+  p: { did: string; amount: bigint; window: number; challenge?: string; hold?: number },
   epoch: number,
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
@@ -268,7 +288,7 @@ export async function sendTip(
   const instructions = [
     call(owner, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
     toWorkspace,
-    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), lit(p.challenge ?? ""), workspace0]),
+    call(CONFIG.component, "deposit", [lit(p.did), lit(pk), lit(epoch + CONFIG.refundAfterEpochs), lit(p.window), lit(p.challenge ?? ""), lit(p.hold ?? 0), workspace0]),
   ];
   return run(wallet, instructions, 30_000n, onStage);
 }
@@ -297,6 +317,12 @@ export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: s
 
 /** The account component behind a wallet address (otl_…). */
 export const accountOf = (walletAddress: string): string => componentAddressFromWalletAddress(walletAddress);
+
+/** Proves again that the claim post is still up, once a deposit's hold time has passed. */
+export async function confirmClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const instructions = [call(CONFIG.component, "confirm_claim", [lit(proof.did), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)])];
+  return run(wallet, instructions, 120_000n, onStage);
+}
 
 /** Why `address` can't be paid from `own` (a wallet address on the same network), or null when it can. */
 export function addressProblem(address: string, own: string): string | null {
@@ -328,6 +354,7 @@ export interface SentDeposit {
   refundEpoch: number;
   window: number;
   challenge: string;
+  hold: number;
 }
 
 /** Every deposit whose sender is `keyHex`, found by scanning component state index 3. */
@@ -339,7 +366,7 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
   const items: SentDeposit[] = [];
   for (const [did, list] of Object.entries(all)) {
     for (const d of list) {
-      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? "") });
+      if (bytesHex(d[0]) === keyHex) items.push({ did, amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0) });
     }
   }
   return { epoch, items };
@@ -349,7 +376,7 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
 export async function refundDeposit(wallet: Wallet, provider: IndexerProvider, d: SentDeposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const esc = await readEscrow(provider, d.did);
   const mine = toHex(wallet.publicKey);
-  const index = esc.deposits.findIndex((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.window === d.window && x.challenge === d.challenge);
+  const index = esc.deposits.findIndex((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.window === d.window && x.challenge === d.challenge && x.hold === d.hold);
   if (index < 0) throw new ChainError("That deposit was already collected or taken back.");
   if (esc.epoch < d.refundEpoch) throw new ChainError("It can't be taken back yet.");
   const instructions = [call(CONFIG.component, "refund", [lit(d.did), lit(index)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];
@@ -454,6 +481,18 @@ async function sendSponsored(
       inputs = [...inputs, resolved!];
     }
   }
+}
+
+export async function confirmClaimSponsored(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  return sendSponsored(
+    account,
+    (b) =>
+      b.addFeeInstruction(
+        call(CONFIG.component, "confirm_claim_sponsored", [lit(proof.did), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey), amountLiteral(SPONSOR_FEE)]),
+      ),
+    onStage,
+  );
 }
 
 export async function startClaimSponsored(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {

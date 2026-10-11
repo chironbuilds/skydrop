@@ -229,6 +229,7 @@ async fn main() {
             let refund_in: u64 = args[4].parse().unwrap();
             let window: u64 = arg(6, "2").parse().unwrap();
             let challenge = arg(7, "");
+            let hold: u64 = arg(8, "0").parse().unwrap();
             let sender = load_named(&arg(5, "wallet"));
             let sender_id = identity_bytes(&sender);
             let account = sender.to_address().to_account_address();
@@ -242,7 +243,7 @@ async fn main() {
                         b.call_method(account, "withdraw", args![TARI_TOKEN, Amount::new(u128::from(amount))])
                             .put_last_instruction_output_on_workspace("funds")
                     })
-                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, challenge.clone(), Workspace("funds")])
+                    .call_method(component, "deposit", args![did.clone(), sender_id, refund_epoch, window, challenge.clone(), hold, Workspace("funds")])
                     .pay_fee(fee)
                     .prepare()
             };

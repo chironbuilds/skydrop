@@ -339,12 +339,16 @@ impl Env {
     }
 
     fn deposit_with(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64, challenge: &str) -> Option<String> {
+        self.deposit_hold(from, did, amount, refund_epoch, window, challenge, 0)
+    }
+
+    fn deposit_hold(&mut self, from: &User, did: &str, amount: u64, refund_epoch: u64, window: u64, challenge: &str, hold: u64) -> Option<String> {
         let c = self.component;
         let (account, id, did, challenge) = (from.account, from.id, did.to_string(), challenge.to_string());
         self.run(from, |t| {
             t.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
                 .put_last_instruction_output_on_workspace("funds")
-                .call_method(c, "deposit", args![did, id, refund_epoch, window, challenge, Workspace("funds")])
+                .call_method(c, "deposit", args![did, id, refund_epoch, window, challenge, hold, Workspace("funds")])
         })
     }
 
@@ -372,6 +376,19 @@ impl Env {
                 .put_last_instruction_output_on_workspace("paid")
                 .call_method(account, "deposit", args![Workspace("paid")])
         })
+    }
+
+    fn confirm(&mut self, who: &User, acct: &Account, post: &Post) -> Option<String> {
+        let c = self.component;
+        let did = acct.did.clone();
+        let (ops, commit, nodes, record, rkey) = (
+            bytes_list(&acct.ops),
+            Bytes::from_vec(post.commit.clone()),
+            bytes_list(&post.nodes),
+            Bytes::from_vec(post.record.clone()),
+            post.rkey.clone(),
+        );
+        self.run(who, |t| t.call_method(c, "confirm_claim", args![did, ops, commit, nodes, record, rkey]))
     }
 
     fn bind_text(&mut self, did: &str, address: ComponentAddress) -> String {
@@ -804,7 +821,7 @@ impl Env {
         self.test.call_method(self.component, "budget_for", args![did.to_string(), owner], vec![])
     }
 
-    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)> {
+    fn deposits_for(&mut self, did: &str) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)> {
         self.test.call_method(self.component, "deposits_for", args![did.to_string()], vec![])
     }
 }
@@ -1168,4 +1185,49 @@ fn binding_state_survives_a_realistic_epoch() {
     let other = Account::new();
     assert_eq!(env.deposit(&sender, &other.did, 1_000_000, 12_200, WINDOW), None);
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 12_200, 0), None);
+}
+
+#[test]
+fn a_post_that_must_stay_up_is_only_paid_after_it_is_proven_again() {
+    let mut env = Env::new();
+    let (sender, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    // a hold time needs a phrase
+    expect_err(env.deposit_hold(&sender, &acct.did, 1_000_000, 100, 0, "", 3), "needs a challenge phrase");
+    expect_err(env.deposit_hold(&sender, &acct.did, 1_000_000, 100, 0, "I love Tari", 73), "above the maximum");
+    assert_eq!(env.deposit_hold(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari", 3), None);
+
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    // not paid straight away, and not by waiting alone
+    expect_err(env.finalize(&alice, &acct.did), "window is still open");
+    set_epoch(&mut env.test, 6);
+    expect_err(env.finalize(&alice, &acct.did), "window is still open");
+    // a different post is not the one the claim was made with
+    let other = acct.post(&format!("I love Tari {code} again"), "3kbbbbbbbbbbb");
+    expect_err(env.confirm(&alice, &acct, &other), "not the post the claim was made with");
+    // the same post, proven again after the hold time, releases it
+    assert_eq!(env.confirm(&alice, &acct, &post), None);
+    let before = env.balance(&alice);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(2_000_000u64));
+}
+
+#[test]
+fn proving_the_post_too_early_does_not_release_a_held_deposit() {
+    let mut env = Env::new();
+    let (sender, alice) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit_hold(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari", 3), None);
+    let code = env.code_for(&acct.did, &alice);
+    let post = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    set_epoch(&mut env.test, 2);
+    assert_eq!(env.confirm(&alice, &acct, &post), None);
+    expect_err(env.finalize(&alice, &acct.did), "window is still open");
+    // proven again once the time has passed
+    set_epoch(&mut env.test, 5);
+    assert_eq!(env.confirm(&alice, &acct, &post), None);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
 }

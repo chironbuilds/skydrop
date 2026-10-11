@@ -18,6 +18,8 @@
 //!   for a bound account that need no challenge window and no phrase are paid straight to that address;
 //!   anything else still escrows, and a payout goes to the bound address too. A new binding replaces an old
 //!   one only after a delay, and a post can be used once, so an old post cannot move the binding back.
+//! * A deposit with a phrase may also ask that the claim post stay up for some epochs. The claimant then
+//!   re-proves the same post (`confirm_claim`) once that time has passed, and only then is it paid.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
 use atp_verify::{record_text, sha256, verify_plc_chain, verify_record};
@@ -40,12 +42,15 @@ const MAX_CLAIM_TEXT: usize = 4096;
 /// Epochs before a replacement binding takes over from the one it replaces.
 const BIND_DELAY_EPOCHS: u64 = 1;
 const BIND_DOMAIN: &[u8] = b"tari-bsky-bind:v1:";
+/// Longest time (epochs) a sender may ask a claim post to stay up.
+const MAX_HOLD_EPOCHS: u64 = 72;
 const MAX_BLOCK_LEN: usize = 16 * 1024;
 /// Ceiling on the fee one sponsored call may offer from the sponsor vault (µT).
 const MAX_SPONSORED_FEE: u64 = 100_000;
 /// Sponsored claim starts and payouts one account may draw. Beyond that the claimant pays their own fee.
 const MAX_SPONSORED_STARTS: u32 = 3;
 const MAX_SPONSORED_FINALS: u32 = 3;
+const MAX_SPONSORED_CONFIRMS: u32 = 3;
 
 /// The text a claimant must post: `tari-claim:` followed by this code.
 fn claim_code(component: &str, did: &str, claimant: &RistrettoPublicKeyBytes) -> String {
@@ -113,7 +118,8 @@ mod bskyclaim {
         /// DID -> (sender, amount, refund epoch, challenge window in epochs, required phrase). Each sender picks
         /// the window for their own deposit: 0 for a small tip, longer for a large transfer. An empty phrase
         /// means none is required.
-        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)>>,
+        /// The last element is how many epochs the claim post must stay up (0 for none; needs a phrase).
+        deposits: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)>>,
         /// DID -> (claimant, hash of the chain tip, chain length, epoch the claim started).
         pending: BTreeMap<String, (RistrettoPublicKeyBytes, Bytes, u32, u64)>,
         /// DID -> longest valid operation chain seen. A claim must present a chain at least this long.
@@ -122,7 +128,7 @@ mod bskyclaim {
         /// Kept apart from `vault`: deposits are never spent on fees.
         fee_vault: Vault,
         /// DID -> (sponsored claim starts, sponsored finalisations). Bounds what one account can draw.
-        sponsored: BTreeMap<String, (u32, u32)>,
+        sponsored: BTreeMap<String, (u32, u32, u32)>,
         /// "did:owner-key-hex" -> tip budget: (balance, challenge window for tips, refund after epochs, max per tip).
         /// The owner key funds and withdraws it. Whoever controls the DID can spend it, by posting a tip command.
         budgets: BTreeMap<String, (Amount, u64, u64, Amount)>,
@@ -136,6 +142,8 @@ mod bskyclaim {
         bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress)>,
         /// DID -> rkey of the last bind post used. Bind posts must have a larger rkey.
         last_bind: BTreeMap<String, String>,
+        /// DID -> (rkey of the claim post, epoch it was last proven to exist). Starts at the claim's start.
+        held: BTreeMap<String, (String, u64)>,
     }
 
     impl BskyClaim {
@@ -162,6 +170,7 @@ mod bskyclaim {
                 claim_text: BTreeMap::new(),
                 bindings: BTreeMap::new(),
                 last_bind: BTreeMap::new(),
+                held: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -176,9 +185,12 @@ mod bskyclaim {
             refund_epoch: u64,
             window_epochs: u64,
             challenge: String,
+            hold_epochs: u64,
             funds: Bucket,
         ) {
             assert!(valid_did(&did), "not a did:plc identifier");
+            assert!(hold_epochs <= MAX_HOLD_EPOCHS, "hold time above the maximum");
+            assert!(hold_epochs == 0 || !challenge.is_empty(), "a hold time needs a challenge phrase");
             assert!(window_epochs <= self.max_window_epochs, "challenge window above the maximum");
             assert!(challenge.len() <= MAX_CHALLENGE, "challenge phrase too long");
             assert!(!challenge.chars().any(|c| c.is_control()), "challenge phrase has control characters");
@@ -195,7 +207,7 @@ mod bskyclaim {
             }
             let list = self.deposits.entry(did).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
-            list.push((sender, amount, refund_epoch, window_epochs, challenge));
+            list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs));
             self.vault.deposit(funds);
         }
 
@@ -289,8 +301,62 @@ mod bskyclaim {
             let used = self.sponsored.get(&did).map_or(0, |s| s.0);
             assert!(used < MAX_SPONSORED_STARTS, "this account has used its sponsored claims");
             self.begin_claim(did.clone(), claimant, ops, commit, mst_nodes, record, rkey);
-            self.sponsored.entry(did).or_insert((0, 0)).0 += 1;
+            self.sponsored.entry(did).or_insert((0, 0, 0)).0 += 1;
             self.fee_vault.pay_fee(fee);
+        }
+
+        /// Proves again that the post the pending claim was made with is still up. Once a deposit's hold time has
+        /// passed since the claim started, this proof is what releases it. The post is the authority, so anyone
+        /// may submit it.
+        pub fn confirm_claim(
+            &mut self,
+            did: String,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+        ) {
+            self.begin_confirm(did, ops, commit, mst_nodes, record, rkey);
+        }
+
+        /// `confirm_claim`, with the network fee paid from the sponsor vault. Call it from the fee phase.
+        pub fn confirm_claim_sponsored(
+            &mut self,
+            did: String,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+            fee: Amount,
+        ) {
+            assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
+            let used = self.sponsored.get(&did).map_or(0, |s| s.2);
+            assert!(used < MAX_SPONSORED_CONFIRMS, "this account has used its sponsored confirmations");
+            self.begin_confirm(did.clone(), ops, commit, mst_nodes, record, rkey);
+            self.sponsored.entry(did).or_insert((0, 0, 0)).2 += 1;
+            self.fee_vault.pay_fee(fee);
+        }
+
+        fn begin_confirm(&mut self, did: String, ops: Vec<Bytes>, commit: Bytes, mst_nodes: Vec<Bytes>, record: Bytes, rkey: String) {
+            let (claimant, _, _, _) = self.pending.get(&did).cloned().expect("no pending claim");
+            let (held_rkey, _) = self.held.get(&did).cloned().expect("no pending claim");
+            assert!(rkey == held_rkey, "that is not the post the claim was made with");
+            let chain = self.check_chain(&did, &ops);
+            if let Some(&known) = self.known_len.get(&did) {
+                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
+            }
+            let nodes = slices(&mst_nodes, MAX_NODES);
+            assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
+            verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
+                .expect("invalid repo proof");
+            let text = record_text(record.as_slice()).expect("record has no text");
+            let code = claim_code(&CallerContext::current_component_address().to_string(), &did, &claimant);
+            assert!(text.contains(&code), "the post does not contain the claim code");
+            assert!(self.claim_text.get(&did).is_some_and(|t| t.as_str() == text), "the post has changed since the claim started");
+            self.known_len.insert(did.clone(), chain.len);
+            self.held.insert(did, (rkey, Consensus::current_epoch()));
         }
 
         /// Pays the fee of the claimant's `finalize_claim`, called from the fee phase. Only when a claim is
@@ -301,13 +367,14 @@ mod bskyclaim {
             require_signer(claimant);
             let now = Consensus::current_epoch();
             let text = self.claim_text.get(&did).map(|t| t.as_str()).unwrap_or("");
+            let seen = self.held.get(&did).map_or(start, |h| h.1);
             assert!(
-                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text))),
+                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text, seen))),
                 "nothing is payable yet"
             );
             let used = self.sponsored.get(&did).map_or(0, |s| s.1);
             assert!(used < MAX_SPONSORED_FINALS, "this account has used its sponsored payouts");
-            self.sponsored.entry(did).or_insert((0, 0)).1 += 1;
+            self.sponsored.entry(did).or_insert((0, 0, 0)).1 += 1;
             self.fee_vault.pay_fee(fee);
         }
 
@@ -452,7 +519,7 @@ mod bskyclaim {
             }
             let list = self.deposits.entry(recipient).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
-            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new()));
+            list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new(), 0));
         }
 
         fn begin_claim(
@@ -483,6 +550,7 @@ mod bskyclaim {
             assert!(text.len() <= MAX_CLAIM_TEXT, "claim post too long");
             self.known_len.insert(did.clone(), chain.len);
             self.claim_text.insert(did.clone(), text.to_string());
+            self.held.insert(did.clone(), (rkey, Consensus::current_epoch()));
             self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, Consensus::current_epoch()));
         }
 
@@ -498,6 +566,7 @@ mod bskyclaim {
             self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
             self.pending.remove(&did);
             self.claim_text.remove(&did);
+            self.held.remove(&did);
         }
 
         /// Pays out every deposit whose challenge window has passed since the claim started. Deposits with a
@@ -508,13 +577,15 @@ mod bskyclaim {
             let now = Consensus::current_epoch();
             let list = self.deposits.remove(&did).unwrap_or_default();
             let text = self.claim_text.get(&did).cloned().unwrap_or_default();
-            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text));
+            let seen = self.held.get(&did).map_or(start, |h| h.1);
+            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen));
             assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
             let bound = self.active_binding(&did);
             if waiting.is_empty() {
                 self.pending.remove(&did);
                 self.claim_text.remove(&did);
+                self.held.remove(&did);
             } else {
                 self.deposits.insert(did, waiting);
             }
@@ -531,7 +602,7 @@ mod bskyclaim {
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
         pub fn refund(&mut self, did: String, index: u32) -> Bucket {
             let list = self.deposits.get_mut(&did).expect("no deposits for this account");
-            let (sender, amount, refund_epoch, _, _) = list.get(index as usize).cloned().expect("no such deposit");
+            let (sender, amount, refund_epoch, _, _, _) = list.get(index as usize).cloned().expect("no such deposit");
             require_signer(sender);
             assert!(Consensus::current_epoch() >= refund_epoch, "not refundable yet");
             list.remove(index as usize);
@@ -541,7 +612,7 @@ mod bskyclaim {
             self.vault.withdraw(amount)
         }
 
-        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String)> {
+        pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)> {
             self.deposits.get(&did).cloned().unwrap_or_default()
         }
 
@@ -569,10 +640,10 @@ mod bskyclaim {
     }
 }
 
-/// A deposit pays out once its challenge window has run since the claim started and the claim post said what
-/// the sender asked for.
-fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String), now: u64, start: u64, text: &str) -> bool {
-    now >= start + e.3 && (e.4.is_empty() || text.contains(e.4.as_str()))
+/// A deposit pays out once its challenge window has run since the claim started, the claim post said what the
+/// sender asked for, and (if asked) the post was proven to still be up `hold` epochs after the claim started.
+fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64) -> bool {
+    now >= start + e.3 && (e.4.is_empty() || text.contains(e.4.as_str())) && seen >= start + e.5
 }
 
 fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {

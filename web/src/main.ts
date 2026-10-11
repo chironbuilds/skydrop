@@ -472,6 +472,9 @@ function renderSend(prefill?: string): void {
   const noteInput = h("input", { class: "input", maxlength: String(env.MAX_NOTE), placeholder: "Happy birthday! Buy yourself a coffee.", "aria-label": "Note on the envelope" }) as HTMLInputElement;
   const challengeInput = h("input", { class: "input", placeholder: "e.g. I love Tari", "aria-label": "Phrase they must post" }) as HTMLInputElement;
   const challengeNote = h("div");
+  // how long the claim post must stay up before the money is released (epochs; only with a phrase)
+  const holdSelect = h("select", { class: "input", "aria-label": "How long the post must stay up" }, [0, 1, 3, 6, 12, 24].map((n) => h("option", { value: String(n) }, n ? `Must stay up for ${eta(n)}` : "No need to keep it up"))) as HTMLSelectElement;
+  const hold = (): number => (challenge() ? Number(holdSelect.value) : 0);
   const challenge = (): string => challengeInput.value.replace(/\s+/g, " ").trim();
   const challengeProblem = (): string => {
     const c = challenge();
@@ -582,7 +585,7 @@ function renderSend(prefill?: string): void {
     const say = (s: string) => stage.appendChild(h("div", null, s));
     try {
       const esc = await chain.readEscrow(provider, profile.did);
-      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge() }, esc.epoch, say);
+      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge(), hold: hold() }, esc.epoch, say);
       // let the bot's mention and the "Remind them" link use the same envelope as the link shown after sending
       void env.registerEnvelope(env.depositFp(toHex(wallet.publicKey), a, esc.epoch + CONFIG.refundAfterEpochs, windowEpochs), {
         e: style.id,
@@ -603,7 +606,7 @@ function renderSend(prefill?: string): void {
     confetti();
     const note = env.cleanNote(noteInput.value);
     const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId);
-    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, include this in your claim post: ${challenge()}` : "");
+    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, include this in your claim post: ${challenge()}${hold() ? ` (and keep the post up for ${eta(hold())})` : ""}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
       card,
@@ -633,7 +636,7 @@ function renderSend(prefill?: string): void {
     h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
     h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
     h("div", null, h("label", { class: "f" }, "Envelope"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("p", { class: "help" }, "Optional. The envelope and note travel in the claim link you share, so they see it when they open it.")),
-    h("div", null, h("label", { class: "f" }, "Challenge (optional)"), challengeInput, challengeNote, h("p", { class: "help" }, "Make them post something specific. The money is only released if their claim post contains this exact phrase (capital letters and all), and the contract checks it. If they never post it, you can take your money back after the refund time.")),
+    h("div", null, h("label", { class: "f" }, "Challenge (optional)"), challengeInput, challengeNote, h("div", { style: "margin-top:8px" }, holdSelect), h("p", { class: "help" }, "Make them post something specific. The money is only released if their claim post contains this exact phrase (capital letters and all), and the contract checks it. If you pick a time, the post also has to stay up that long: they prove it again after the time has passed, and a deleted post can't be proven. If they never do, you can take your money back after the refund time.")),
     h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
     h("div", null, sendBtn, stage),
   );
@@ -936,6 +939,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   // Anything that fails switches this off so you get the buttons and the error instead of a retry loop.
   let autoVerify: (() => Promise<void>) | null = null;
   let autoCollect: (() => Promise<void>) | null = null;
+  let autoConfirm: (() => Promise<void>) | null = null;
   let autoOff = false;
   let watching = true;
   let checking = false;
@@ -982,6 +986,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     let again = false;
     if (esc.pending?.claimant === myKeyHex) {
       const pay = chain.payableNow(esc, esc.pending.start);
+      if (canAuto() && pay.holding > 0n && pay.confirmAt !== null && esc.epoch >= pay.confirmAt) void autoConfirm?.();
       if (canAuto() && pay.amount > 0n) void autoCollect?.();
       // what is left only needs a phrase the first post didn't have: keep watching for a post that has it
       again = pay.amount === 0n && pay.waitingAmount === 0n && pay.missing.length > 0;
@@ -1141,6 +1146,55 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     });
     autoCollect = runCollect;
 
+    // a sender may ask that the claim post stays up: after that time the same post is proven again
+    const confirmBtn = h("button", { class: "btn primary block", style: "margin-top:10px" }, "Confirm my post is still up") as HTMLButtonElement;
+    const runConfirm = async (): Promise<void> => {
+      if (busy) return;
+      busy = true;
+      confirmBtn.disabled = true;
+      mount(confirmBtn, ...spinnerLabel("Confirming…"));
+      try {
+        const rkey = e.held?.rkey;
+        if (!rkey) throw new Error("There's no claim post to confirm yet.");
+        say("Fetching the signed copy of your post");
+        const proof = await bsky.buildClaimProof(p.did, rkey);
+        if (sponsorOk) {
+          try {
+            say("Network fees are covered for you");
+            await chain.confirmClaimSponsored(wallet, proof, say);
+          } catch (err) {
+            if (needsFunds()) throw err;
+            say("Sponsored fees weren't available, so your wallet pays the small fee");
+            await chain.confirmClaim(wallet, proof, say);
+          }
+        } else {
+          await chain.confirmClaim(wallet, proof, say);
+        }
+        await refreshBalance();
+        toast("Your post is confirmed", "good");
+        busy = false;
+        await reload();
+        if (canAuto() && esc?.pending?.claimant === myKeyHex && chain.payableNow(esc, esc.pending.start).amount > 0n) void autoCollect?.();
+      } catch (err) {
+        busy = false;
+        autoOff = true;
+        toast(chain.friendly(err), "bad");
+        confirmBtn.disabled = false;
+        mount(confirmBtn, "Confirm my post is still up");
+      }
+    };
+    confirmBtn.addEventListener("click", () => {
+      autoOff = false;
+      void runConfirm();
+    });
+    autoConfirm = runConfirm;
+    const holdNote =
+      mine && pay.holding > 0n && pay.confirmAt !== null
+        ? e.epoch >= pay.confirmAt
+          ? h("div", { class: "note warn", style: "margin-top:12px" }, `The time is up. Confirm your post is still there to release ${chain.formatTari(pay.holding)} ${CONFIG.symbol}.`, confirmBtn)
+          : h("div", { class: "note warn", style: "margin-top:12px" }, `${chain.formatTari(pay.holding)} ${CONFIG.symbol} needs your post to stay up. Don't delete it. You can confirm it in ${eta(pay.confirmAt - e.epoch)}${canAuto() ? ", and this page does it for you while it's open" : ""}.`)
+        : null;
+
     const { text: postText, dropped } = claimPost();
     const maxWin = Math.max(...e.deposits.map((d) => d.window));
     const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
@@ -1149,6 +1203,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     mount(
       stepsEl,
       doneCard,
+      holdNote,
       e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
       others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,
@@ -1245,7 +1300,7 @@ function renderSent(): void {
         "div",
         { class: "card", style: "padding:20px" },
         h("div", { class: "row", style: "justify-content:space-between;align-items:flex-start" },
-          h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect", d.challenge ? ` · must post “${d.challenge}”` : ""))),
+          h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect", d.challenge ? ` · must post “${d.challenge}”${d.hold ? ` and keep it up ${eta(d.hold)}` : ""}` : ""))),
           h("div", { class: "amount", style: "font-size:34px" }, chain.formatTari(d.amount), h("small", null, CONFIG.symbol)),
         ),
         h("div", { class: "note", style: "margin-top:14px" }, ready ? "Nobody has collected this. You can take it back now." : `Waiting for them to collect. You can take it back in ${eta(left)}.`),
