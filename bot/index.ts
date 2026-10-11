@@ -53,6 +53,8 @@ interface State {
   handledNotifications: string[];
   postTimes: number[];
   initialised: boolean;
+  /** did -> payments already announced that went straight to a linked wallet */
+  seenPaid?: Record<string, string[]>;
 }
 
 const STATE_FILE = join(here, "state.json");
@@ -203,6 +205,72 @@ async function post(text: string, reply?: { root: { uri: string; cid: string }; 
   state.postTimes.push(now);
 }
 
+interface Paid {
+  key: string;
+  fp: string;
+  amount: bigint;
+}
+
+/** Payments the contract sent straight to a linked wallet (state index 15). */
+async function readReceived(): Promise<Record<string, Paid[]>> {
+  const sub = await provider.getSubstate(COMPONENT);
+  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
+  const raw = (comp?.body.state[15] ?? {}) as Record<string, unknown[][]>;
+  const out: Record<string, Paid[]> = {};
+  for (const [did, list] of Object.entries(raw)) {
+    out[did] = list.map((d) => {
+      const sender = (d[0] as { hex: string }).hex;
+      const fp = `${sender}:${d[1]}:${d[2]}:${d[3]}`;
+      return { key: `${fp}:${d[4]}`, fp, amount: BigInt(d[1] as number) };
+    });
+  }
+  return out;
+}
+
+/** Tells owners of linked wallets that a gift has already arrived, nothing to claim. */
+async function notifyReceived(): Promise<void> {
+  const all = await readReceived();
+  state.seenPaid ??= {};
+  for (const [did, items] of Object.entries(all)) {
+    const known = new Set(state.seenPaid[did] ?? []);
+    const fresh = items.filter((p) => !known.has(p.key));
+    state.seenPaid[did] = items.map((p) => p.key);
+    if (!fresh.length) continue;
+    const total = fresh.reduce((n, p) => n + p.amount, 0n);
+    if (total < NOTIFY_MIN) continue;
+    let handle: string;
+    try {
+      handle = (await agent.getProfile({ actor: did })).data.handle;
+    } catch {
+      continue;
+    }
+    if (handle === "handle.invalid") continue;
+    let saved: EnvelopeRecord | null = null;
+    for (const p of fresh) {
+      try {
+        const r = await fetch(`${CLAIM_URL}/envelope?fp=${encodeURIComponent(p.fp)}`);
+        if (r.ok) {
+          saved = (await r.json()) as EnvelopeRecord;
+          break;
+        }
+      } catch {
+        /* no envelope: plain card */
+      }
+    }
+    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${fmt(total)} tTARI`, saved?.c ?? "");
+    const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
+    const imageUrl = `${CLAIM_URL}/og${query}${query ? "&" : "?"}h=${encodeURIComponent(handle)}`;
+    const label = "See your gift";
+    await post(`@${handle} 🎁 You received ${fmt(total)} tTARI on Tari (testnet).\nIt's already in your linked wallet. Nothing to claim.\n${label} ↗`, undefined, {
+      label,
+      uri: link,
+      title: `@${handle}, you received a gift on Tari`,
+      description: saved?.m ? `“${saved.m}”` : `${fmt(total)} tTARI is in your linked wallet.`,
+      imageUrl,
+    });
+  }
+}
+
 async function notifyDeposits(): Promise<void> {
   const all = await readDeposits();
   const firstRun = !state.initialised;
@@ -309,6 +377,7 @@ async function main() {
   for (;;) {
     try {
       await notifyDeposits();
+      await notifyReceived();
       await answerMentions();
       save();
     } catch (e) {

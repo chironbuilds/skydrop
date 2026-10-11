@@ -1116,6 +1116,10 @@ fn a_bound_account_is_paid_directly_when_nothing_is_asked_of_it() {
     assert_eq!(env.deposit(&sender, &acct.did, 3_000_000, 100, 0), None);
     assert_eq!(env.balance(&wallet), before + Amount::from(3_000_000u64));
     assert_eq!(env.escrowed(), Amount::zero());
+    // the payment is recorded so the bot can tell the owner it arrived
+    let got: Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)> = env.test.call_method(env.component, "received_for", args![acct.did.clone()], vec![]);
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].0, got[0].1, got[0].2, got[0].3), (sender.id, Amount::from(3_000_000u64), 100, 0));
 
     // a window or a phrase still escrows
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, WINDOW), None);

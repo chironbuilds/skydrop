@@ -1034,6 +1034,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       mount(
         stepsEl,
         h("div", { class: "card", style: "margin-top:16px" }, h("h3", { style: "margin:0 0 6px" }, `Nothing is waiting for @${p.handle} yet`), h("p", { class: "sub", style: "margin:0 0 14px" }, "When someone sends tTARI to this account it shows up here. Want to try it? Send some to yourself."), h("a", { class: "btn ghost", href: `#/send/${p.handle}` }, "Send to this account")),
+        e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, `@${p.handle} has a linked wallet (${short(e.binding, 14, 6)}). Gifts without a challenge land there directly, so there is nothing to collect here.`) : null,
       );
       return;
     }

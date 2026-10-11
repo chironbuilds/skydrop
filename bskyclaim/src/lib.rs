@@ -48,6 +48,8 @@ const BIND_DELAY_EPOCHS: u64 = 1;
 const BIND_DOMAIN: &[u8] = b"tari-bsky-bind:v1:";
 /// Longest time (epochs) a sender may ask a claim post to stay up.
 const MAX_HOLD_EPOCHS: u64 = 72;
+/// Direct payments to linked accounts kept per DID, so the bot can tell the owner what arrived.
+const MAX_RECEIVED_KEPT: usize = 8;
 const MAX_BLOCK_LEN: usize = 16 * 1024;
 /// Ceiling on the fee one sponsored call may offer from the sponsor vault (µT).
 const MAX_SPONSORED_FEE: u64 = 100_000;
@@ -148,6 +150,8 @@ mod bskyclaim {
         last_bind: BTreeMap<String, String>,
         /// DID -> (rkey of the claim post, epoch it was last proven to exist). Starts at the claim's start.
         held: BTreeMap<String, (String, u64)>,
+        /// DID -> the latest payments sent straight to its linked wallet: (sender, amount, refund epoch, window, epoch paid).
+        received: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)>>,
     }
 
     impl BskyClaim {
@@ -175,6 +179,7 @@ mod bskyclaim {
                 bindings: BTreeMap::new(),
                 last_bind: BTreeMap::new(),
                 held: BTreeMap::new(),
+                received: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -205,6 +210,7 @@ mod bskyclaim {
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
             if window_epochs == 0 && challenge.is_empty() {
                 if let Some(to) = self.active_binding(&did) {
+                    self.note_received(&did, sender, amount, refund_epoch, window_epochs);
                     ComponentManager::get(to).invoke("deposit", args![funds]);
                     return;
                 }
@@ -516,6 +522,7 @@ mod bskyclaim {
             self.last_tip.insert(did, rkey);
             if window == 0 {
                 if let Some(to) = self.active_binding(&recipient) {
+                    self.note_received(&recipient, owner, amount, Consensus::current_epoch() + refund_after, window);
                     let paid = self.vault.withdraw(amount);
                     ComponentManager::get(to).invoke("deposit", args![paid]);
                     return;
@@ -642,6 +649,19 @@ mod bskyclaim {
 
         pub fn total_escrowed(&self) -> Amount {
             self.vault.balance()
+        }
+
+        fn note_received(&mut self, did: &str, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64, window: u64) {
+            let list = self.received.entry(did.to_string()).or_default();
+            list.push((sender, amount, refund_epoch, window, Consensus::current_epoch()));
+            if list.len() > MAX_RECEIVED_KEPT {
+                list.remove(0);
+            }
+        }
+
+        /// Payments recently sent straight to `did`'s linked wallet.
+        pub fn received_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)> {
+            self.received.get(&did).cloned().unwrap_or_default()
         }
 
         fn active_binding(&self, did: &str) -> Option<ComponentAddress> {
