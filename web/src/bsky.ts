@@ -115,14 +115,18 @@ export { toHex, fromHex };
 
 /** The claim post to suggest: the code, then each phrase the senders asked for, as long as a post can hold. */
 export function claimPostText(symbol: string, code: string, phrases: string[]): { text: string; used: string[]; dropped: number } {
-  let text = `Claiming my ${symbol} on Tari. ${code}`;
+  const tail = `Claiming my ${symbol} on Tari. ${code}`;
   const used: string[] = [];
   let dropped = 0;
+  let len = [...tail].length;
   for (const p of phrases) {
-    if ([...(text + "\n" + p)].length <= 290) {
-      text += "\n" + p;
+    const add = [...p].length + 1;
+    if (len + add <= 290) {
+      len += add;
       used.push(p);
     } else dropped++;
   }
-  return { text, used, dropped };
+  // the senders' phrases lead the post, the claim line follows
+  return { text: [...used, tail].join("
+"), used, dropped };
 }
