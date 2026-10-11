@@ -358,3 +358,7 @@ footer code { font-family: var(--mono); font-size: 12px; }
 @media (max-width: 560px) { .env-pick { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .env, .env * { transition: none !important; } }
 .env-designs { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; font-size: 13px; color: var(--faint); }
+.lang { all: unset; cursor: pointer; font-family: var(--mono); font-size: 13px; font-weight: 600; padding: 6px 10px; border: 2px solid var(--edge); border-radius: 999px; background: var(--card); }
+.lang:hover { background: var(--hi); }
+.lang:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+html[lang="zh-CN"] em, html[lang="zh-CN"] i { font-style: normal; }

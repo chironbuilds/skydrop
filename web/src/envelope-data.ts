@@ -15,7 +15,7 @@ export interface Style {
 
 export const STYLES: Style[] = [
   { id: "air", name: "Airmail", tag: "Classic", paper: "#fffaf0", flap: "#f6d44c", ink: "#191730", seal: "#d9362b", glyph: "邮" },
-  { id: "red", name: "Red packet", tag: "红包", paper: "#d9362b", flap: "#b82418", ink: "#fbe7a1", seal: "#f6d44c", glyph: "福" },
+  { id: "red", name: "Red packet", tag: "福", paper: "#d9362b", flap: "#b82418", ink: "#fbe7a1", seal: "#f6d44c", glyph: "福" },
   { id: "gold", name: "Gold", tag: "Festive", paper: "#f6d44c", flap: "#e8b923", ink: "#4a1d12", seal: "#d9362b", glyph: "★" },
   { id: "sakura", name: "Sakura", tag: "Soft", paper: "#fbd5df", flap: "#f4a9bd", ink: "#4a1d3a", seal: "#c2386b", glyph: "花" },
   { id: "night", name: "Midnight", tag: "Dark", paper: "#191730", flap: "#2a2750", ink: "#f0e6d0", seal: "#f6d44c", glyph: "月" },

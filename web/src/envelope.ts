@@ -52,7 +52,7 @@ export async function prepareCover(file: File): Promise<Blob> {
 /** Uploads a prepared cover and returns its id. */
 export async function uploadCover(blob: Blob): Promise<string> {
   const r = await fetch("/cover", { method: "POST", headers: { "content-type": "image/jpeg" }, body: blob });
-  if (!r.ok) throw new Error(r.status === 413 ? "That picture is too big." : "Couldn't upload the picture. Try again.");
+  if (!r.ok) throw new Error(r.status === 413 ? "That picture is too big." : r.status === 429 ? "Too many uploads for now. Try again in an hour." : "Couldn't upload the picture. Try again.");
   const { id } = (await r.json()) as { id: string };
   return id;
 }

@@ -7,6 +7,7 @@ import * as chain from "./chain";
 import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } from "./dom";
 import { toHex } from "./cbor";
 import * as env from "./envelope";
+import { currentLang, setLang, startChinese } from "./i18n";
 import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
 
@@ -115,6 +116,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         link("#/tips", "Tip by post", "tips"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
+        h("button", { class: "lang", "aria-label": currentLang() === "zh" ? "Switch to English" : "切换到中文", onclick: () => setLang(currentLang() === "zh" ? "en" : "zh") }, currentLang() === "zh" ? "EN" : "中文"),
         h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
       ),
     ),
@@ -1161,4 +1163,5 @@ function route(): void {
   }
   addEventListener("hashchange", route);
   route();
+  if (currentLang() === "zh") startChinese();
 })();

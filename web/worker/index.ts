@@ -151,6 +151,13 @@ const isJpeg = (b: Uint8Array): boolean => b.length > 4 && b[0] === 0xff && b[1]
 /** Stores an uploaded cover (a JPEG the page already shrank) under its content hash. */
 async function saveCover(req: Request, env: Env): Promise<Response> {
   const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
+  // at most 20 uploads per address per hour. KV is eventually consistent, so this is a brake, not a hard cap.
+  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+  const hour = Math.floor(Date.now() / 3_600_000);
+  const rate = `rate:${hour}:${ip}`;
+  const used = Number(new TextDecoder().decode((await env.COVERS.get(rate, "arrayBuffer")) ?? new ArrayBuffer(0))) || 0;
+  if (used >= 20) return json({ error: "slow down" }, 429);
+  await env.COVERS.put(rate, new TextEncoder().encode(String(used + 1)).buffer as ArrayBuffer, { expirationTtl: 3700 });
   if (Number(req.headers.get("content-length") ?? 0) > MAX_COVER) return json({ error: "too big" }, 413);
   const buf = await req.arrayBuffer();
   if (buf.byteLength > MAX_COVER) return json({ error: "too big" }, 413);

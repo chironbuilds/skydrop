@@ -144,6 +144,27 @@ A tip is a normal Bluesky post with real mention facets:
 
 Plain-text `@handle` without a facet is ignored. The parser is `atp-verify/src/tip.rs` and its tests are in `atp-verify/tests/tip.rs`.
 
+### Envelopes and share links
+
+An envelope is cosmetic and never touches the contract. The sender picks a colour or a cover picture and an optional note (80 characters), and they travel in the link:
+
+```
+https://skydrop.tari.mw/e/<handle>?e=red&m=<note>&c=<cover id>&a=2%20tTARI
+```
+
+| Param | Meaning |
+|---|---|
+| `e` | colour: `air`, `red`, `gold`, `sakura`, `night`, `mint` |
+| `m` | note, URL-encoded, at most 80 characters |
+| `c` | cover picture id: 16 hex characters, the start of the SHA-256 of the JPEG |
+| `a` | amount text for the preview image only (the real amount is read from the chain) |
+
+`/e/<handle>` returns Open Graph tags and sends people on to `/#/claim/<handle>`, so chat apps show a preview image of the envelope (`/og?...`, a PNG drawn by the Worker). Covers are JPEGs of at most 90 KB: `POST /cover` stores one and returns `{ "id": ... }`, `GET /c/<id>.jpg` serves it. Uploads are limited to 20 per address per hour and are kept for a year.
+
+### Challenge phrases
+
+`deposit` takes an optional `challenge` string (at most 80 bytes). That deposit is only paid out if the claim post also contains the phrase exactly (case sensitive). The contract stores the text of the post the claim was proven with and checks it at payout. A deposit whose phrase was not posted stays escrowed and the claimant can post again; the sender can refund it after the refund epoch. Build the claim post as the phrases (one per line) followed by the claim line, which is what the app suggests.
+
 ## 4. Reading state
 
 Anything that can call the indexer can read the escrow. The component state is a CBOR array (indexes in [ARCHITECTURE.md](ARCHITECTURE.md#data-model)).
