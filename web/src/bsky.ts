@@ -127,6 +127,5 @@ export function claimPostText(symbol: string, code: string, phrases: string[]): 
     } else dropped++;
   }
   // the senders' phrases lead the post, the claim line follows
-  return { text: [...used, tail].join("
-"), used, dropped };
+  return { text: [...used, tail].join("\n"), used, dropped };
 }
