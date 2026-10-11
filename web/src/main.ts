@@ -572,7 +572,14 @@ function renderSend(prefill?: string): void {
       mount(
         waiting,
         esc.deposits.length ? h("div", { class: "note good", style: "margin-top:12px" }, `${chain.formatTari(chain.total(esc.deposits))} ${CONFIG.symbol} is already waiting for @${p.handle}.`) : null,
-        esc.binding ? h("div", { class: "note good", style: "margin-top:12px" }, `@${p.handle} has linked a wallet. A gift with no safety window and no phrase arrives there immediately.`) : null,
+        h(
+          "div",
+          { class: "route " + (esc.binding ? "instant" : "claim"), style: "margin-top:12px" },
+          h("span", { class: "badge" }, esc.binding ? "Instant" : "Needs a claim"),
+          esc.binding
+            ? `@${p.handle} has linked a wallet. A gift with no safety window and no phrase arrives there immediately.`
+            : `@${p.handle} hasn't linked a wallet. They collect your gift by proving they own the account.`,
+        ),
       );
     } catch {
       mount(waiting);
@@ -917,7 +924,7 @@ function renderLink(prefill?: string, flow = false): void {
     const addrInput = h("input", { class: "input", placeholder: "otl_… or component_…", "aria-label": "Address to link" }) as HTMLInputElement;
     const changer = changing
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
-      : h("button", { class: "btn ghost sm", style: "margin-top:2px", onclick: () => { changing = true; draw(); } }, "Link a different address");
+      : h("button", { class: "btn ghost sm", onclick: () => { changing = true; draw(); } }, "Change address");
     if (submitted === target && current !== target) {
       mount(stepsEl, h("div", { class: "note good" }, `Link submitted. ${short(target, 14, 6)} takes over from the old address after about one epoch.`), changer);
       return;
@@ -931,8 +938,9 @@ function renderLink(prefill?: string, flow = false): void {
       stepsEl,
       flow ? flowBar(1) : null,
       current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes over after about one epoch; until then the old one keeps receiving.`) : null,
-      h("div", { class: "note" }, `Linking ${where}.`),
-      h("div", { style: "margin:0 0 4px" }, changer),
+      changing
+        ? h("div", { class: "stack" }, h("div", { class: "note" }, `Linking ${where}.`), changer)
+        : h("div", { class: "note linkrow" }, h("span", null, `Linking ${where}.`), changer),
       h(
         "div",
         { class: "steps", style: "margin-top:8px" },
