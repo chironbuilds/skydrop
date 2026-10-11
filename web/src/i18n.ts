@@ -307,6 +307,22 @@ const ZH: Record<string, string> = {
   "To decline a gift you link your wallet first (one post, once). Then you can send gifts back to their senders.": "要拒绝礼物，需要先关联钱包（发一条帖子，只需一次），之后就能把礼物退回给发送者。",
   "Gifts that were declined, or that nobody answered, are waiting for you.": "被拒绝或无人响应的礼物正在等你取回。",
   "Paste a Tari wallet address (it starts with otl_).": "请粘贴 Tari 钱包地址（以 otl_ 开头）。",
+  "You already have several gifts waiting for this account. Wait until some are collected, then send again.": "你给这个账号的礼物已有好几份在等待领取。等部分被领取后再发送。",
+  "This account already has several gifts waiting on a phrase. Send one without a phrase, or try again later.": "这个账号已有好几份带口令的礼物在等待。你可以发一份不带口令的，或稍后再试。",
+  "This account has too many gifts waiting right now. Try again later.": "这个账号目前等待领取的礼物太多，请稍后再试。",
+  "Link your wallet first, then you can decline gifts.": "请先关联你的钱包，之后才能拒绝礼物。",
+  "That address isn't an ordinary Tari wallet account, so it can't be linked.": "这个地址不是普通的 Tari 钱包账户，无法关联。",
+  "Nothing has expired yet. Unanswered phrase gifts can be returned after about three days.": "目前没有过期的礼物。无人响应的口令礼物约三天后可以退回。",
+  "A claim for this account is in progress, so nothing can be returned right now.": "这个账号正在领取中，暂时无法退回。",
+  "Nothing has been returned to you.": "目前没有退回给你的款项。",
+  "Bluesky gave an older snapshot of your account than one already proven. Wait a moment and try again.": "Bluesky 给出的账号快照比已验证的更旧，请稍等片刻再试。",
+  "This gift is too small to cover more free network fees. Your wallet needs a little tTARI for the fee.": "这份礼物太小，不够再抵扣免费网络手续费。你的钱包需要一点 tTARI 来付手续费。",
+  "That link post was already used. Make a new post to link again.": "这条关联帖子已经用过了，请重新发一条帖子来关联。",
+  "That gift is no longer there. It may already have been collected, declined or returned.": "这份礼物已经不在了，可能已被领取、拒绝或退回。",
+  "Nothing is waiting for this account any more.": "这个账号已没有待领取的款项。",
+  "This gift can't be taken back yet. Check Your sends for when.": "这份礼物暂时还不能取回，请在「我的发送」里查看时间。",
+  "That link is already in effect.": "这个关联已经生效了。",
+  "The free network fees for this account have been used. Your wallet needs a little tTARI for the fee.": "这个账号的免费网络手续费已用完。你的钱包需要一点 tTARI 来付手续费。",
 };
 
 type Pattern = [RegExp, (m: RegExpMatchArray) => string];
