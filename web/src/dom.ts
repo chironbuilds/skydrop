@@ -100,6 +100,12 @@ export function spinnerLabel(text: string): HTMLElement[] {
 }
 
 export function confetti(): void {
+  // a small buzz on phones that support it
+  try {
+    navigator.vibrate?.(30);
+  } catch {
+    /* not available */
+  }
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = document.getElementById("confetti") as HTMLCanvasElement;
   const ctx = canvas.getContext("2d")!;

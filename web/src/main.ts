@@ -769,7 +769,7 @@ function renderSend(prefill?: string): void {
   drawEnvelope();
   update();
   layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account. ", h("a", { href: "#/sent" }, "Your sends")), card);
-  if (!prefill) field.input.focus();
+  if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -908,7 +908,7 @@ function renderTips(prefill?: string): void {
   drawChoices();
   update();
   layout("tips", h("h2", { class: "page" }, "Tip by posting"), h("p", { class: "sub" }, `Fund a budget once. Then tip anyone by posting "@${CONFIG.botHandle} tip @them 5".`), card);
-  if (!prefill) field.input.focus();
+  if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1072,7 +1072,7 @@ function renderLink(prefill?: string, flow = false): void {
 
   mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
   layout("link", h("h2", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
-  if (!prefill) field.input.focus();
+  if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
   void load();
 }
 
@@ -1664,12 +1664,16 @@ function renderHow(): void {
 // router
 // ---------------------------------------------------------------------------------------------------------
 
+const TITLES: Record<string, string> = { send: "Send", claim: "Collect", tips: "Tip by post", link: "Link wallet", sent: "Your sends", how: "How it works" };
+
 function route(): void {
   cleanups.forEach((f) => f());
   cleanups = [];
   const [, kind = "", rawArg = ""] = location.hash.replace(/^#/, "").split("/");
   const [arg = "", query = ""] = rawArg.split("?");
   const param = decodeURIComponent(arg);
+  // the tab and history show where you are
+  document.title = TITLES[kind] ? `${TITLES[kind]} · Skydrop` : "Skydrop: send Tari to anyone on Bluesky";
   const q = new URLSearchParams(query);
   if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
@@ -1688,6 +1692,7 @@ function route(): void {
     mount(root, h("div", { class: "hero" }, h("h1", null, "Couldn't start"), h("p", { class: "lead" }, e instanceof Error ? e.message : String(e)), h("button", { class: "btn primary", onclick: () => location.reload() }, "Try again")));
     return;
   }
+  document.documentElement.lang = currentLang() === "zh" ? "zh-Hans" : "en";
   addEventListener("hashchange", route);
   route();
   if (currentLang() === "zh") startChinese();

@@ -446,3 +446,29 @@ details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size
 .only-sm, .only-xs { display: none !important; }
 @media (max-width: 760px) { .only-sm { display: block !important; } }
 @media (max-width: 480px) { .only-xs { display: block !important; } }
+
+/* ---- polish: motion, touch, focus ---- */
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+* { -webkit-tap-highlight-color: transparent; }
+a, button, summary, .q, .choice, .env-opt, .seg-b { touch-action: manipulation; }
+h1, h2, h3, .sub, .lead { text-wrap: balance; }
+p, li { text-wrap: pretty; }
+/* each page eases in; the header stays put */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+#app > :not(.top) { animation: rise 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+#app > footer { animation-delay: 0.06s; }
+details > :not(summary) { animation: fade 0.18s ease-out; }
+.card, .btn, .chip, .menu-btn, .seg-b, .flow li, .status, .route { transition: transform 0.12s, box-shadow 0.12s, background-color 0.15s, border-color 0.15s, opacity 0.15s; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.input:focus-visible { outline: none; }
+/* comfortable targets on touch screens */
+@media (pointer: coarse) {
+  .btn.sm, .q, .seg-b { min-height: 44px; }
+  .btn.sm { padding-top: 10px; padding-bottom: 10px; }
+  .menu-panel .mi { padding: 14px 12px; }
+  .nav a { padding-top: 10px; padding-bottom: 10px; }
+}
+/* notices sit above the pinned send button and the home indicator */
+@media (max-width: 760px) { #toasts { bottom: calc(env(safe-area-inset-bottom) + 84px); } }
+/* a button that is working keeps its width and shows the spinner without jumping */
+.btn:disabled { transition: none; }
