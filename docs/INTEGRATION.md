@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (28 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (30 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
@@ -271,10 +271,16 @@ Other CLI commands: `addr`, `balance`, `deposit`, `code`, `claim`, `challenge`, 
 
 - A deposit or tip with window 0 and no challenge phrase for a bound DID is paid straight to the address (no escrow, no refund).
 - Anything else escrows as before, and `finalize_claim` pays the bound address (the caller gets an empty bucket).
-- A first binding applies at once. A replacement applies after one epoch, the old address keeps receiving until then, and a bind post can only be used once (rkeys must increase), so an old post cannot move the binding back.
+- A binding (first or replacement) applies after 2 epochs. During that time anyone can cancel it with `challenge_bind(did, ops)` by presenting an operation chain that is at least as long as the one it relied on and differs from it; the previous address, if any, keeps receiving meanwhile. A bind post can only be used once (rkeys must increase), so an old post cannot move the binding back.
 
 For a linked account the claim post needs no `tari-claim:` code, only the sender's challenge phrase: the payout goes to the linked address whoever submits it, so a copied post can only pay the owner. A pending claim of a linked account can only be restarted by a newer post (larger rkey), and anyone may call `finalize_claim` for it. Unlinked accounts still need the code (it ties the post to the claimant's wallet). The intended order is: link a wallet once, then do challenges with just the phrase.
 
 **Order of steps for a challenge.** A deposit with a challenge phrase only pays an account that has linked a wallet (`bind`), and only for a claim post made after the link post. The link post itself (anything containing `tari-bind:`, or any post not newer than the last link post) is stored with an empty claim text, so linking and the challenge can never share a post. Unlinked accounts can still collect their other deposits with the claim code; challenge deposits wait until they link.
 
-**Direct payments are recorded.** When a deposit or tip is paid straight to a linked wallet, the contract keeps the latest 8 per DID in state index 15 (`received_for(did)`: sender, amount, refund epoch, window, epoch paid). The bot reads it and posts "You received N tTARI … already in your linked wallet. Nothing to claim." instead of the claim mention.
+**Direct payments are recorded.** When a deposit or tip is paid straight to a linked wallet, the contract keeps the latest 8 per DID in state index 16 (`received_for(did)`: sender, amount, refund epoch, window, epoch paid). The bot reads it and posts "You received N tTARI … already in your linked wallet. Nothing to claim." instead of the claim mention.
+
+**Hold time and snapshots.** A deposit's hold time is checked against the signed `rev` time of the repo snapshot each proof carries (state index 15 keeps the claim post's rkey, the epoch last proven, and the snapshot times at the start and at the last proof). `confirm_claim` needs a snapshot taken at least `hold` hours after the one the claim started with, and never an older one than already proven, so a saved proof cannot be replayed after the post is deleted.
+
+**Sponsored fees.** Each sponsored call is recorded against the account (state index 17) and repaid out of its payout or refund; its escrow must cover everything it has drawn.
+
+See `docs/SECURITY.md` for the review behind these rules.

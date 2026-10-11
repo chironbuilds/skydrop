@@ -271,6 +271,29 @@ pub fn verify_record(
     Ok(())
 }
 
+const TID_ALPHABET: &[u8] = b"234567abcdefghijklmnopqrstuvwxyz";
+
+/// The time in a repo commit's `rev`, in microseconds since the Unix epoch. A `rev` is a TID: 13 base32-sortable
+/// characters holding 53 bits of time and 10 bits of clock id. The repo's signing key signs it, so a commit can
+/// never claim to be newer than it is, and a later commit that still holds a record proves the record was not
+/// deleted before that time.
+pub fn commit_rev_micros(commit: &[u8]) -> Result<u64, Error> {
+    let rev = cbor::text_field(commit, "rev")?;
+    let b = rev.as_bytes();
+    if b.len() != 13 {
+        return Err(Error::BadCommit);
+    }
+    let mut v: u64 = 0;
+    for (i, c) in b.iter().enumerate() {
+        let d = TID_ALPHABET.iter().position(|a| a == c).ok_or(Error::BadCommit)? as u64;
+        if i == 0 && d >= 16 {
+            return Err(Error::BadCommit);
+        }
+        v = (v << 5) | d;
+    }
+    Ok(v >> 10)
+}
+
 /// The `text` field of a (verified) record, e.g. a post's text.
 pub fn record_text(record: &[u8]) -> Result<&str, Error> {
     Ok(cbor::text_field(record, "text")?)

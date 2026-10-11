@@ -97,9 +97,14 @@ export interface Escrow {
   claimText: string;
   /** The Ootle account this Bluesky account has linked, if one is in effect now. Funds that need no window or phrase go straight to it. */
   binding: string | null;
-  /** The claim post's rkey and the epoch it was last proven to exist. */
-  held: { rkey: string; epoch: number } | null;
+  /** The claim post's rkey, the epoch it was last proven, and the repo snapshot times (µs) at the start and at the last proof. */
+  held: { rkey: string; epoch: number; startRev: number; rev: number } | null;
+  /** A link that has been submitted but has not taken effect yet. */
+  bindingPending: { address: string; epoch: number } | null;
 }
+
+/** An epoch as real time for hold times: the contract wants the repo snapshots this far apart for each epoch of hold. */
+export const EPOCH_MICROS = 3_600_000_000;
 
 type Cbor = unknown;
 const bytesHex = (v: Cbor): string => (v as { hex: string }).hex;
@@ -119,14 +124,15 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
     pending: pend ? { claimant: bytesHex(pend[0]), len: Number(pend[2]), start: Number(pend[3]) } : null,
     claimText: String((state[11] as Record<string, string> | undefined)?.[did] ?? ""),
     binding: bindingOf(state[12], did, epoch),
-    held: heldOf(state[14], did),
+    bindingPending: pendingBindingOf(state[12], did, epoch),
+    held: heldOf(state[15], did),
   };
 }
 
 /** Component state index 14: DID -> [rkey of the claim post, epoch it was last proven to exist]. */
-function heldOf(map: Cbor, did: string): { rkey: string; epoch: number } | null {
+function heldOf(map: Cbor, did: string): { rkey: string; epoch: number; startRev: number; rev: number } | null {
   const h = (map as Record<string, Cbor[]> | undefined)?.[did];
-  return h ? { rkey: String(h[0]), epoch: Number(h[1]) } : null;
+  return h ? { rkey: String(h[0]), epoch: Number(h[1]), startRev: Number(h[2]), rev: Number(h[3]) } : null;
 }
 
 /** A component address as the state stores it, written the way the wallet writes it. */
@@ -141,7 +147,14 @@ function bindingOf(map: Cbor, did: string, epoch: number): string | null {
   const b = (map as Record<string, Cbor[]> | undefined)?.[did];
   if (!b) return null;
   if (epoch >= Number(b[1])) return addressText(b[0]);
-  return addressText(b[2]);
+  // before it takes effect, a replaced binding still applies; a first one (which "replaces" this component) means nothing yet
+  const old = addressText(b[2]);
+  return old === CONFIG.component ? null : old;
+}
+
+function pendingBindingOf(map: Cbor, did: string, epoch: number): { address: string; epoch: number } | null {
+  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+  return b && epoch < Number(b[1]) ? { address: addressText(b[0]), epoch: Number(b[1]) } : null;
 }
 
 /** The account `did` has linked, if any. */
@@ -177,7 +190,7 @@ export function payableNow(e: Escrow, start: number): { amount: bigint; waitingA
     } else if (d.challenge && !e.claimText.includes(d.challenge)) {
       // pays only once the claim post says it; the claimant has to post again
       missing.add(d.challenge);
-    } else if (seen < start + d.hold) {
+    } else if (d.hold && (seen < start + d.hold || (e.held ? e.held.rev - e.held.startRev : 0) < d.hold * EPOCH_MICROS)) {
       // the post has to be proven to still be up once the hold time has passed
       holding += d.amount;
       confirmAt = confirmAt === null ? start + d.hold : Math.min(confirmAt, start + d.hold);
@@ -329,6 +342,11 @@ export async function confirmClaim(wallet: Wallet, proof: ClaimProof, onStage?: 
   return run(wallet, instructions, 120_000n, onStage);
 }
 
+/** Cancels a link that hasn't taken effect yet by presenting the account's newer operation chain. */
+export async function challengeBind(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
+  return run(wallet, [call(CONFIG.component, "challenge_bind", [lit(did), lit(ops)])], 120_000n, onStage);
+}
+
 /** Why `address` can't be paid from `own` (a wallet address on the same network), or null when it can. */
 export function addressProblem(address: string, own: string): string | null {
   if (!address) return "Paste the address you want to send to.";
@@ -388,7 +406,7 @@ export interface Delivered {
 export async function readDeliveredBy(provider: IndexerProvider, keyHex: string): Promise<Delivered[]> {
   const sub = await provider.getSubstate(CONFIG.component);
   const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
-  const all = (comp?.body.state[15] ?? {}) as Record<string, Cbor[][]>;
+  const all = (comp?.body.state[16] ?? {}) as Record<string, Cbor[][]>;
   const out: Delivered[] = [];
   for (const [did, list] of Object.entries(all)) {
     for (const d of list) if (bytesHex(d[0]) === keyHex) out.push({ did, amount: BigInt(d[1] as number), epoch: Number(d[4]) });

@@ -15,6 +15,15 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/opt/skydrop-bot/bot
 PrivateTmp=true
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# the bot fetches addresses that come from other people's account records, so it must not be able to reach this machine's
+# own services or the private network (only the local DNS stub is allowed)
+IPAddressDeny=127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 ::1/128 fc00::/7 fe80::/10
+IPAddressAllow=127.0.0.53
 
 [Install]
 WantedBy=multi-user.target

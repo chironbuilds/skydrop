@@ -180,6 +180,18 @@ struct Account {
     /// Signing key of the repo as of the latest op.
     repo_key: SigningKey,
     rotation_key: SigningKey,
+    /// Time of the repo snapshot (commit `rev`) the next post is proven with, in microseconds.
+    clock: std::cell::Cell<u64>,
+}
+
+const T0: u64 = 1_700_000_000_000_000;
+const HOUR: u64 = 3_600_000_000;
+
+/// A commit `rev` (TID) for a time in microseconds.
+fn tid(micros: u64) -> String {
+    const A: &[u8] = b"234567abcdefghijklmnopqrstuvwxyz";
+    let v = micros << 10;
+    (0..13).rev().map(|i| A[((v >> (5 * i)) & 31) as usize] as char).collect()
 }
 
 fn plc_op(prev: Option<&[u8]>, rotation: &SigningKey, repo: &SigningKey, signer: &SigningKey) -> Vec<u8> {
@@ -213,7 +225,7 @@ impl Account {
         let repo_key = SigningKey::random(&mut rand_core::OsRng);
         let genesis = plc_op(None, &rotation_key, &repo_key, &rotation_key);
         let did = format!("did:plc:{}", &base32(&sha(&genesis))[..24]);
-        Self { did, ops: vec![genesis], repo_key, rotation_key }
+        Self { did, ops: vec![genesis], repo_key, rotation_key, clock: std::cell::Cell::new(T0) }
     }
 
     /// Rotates the repo signing key with a new operation signed by the rotation key.
@@ -263,7 +275,7 @@ impl Account {
         let commit = |sig: Option<Vec<u8>>| {
             let mut m = vec![
                 ("did", V::T(self.did.clone())),
-                ("rev", V::T("3mxepywf4ec2j".into())),
+                ("rev", V::T(tid(self.clock.get()))),
                 ("data", V::Link(sha(&node))),
                 ("prev", V::Null),
                 ("version", V::U(3)),
@@ -378,6 +390,11 @@ impl Env {
         })
     }
 
+    fn challenge_bind(&mut self, who: &User, acct: &Account) -> Option<String> {
+        let (c, did, ops) = (self.component, acct.did.clone(), bytes_list(&acct.ops));
+        self.run(who, |t| t.call_method(c, "challenge_bind", args![did, ops]))
+    }
+
     fn confirm(&mut self, who: &User, acct: &Account, post: &Post) -> Option<String> {
         let c = self.component;
         let did = acct.did.clone();
@@ -395,6 +412,8 @@ impl Env {
     fn link_first(&mut self, who: &User, acct: &Account) {
         let post = self.bind_post(acct, who.account, "3k0000000000a");
         assert_eq!(self.bind(who, acct, who.account, &post), None);
+        // a binding only takes effect after its delay
+        set_epoch(&mut self.test, 3);
     }
 
     fn bind_text(&mut self, did: &str, address: ComponentAddress) -> String {
@@ -529,7 +548,7 @@ fn stale_key_claim_is_cancelled_by_a_key_rotation() {
 
     // The repo key leaks. The owner rotates it, but Mallory presents the old chain and a post signed by
     // the old (leaked) key.
-    let stale = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone() };
+    let stale = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone(), clock: std::cell::Cell::new(T0) };
     acct.rotate_repo_key();
     let code = env.code_for(&acct.did, &mallory);
     let evil = stale.post(&format!("code {code}"), "3kaaaaaaaaaaa");
@@ -612,7 +631,7 @@ fn deposits_with_longer_windows_stay_escrowed_until_their_own_window_passes() {
     expect_err(env.finalize(&alice, &acct.did), "still open");
 
     // A rotation within the big deposit's window still cancels the claim on it.
-    let mut rotated = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone() };
+    let mut rotated = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone(), clock: std::cell::Cell::new(T0) };
     rotated.rotate_repo_key();
     assert_eq!(env.challenge(&tip, &rotated), None);
     set_epoch(&mut env.test, 1 + WINDOW);
@@ -728,12 +747,13 @@ fn a_claimant_with_no_account_and_no_funds_claims_and_collects() {
         .map(|t| env.test.get_previous_output_address(*t))
         .collect();
     let account = outputs.iter().find_map(|o| o.as_component_address()).expect("an account was created");
-    assert!(env.fee_balance() < after_start, "the payout fee also came from the sponsor vault");
+    // what the sponsor vault paid for this account (60,000 per sponsored call, two calls) comes back out of its payout
+    assert!(env.fee_balance() > after_start, "the vault is repaid out of the payout");
     assert_eq!(env.escrowed(), Amount::zero(), "deposit paid out");
     // The harness reports only one of the components the transaction touched, and which one is not stable: it may
     // be the escrow itself rather than the new account. The escrow being empty above already proves the payout.
     if account != env.component {
-        assert_eq!(env.test.call_method::<Amount>(account, "balance", args![TARI_TOKEN], vec![]), Amount::from(5_000_000u64));
+        assert_eq!(env.test.call_method::<Amount>(account, "balance", args![TARI_TOKEN], vec![]), Amount::from(5_000_000u64 - 120_000));
     }
 }
 
@@ -1110,6 +1130,7 @@ fn a_bound_account_is_paid_directly_when_nothing_is_asked_of_it() {
     let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
     // anyone can relay the bind: the post is the authority
     assert_eq!(env.bind(&relayer, &acct, wallet.account, &post), None);
+    set_epoch(&mut env.test, 3);
     assert_eq!(env.bound(&acct.did), Some(wallet.account));
 
     let before = env.balance(&wallet);
@@ -1134,6 +1155,7 @@ fn a_claim_for_a_bound_account_pays_the_bound_address() {
     let acct = Account::new();
     let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
     assert_eq!(env.bind(&claimant, &acct, wallet.account, &post), None);
+    set_epoch(&mut env.test, 3);
     assert_eq!(env.deposit_with(&sender, &acct.did, 2_000_000, 100, 0, "I love Tari"), None);
 
     let code = env.code_for(&acct.did, &claimant);
@@ -1153,6 +1175,10 @@ fn a_new_binding_waits_and_an_old_post_cannot_move_it_back() {
     let acct = Account::new();
     let p1 = env.bind_post(&acct, first.account, "3kaaaaaaaaaaa");
     assert_eq!(env.bind(&relayer, &acct, first.account, &p1), None);
+    // nothing is bound until the delay has passed
+    assert_eq!(env.bound(&acct.did), None);
+    set_epoch(&mut env.test, 3);
+    assert_eq!(env.bound(&acct.did), Some(first.account));
     let p2 = env.bind_post(&acct, second.account, "3kbbbbbbbbbbb");
     assert_eq!(env.bind(&relayer, &acct, second.account, &p2), None);
     // the old binding still applies until the delay passes
@@ -1161,7 +1187,7 @@ fn a_new_binding_waits_and_an_old_post_cannot_move_it_back() {
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
     assert_eq!(env.balance(&first), f0 + Amount::from(1_000_000u64));
 
-    set_epoch(&mut env.test, 2);
+    set_epoch(&mut env.test, 5);
     assert_eq!(env.bound(&acct.did), Some(second.account));
     let s0 = env.balance(&second);
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
@@ -1195,6 +1221,7 @@ fn binding_state_survives_a_realistic_epoch() {
     let acct = Account::new();
     let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
     assert_eq!(env.bind(&relayer, &acct, wallet.account, &post), None);
+    set_epoch(&mut env.test, 12127);
     let other = Account::new();
     assert_eq!(env.deposit(&sender, &other.did, 1_000_000, 12_200, WINDOW), None);
     assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 12_200, 0), None);
@@ -1216,13 +1243,20 @@ fn a_post_that_must_stay_up_is_only_paid_after_it_is_proven_again() {
     assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
     // not paid straight away, and not by waiting alone
     expect_err(env.finalize(&alice, &acct.did), "window is still open");
-    set_epoch(&mut env.test, 6);
+    set_epoch(&mut env.test, 7);
     expect_err(env.finalize(&alice, &acct.did), "window is still open");
     // a different post is not the one the claim was made with
     let other = acct.post(&format!("I love Tari {code} again"), "3kbbbbbbbbbbb");
     expect_err(env.confirm(&alice, &acct, &other), "not the post the claim was made with");
-    // the same post, proven again after the hold time, releases it
+    // proving the original snapshot again shows nothing new: the post could have been deleted since
     assert_eq!(env.confirm(&alice, &acct, &post), None);
+    expect_err(env.finalize(&alice, &acct.did), "window is still open");
+    // a snapshot taken after the hold time that still holds the post releases it
+    acct.clock.set(T0 + 4 * HOUR);
+    let later = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.confirm(&alice, &acct, &later), None);
+    // and an older snapshot cannot be used to go back
+    expect_err(env.confirm(&alice, &acct, &post), "older than one already proven");
     let before = env.balance(&alice);
     assert_eq!(env.finalize(&alice, &acct.did), None);
     assert_eq!(env.balance(&alice), before + Amount::from(2_000_000u64));
@@ -1238,12 +1272,22 @@ fn proving_the_post_too_early_does_not_release_a_held_deposit() {
     let code = env.code_for(&acct.did, &alice);
     let post = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
     assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
-    set_epoch(&mut env.test, 2);
-    assert_eq!(env.confirm(&alice, &acct, &post), None);
+    // too early in epochs, even with a newer snapshot
+    set_epoch(&mut env.test, 4);
+    acct.clock.set(T0 + HOUR);
+    let later = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.confirm(&alice, &acct, &later), None);
     expect_err(env.finalize(&alice, &acct.did), "window is still open");
-    // proven again once the time has passed
-    set_epoch(&mut env.test, 5);
-    assert_eq!(env.confirm(&alice, &acct, &post), None);
+    // enough epochs but a snapshot that is not 3 hours newer
+    set_epoch(&mut env.test, 7);
+    acct.clock.set(T0 + 2 * HOUR);
+    let soon = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.confirm(&alice, &acct, &soon), None);
+    expect_err(env.finalize(&alice, &acct.did), "window is still open");
+    // both satisfied
+    acct.clock.set(T0 + 5 * HOUR);
+    let ok = acct.post(&format!("I love Tari {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.confirm(&alice, &acct, &ok), None);
     assert_eq!(env.finalize(&alice, &acct.did), None);
 }
 
@@ -1261,6 +1305,7 @@ fn a_linked_account_claims_with_just_the_phrase_and_anyone_can_finish_it() {
     // link first, then the phrase alone is enough
     let link = env.bind_post(&acct, wallet.account, "3kbbbbbbbbbbb");
     assert_eq!(env.bind(&helper, &acct, wallet.account, &link), None);
+    set_epoch(&mut env.test, 3);
     let post = acct.post("Make Tari Great Again", "3kccccccccccc");
     assert_eq!(env.start_claim(&helper, helper.id, &acct, &post), None);
 
@@ -1298,6 +1343,7 @@ fn a_phrase_deposit_needs_a_linked_wallet_and_a_separate_post() {
     let bind = env.bind_text(&acct.did, alice.account);
     let both = acct.post(&format!("I love Tari {bind}"), "3kbbbbbbbbbbb");
     assert_eq!(env.bind(&alice, &acct, alice.account, &both), None);
+    set_epoch(&mut env.test, 3);
     assert_eq!(env.start_claim(&alice, alice.id, &acct, &both), None);
     expect_err(env.finalize(&alice, &acct.did), "required phrase");
 
@@ -1307,4 +1353,57 @@ fn a_phrase_deposit_needs_a_linked_wallet_and_a_separate_post() {
     let before = env.balance(&alice);
     assert_eq!(env.finalize(&alice, &acct.did), None);
     assert_eq!(env.balance(&alice), before + Amount::from(2_000_000u64));
+}
+
+#[test]
+fn a_stale_key_cannot_bind_instantly_and_a_newer_chain_cancels_it() {
+    let mut env = Env::new();
+    let (attacker, helper, victim) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let sender = user(&mut env.test);
+    let mut acct = Account::new();
+    // the account owner's key is stolen and rotated away; the thief still holds the old repo key and the old chain
+    let stale = Account { did: acct.did.clone(), ops: acct.ops.clone(), repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone(), clock: std::cell::Cell::new(T0) };
+    acct.rotate_repo_key();
+
+    // the thief binds the account to their own address with the old chain
+    let post = env.bind_post(&stale, attacker.account, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&helper, &stale, attacker.account, &post), None);
+    // it does not take effect at once, so a gift sent now is escrowed, not paid to the thief
+    assert_eq!(env.bound(&acct.did), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
+    assert_eq!(env.escrowed(), Amount::from(1_000_000u64));
+    // a shorter chain than the one relied on cannot cancel it
+    expect_err(env.challenge_bind(&helper, &stale), "already relies");
+    // anyone presenting the newer chain cancels the binding
+    assert_eq!(env.challenge_bind(&helper, &acct), None);
+    set_epoch(&mut env.test, 6);
+    assert_eq!(env.bound(&acct.did), None);
+    // and the old chain is refused from then on
+    let again = env.bind_post(&stale, attacker.account, "3kbbbbbbbbbbb");
+    expect_err(env.bind(&helper, &stale, attacker.account, &again), "stale operation chain");
+    // the real owner can still bind with the current chain
+    let mine = env.bind_post(&acct, victim.account, "3kccccccccccc");
+    assert_eq!(env.bind(&helper, &acct, victim.account, &mine), None);
+    // a shorter (stale) chain cannot cancel a binding made with the current one
+    expect_err(env.challenge_bind(&helper, &stale), "shorter");
+    set_epoch(&mut env.test, 8);
+    assert_eq!(env.bound(&acct.did), Some(victim.account));
+    // too late to cancel once in effect
+    expect_err(env.challenge_bind(&helper, &stale), "already in effect");
+}
+
+#[test]
+fn sponsored_fees_are_paid_back_from_the_account_that_used_them() {
+    let mut env = Env::new();
+    let (sender, funder) = (user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    env.fund_sponsor(&funder, 2_000_000);
+    // a deposit that cannot cover the fees cannot draw sponsored calls: draining the vault would cost more than it
+    // is worth
+    assert_eq!(env.deposit(&sender, &acct.did, 50_000, 100, 0), None);
+    let (sk, id) = bare_claimant(&mut env);
+    let code: String = env.test.call_method(env.component, "expected_post_text", args![acct.did.clone(), id], vec![]);
+    let post = acct.post(&format!("code {code}"), "3kaaaaaaaaaaa");
+    expect_err(sponsored_start(&mut env, &sk, id, &acct, &post), "too small to cover");
+    assert_eq!(env.fee_balance(), Amount::from(2_000_000u64));
 }

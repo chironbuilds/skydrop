@@ -999,12 +999,6 @@ function renderLink(prefill?: string, flow = false): void {
       toast("Wallet linked", "good");
       confetti();
       current = await chain.readBinding(provider, profile.did);
-      // coming from a challenge gift: carry on to the next step by itself
-      if (flow && current === mine()) {
-        const handle = profile.handle;
-        const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 2200);
-        cleanups.push(() => clearTimeout(t));
-      }
     } catch (e) {
       toast(chain.friendly(e), "bad");
     }
@@ -1013,6 +1007,23 @@ function renderLink(prefill?: string, flow = false): void {
   };
 
   const watch = window.setInterval(async () => {
+    if (profile && submitted === mine() && current !== mine() && !busy) {
+      // the link takes a couple of epochs to take effect (so a stolen old key can't redirect your money): wait for it
+      try {
+        current = await chain.readBinding(provider, profile.did);
+      } catch {
+        /* retried on the next tick */
+      }
+      if (current === mine()) {
+        draw();
+        if (flow) {
+          const handle = profile.handle;
+          const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 1800);
+          cleanups.push(() => clearTimeout(t));
+        }
+      }
+      return;
+    }
     if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin") return;
     try {
       if (await bsky.findClaimPost(profile.did, code)) void runBind();
@@ -1030,7 +1041,7 @@ function renderLink(prefill?: string, flow = false): void {
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
       : h("button", { class: "btn ghost sm", onclick: () => { changing = true; draw(); } }, "Change address");
     if (submitted === target && current !== target) {
-      mount(stepsEl, h("div", { class: "note good" }, `Link submitted. ${short(target, 14, 6)} takes over from the old address after about one epoch.`), changer);
+      mount(stepsEl, h("div", { class: "note good" }, `Link submitted. It takes effect in about ${eta(2)}: the wait lets anyone stop it if it was made with a stolen key. ${flow ? "Keep this page open and we'll carry on for you." : ""}`), changer);
       return;
     }
     const where = target === wallet.componentAddress ? "this wallet" : short(target, 14, 6);
@@ -1041,7 +1052,7 @@ function renderLink(prefill?: string, flow = false): void {
     mount(
       stepsEl,
       flow ? flowBar(1) : null,
-      current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes over after about one epoch; until then the old one keeps receiving.`) : null,
+      current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes effect after a short wait (about ${eta(2)}); until then the old one keeps receiving.`) : null,
       changing
         ? h("div", { class: "stack" }, h("div", { class: "note" }, `Linking ${where}.`), changer)
         : h("div", { class: "note linkrow" }, h("span", null, `Linking ${where}.`), changer),
@@ -1194,6 +1205,10 @@ function renderClaim(prefill?: string, gift?: Gift): void {
 
     const start = mine ? e.pending!.start : e.epoch;
     const pay = chain.payableNow(e, start);
+    if (!e.binding && e.bindingPending && pay.needLink === chain.total(e.deposits)) {
+      mount(stepsEl, doneCard, h("div", { style: "margin-top:16px" }, flowBar(1)), h("div", { class: "card", style: "margin-top:12px" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("h3", { style: "margin:12px 0 6px" }, "Your link is being confirmed"), h("p", { class: "sub", style: "margin:0" }, `It takes effect in about ${eta(Math.max(0, e.bindingPending.epoch - e.epoch))}. The short wait lets anyone stop it if it was made with a stolen key. After that, post the sender's phrase and the money goes to your linked wallet.`)));
+      return;
+    }
     if (!e.binding && pay.needLink === chain.total(e.deposits)) {
       mount(stepsEl, doneCard, h("div", { style: "margin-top:16px" }, flowBar(1)), h("div", { class: "card", style: "margin-top:12px" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(pay.needLink), h("small", null, CONFIG.symbol)), h("h3", { style: "margin:12px 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `The sender asked for a challenge (${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}). To collect, link your wallet first (one post, once). Then post the phrase as a separate post and it's released to that wallet.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")));
       return;
@@ -1325,6 +1340,11 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         if (!rkey) throw new Error("There's no claim post to confirm yet.");
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, rkey);
+        // the contract only believes a snapshot of your account that was taken after the hold time
+        const need = Math.max(0, ...e.deposits.filter((d) => d.challenge && d.hold).map((d) => d.hold));
+        if (e.held && bsky.commitRevMicros(proof.commit) < e.held.startRev + need * chain.EPOCH_MICROS) {
+          throw new Error(`Bluesky hasn't saved a fresh snapshot of your account since the hold time began. Like or post anything on Bluesky, wait a moment, then confirm again.`);
+        }
         if (sponsorOk) {
           try {
             say("Network fees are covered for you");
@@ -1358,7 +1378,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const holdNote =
       mine && pay.holding > 0n && pay.confirmAt !== null
         ? e.epoch >= pay.confirmAt
-          ? h("div", { class: "note warn", style: "margin-top:12px" }, `The time is up. Confirm your post is still there to release ${chain.formatTari(pay.holding)} ${CONFIG.symbol}.`, confirmBtn)
+          ? h("div", { class: "note warn", style: "margin-top:12px" }, `The time is up. Like or post anything on Bluesky so your account saves a fresh snapshot, then confirm your post is still there to release ${chain.formatTari(pay.holding)} ${CONFIG.symbol}.`, confirmBtn)
           : h("div", { class: "note warn", style: "margin-top:12px" }, `${chain.formatTari(pay.holding)} ${CONFIG.symbol} needs your post to stay up. Don't delete it. You can confirm it in ${eta(pay.confirmAt - e.epoch)}${canAuto() ? ", and this page does it for you while it's open" : ""}.`)
         : null;
 
@@ -1373,7 +1393,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       doneCard,
       challenged ? h("div", { style: "margin-top:16px" }, flowBar(!e.binding ? 1 : mine && pay.amount > 0n ? 3 : 2)) : null,
       holdNote,
-      pay.needLink > 0n ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
+      pay.needLink > 0n && e.bindingPending ? h("div", { class: "note warn", style: "margin-top:12px" }, `Your link is being confirmed and takes effect in about ${eta(Math.max(0, e.bindingPending.epoch - e.epoch))}. The short wait lets anyone stop it if it was made with a stolen key. After that, post the phrase.`) : null,
+      pay.needLink > 0n && !e.bindingPending ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
       e.binding && codeNow() === "" ? h("div", { class: "note good", style: "margin-top:12px" }, "Your wallet is linked, so the challenge post needs only the phrase below. Your money goes to your linked wallet.") : null,
       e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
@@ -1480,7 +1501,7 @@ function renderSent(): void {
             : d.challenge
               ? { tone: "wait", label: "Needs the phrase", text: `${who} has linked a wallet. Waiting for a post that says “${d.challenge}”${keep}.` }
               : { tone: "wait", label: "Waiting", text: `Waiting for ${who} to collect it.` };
-      const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "");
+      const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "");
       const nudge = `@${p?.handle ?? ""} there's ${chain.formatTari(d.amount)} ${CONFIG.symbol} waiting for you on Tari 🎁 Collect it here:\n${link}`;
       return h(
         "div",

@@ -167,9 +167,18 @@ interface Card {
   imageUrl: string;
 }
 
-async function post(text: string, reply?: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } }, card?: Card) {
+async function post(text: string, reply?: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } }, card?: Card, untrusted: string[] = []) {
   const rt = new RichText({ text });
   await rt.detectFacets(agent);
+  // Text a sender chose (a challenge phrase) is quoted, never made clickable: no mentions or links from the bot's account.
+  const enc0 = new TextEncoder();
+  for (const u of untrusted) {
+    const at = u ? rt.text.indexOf(u) : -1;
+    if (at < 0) continue;
+    const from = enc0.encode(rt.text.slice(0, at)).length;
+    const to = from + enc0.encode(u).length;
+    rt.facets = (rt.facets ?? []).filter((f) => f.index.byteEnd <= from || f.index.byteStart >= to);
+  }
   let embed: Record<string, unknown> | undefined;
   if (card) {
     const at = rt.text.indexOf(card.label);
@@ -215,7 +224,7 @@ interface Paid {
 async function readReceived(): Promise<Record<string, Paid[]>> {
   const sub = await provider.getSubstate(COMPONENT);
   const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  const raw = (comp?.body.state[15] ?? {}) as Record<string, unknown[][]>;
+  const raw = (comp?.body.state[16] ?? {}) as Record<string, unknown[][]>;
   const out: Record<string, Paid[]> = {};
   for (const [did, list] of Object.entries(raw)) {
     out[did] = list.map((d) => {
@@ -257,7 +266,7 @@ async function notifyReceived(): Promise<void> {
         /* no envelope: plain card */
       }
     }
-    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${fmt(total)} tTARI`, saved?.c ?? "");
+    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", `${fmt(total)} tTARI`, saved?.c ?? "");
     const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
     const imageUrl = `${CLAIM_URL}/og${query}${query ? "&" : "?"}h=${encodeURIComponent(handle)}`;
     const label = "See your gift";
@@ -268,6 +277,36 @@ async function notifyReceived(): Promise<void> {
       description: saved?.m ? `“${saved.m}”` : `${fmt(total)} tTARI is in your linked wallet.`,
       imageUrl,
     });
+  }
+}
+
+/**
+ * Watches links that have been submitted but have not taken effect yet. If the account's real operation chain differs
+ * from the one a link relied on (a key was rotated, so the link may come from a stolen old key), it cancels the link.
+ * Needs a little tTARI in the relay wallet for the network fee.
+ */
+async function watchBindings(): Promise<void> {
+  if (!LIVE || !relayWallet) return;
+  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(COMPONENT)]);
+  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
+  const bindings = (comp?.body.state[12] ?? {}) as Record<string, unknown[]>;
+  const proofs = (comp?.body.state[13] ?? {}) as Record<string, unknown[]>;
+  for (const [did, b] of Object.entries(bindings)) {
+    if (Number(epoch) >= Number(b[1])) continue;
+    const pr = proofs[did];
+    if (!pr) continue;
+    const reliedOn = (pr[0] as { hex: string }).hex;
+    const len = Number(pr[1]);
+    const now = await bskyLib.currentChain(did);
+    if (now.ops.length >= len && now.tipHex !== reliedOn) {
+      log(`cancelling a link for ${did}: its operation chain has changed`);
+      try {
+        const out = await chain.challengeBind(relayWallet, did, now.ops, (s) => log("  ·", s));
+        log(`link cancelled: ${out.transactionId}`);
+      } catch (e) {
+        log("couldn't cancel the link:", e instanceof Error ? e.message : e);
+      }
+    }
   }
 }
 
@@ -316,7 +355,7 @@ async function notifyDeposits(): Promise<void> {
         /* no envelope: plain card */
       }
     }
-    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${fmt(total)} tTARI`, saved?.c ?? "");
+    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", `${fmt(total)} tTARI`, saved?.c ?? "");
     const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
     const imageUrl = `${CLAIM_URL}/og${query}${query ? "&" : "?"}h=${encodeURIComponent(handle)}`;
     const label = "Open your gift";
@@ -325,13 +364,18 @@ async function notifyDeposits(): Promise<void> {
       `Prove you own this account and collect it. No wallet needed:\n${label} ↗${careful}`;
     const withAsk = ask ? `${text}\nLink your wallet first, then post what the sender asks: “${ask}”${keep}` : text;
     if ([...withAsk].length <= 295) text = withAsk;
-    await post(text, undefined, {
+    await post(
+      text,
+      undefined,
+      {
       label,
       uri: link,
       title: `@${handle}, you got a gift on Tari`,
       description: saved?.m ? `“${saved.m}”` : `${fmt(total)} tTARI is waiting for you. Collect it with one Bluesky post.`,
       imageUrl,
-    });
+      },
+      [ask ?? ""],
+    );
     state.lastNotified[did] = Date.now();
   }
   state.initialised = true;
@@ -378,6 +422,11 @@ async function main() {
     try {
       await notifyDeposits();
       await notifyReceived();
+      try {
+        await watchBindings();
+      } catch (e) {
+        log("link watch failed:", e instanceof Error ? e.message : e);
+      }
       await answerMentions();
       save();
     } catch (e) {

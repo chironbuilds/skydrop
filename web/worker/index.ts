@@ -123,12 +123,26 @@ ${amount ? `<text x="540" y="${290 + lines.length * 58 + 30}" font-family="Fraun
   return { svg, text };
 }
 
-async function png(url: URL, env: Env): Promise<Response> {
+/** At most `max` calls of `name` per address per hour. KV is eventually consistent, so this is a brake, not a hard cap. */
+async function overLimit(req: Request, env: Env, name: string, max: number): Promise<boolean> {
+  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+  const hour = Math.floor(Date.now() / 3_600_000);
+  const rate = `rate:${name}:${hour}:${ip}`;
+  const used = Number(new TextDecoder().decode((await env.COVERS.get(rate, "arrayBuffer")) ?? new ArrayBuffer(0))) || 0;
+  if (used >= max) return true;
+  await env.COVERS.put(rate, new TextEncoder().encode(String(used + 1)).buffer as ArrayBuffer, { expirationTtl: 3700 });
+  return false;
+}
+
+async function png(url: URL, env: Env, req: Request): Promise<Response> {
   const { handle, style, note, amount, cover } = params(url);
   const cache = (caches as unknown as { default: Cache }).default;
-  const key = new Request(url.origin + "/og-cache" + url.search);
+  // keyed by what is actually drawn, so junk in the query string cannot create new entries
+  const key = new Request(`${url.origin}/og-cache?h=${encodeURIComponent(handle)}&e=${style.id}&m=${encodeURIComponent(note)}&a=${encodeURIComponent(amount)}&c=${cover}`);
   const hit = await cache.match(key);
   if (hit) return hit;
+  // drawing costs CPU and font downloads: a new picture is allowed a limited number of times per address
+  if (await overLimit(req, env, "og", 60)) return new Response("slow down", { status: 429 });
   ready ??= initWasm(resvgWasm);
   await ready;
   const coverBytes = cover ? await env.COVERS.get(cover, "arrayBuffer") : null;
@@ -151,13 +165,7 @@ const isJpeg = (b: Uint8Array): boolean => b.length > 4 && b[0] === 0xff && b[1]
 /** Stores an uploaded cover (a JPEG the page already shrank) under its content hash. */
 async function saveCover(req: Request, env: Env): Promise<Response> {
   const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
-  // at most 20 uploads per address per hour. KV is eventually consistent, so this is a brake, not a hard cap.
-  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  const hour = Math.floor(Date.now() / 3_600_000);
-  const rate = `rate:${hour}:${ip}`;
-  const used = Number(new TextDecoder().decode((await env.COVERS.get(rate, "arrayBuffer")) ?? new ArrayBuffer(0))) || 0;
-  if (used >= 20) return json({ error: "slow down" }, 429);
-  await env.COVERS.put(rate, new TextEncoder().encode(String(used + 1)).buffer as ArrayBuffer, { expirationTtl: 3700 });
+  if (await overLimit(req, env, "cover", 20)) return json({ error: "slow down" }, 429);
   if (Number(req.headers.get("content-length") ?? 0) > MAX_COVER) return json({ error: "too big" }, 413);
   const buf = await req.arrayBuffer();
   if (buf.byteLength > MAX_COVER) return json({ error: "too big" }, 413);
@@ -184,6 +192,7 @@ const FP_RE = /^[0-9a-f]{64}:\d{1,20}:\d{1,12}:\d{1,6}$/;
  */
 async function saveEnvelope(req: Request, env: Env): Promise<Response> {
   const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
+  if (await overLimit(req, env, "envelope", 30)) return json({ error: "slow down" }, 429);
   const text = await req.text();
   if (text.length > 600) return json({ error: "too big" }, 413);
   let body: { fp?: string; e?: string; m?: string; c?: string; a?: string };
@@ -216,7 +225,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith("/e/")) return page(url);
-    if (url.pathname === "/og") return png(url, env);
+    if (url.pathname === "/og") return png(url, env, req);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
     if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);
     if (url.pathname.startsWith("/c/")) return serveCover(url, env);

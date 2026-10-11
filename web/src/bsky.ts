@@ -55,6 +55,28 @@ export async function bindCode(component: string, did: string, address: string):
   return `tari-bind:${toHex(digest.slice(0, 16))}`;
 }
 
+/** The time in a repo commit's `rev` (a TID), in microseconds. The account's signing key signs it. */
+export function commitRevMicros(commit: Uint8Array): number {
+  const rev = (dagCbor.decode(commit) as { rev?: string }).rev ?? "";
+  const alphabet = "234567abcdefghijklmnopqrstuvwxyz";
+  if (rev.length !== 13) throw new Error("This snapshot of your account has no usable time.");
+  let v = 0n;
+  for (const c of rev) {
+    const d = alphabet.indexOf(c);
+    if (d < 0) throw new Error("This snapshot of your account has no usable time.");
+    v = (v << 5n) | BigInt(d);
+  }
+  return Number(v >> 10n);
+}
+
+/** The account's current operation chain, and the hash of its last operation (how the contract names a chain). */
+export async function currentChain(did: string): Promise<{ ops: Uint8Array[]; tipHex: string }> {
+  const log = await plcLog(did);
+  const ops = log.map((o) => dagCbor.encode(o));
+  const tip = new Uint8Array(await crypto.subtle.digest("SHA-256", ops[ops.length - 1]!));
+  return { ops, tipHex: toHex(tip) };
+}
+
 export const composeUrl = (text: string): string => `https://bsky.app/intent/compose?text=${encodeURIComponent(text)}`;
 
 export interface ClaimProof {
@@ -95,15 +117,66 @@ export async function findClaimPost(did: string, code: string, phrases: string[]
  * Everything the contract verifies on-chain: the account's identity-operation chain, the signed repo
  * commit, the Merkle-search-tree path to the post, and the post itself.
  */
+/**
+ * The data host named in an account's identity document is chosen by whoever owns the account, and this code also
+ * runs on the bot's server. So it must be a public https host: no addresses, no localhost or internal names, no odd ports.
+ */
+export function safeHost(raw: string): string {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error("The account names a data host that isn't a web address.");
+  }
+  const h = u.hostname.toLowerCase();
+  const bad =
+    u.protocol !== "https:" ||
+    !!u.username ||
+    !!u.password ||
+    (!!u.port && u.port !== "443") ||
+    !h.includes(".") ||
+    h.includes(":") ||
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(h) ||
+    /(^|\.)(localhost|local|internal|lan|home|corp|intranet|arpa)$/.test(h);
+  if (bad) throw new Error("The account names a data host that isn't a public https address, so it was not contacted.");
+  return u.origin;
+}
+
+/** GET with a time limit, a size limit, and no redirects (a public host must not be able to bounce us inward). */
+async function getBytes(url: string, max: number, ms: number): Promise<Uint8Array> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(ms), redirect: "error" });
+  if (!r.ok) throw new Error(`Couldn't fetch the signed copy of your post (${r.status})`);
+  if (Number(r.headers.get("content-length") ?? 0) > max) throw new Error("The response was too large.");
+  const reader = r.body?.getReader();
+  if (!reader) return new Uint8Array(await r.arrayBuffer());
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      await reader.cancel();
+      throw new Error("The response was too large.");
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
 export async function buildClaimProof(did: string, rkey: string): Promise<ClaimProof> {
   const log = await plcLog(did);
   const services = log[log.length - 1]!.services as Record<string, { endpoint: string }> | undefined;
   const pds = services?.atproto_pds?.endpoint ?? (log[log.length - 1] as { service?: string }).service;
   if (!pds) throw new Error("Couldn't find where your Bluesky data is hosted");
-  const url = `${pds}/xrpc/com.atproto.sync.getRecord?did=${encodeURIComponent(did)}&collection=${CONFIG.collection}&rkey=${rkey}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Couldn't fetch the signed copy of your post (${r.status})`);
-  const car = await CarReader.fromBytes(new Uint8Array(await r.arrayBuffer()));
+  const url = `${safeHost(pds)}/xrpc/com.atproto.sync.getRecord?did=${encodeURIComponent(did)}&collection=${CONFIG.collection}&rkey=${encodeURIComponent(rkey)}`;
+  const car = await CarReader.fromBytes(await getBytes(url, 1_000_000, 15_000));
   const [root] = await car.getRoots();
   const commit = await car.get(root as CID);
   if (!commit) throw new Error("The signed repo commit is missing from the response");

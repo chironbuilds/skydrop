@@ -26,7 +26,7 @@
 //!   linked address. Such a claim can only be restarted by a newer post, so a copied old post cannot reset it.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
-use atp_verify::{record_text, sha256, verify_plc_chain, verify_record};
+use atp_verify::{commit_rev_micros, record_text, sha256, verify_plc_chain, verify_record};
 use tari_template_lib::{
     Consensus,
     caller_context::CallerContext,
@@ -43,8 +43,12 @@ const MAX_DEPOSITS_PER_DID: usize = 32;
 const MAX_CHALLENGE: usize = 80;
 /// Longest claim post the contract keeps for checking challenges (bytes). Bluesky allows 3000.
 const MAX_CLAIM_TEXT: usize = 4096;
-/// Epochs before a replacement binding takes over from the one it replaces.
-const BIND_DELAY_EPOCHS: u64 = 1;
+/// Epochs before a binding takes effect. During them anyone can cancel it with a newer operation chain (see
+/// `challenge_bind`), because the proof cannot show that the chain it came from is complete.
+const BIND_DELAY_EPOCHS: u64 = 2;
+/// An epoch as a length of real time (an hour), for holding a post up: the repo snapshots that prove it must be at
+/// least this much apart per epoch of hold time.
+const EPOCH_MICROS: u64 = 3_600_000_000;
 const BIND_DOMAIN: &[u8] = b"tari-bsky-bind:v1:";
 /// Longest time (epochs) a sender may ask a claim post to stay up.
 const MAX_HOLD_EPOCHS: u64 = 72;
@@ -144,14 +148,21 @@ mod bskyclaim {
         bot_did: String,
         /// DID -> text of the post the pending claim was proven with, checked against deposit phrases at payout.
         claim_text: BTreeMap<String, String>,
-        /// DID -> (bound account, epoch it takes effect, the account it replaces). A first binding replaces itself.
+        /// DID -> (bound account, epoch it takes effect, the account it replaces). A first binding "replaces" this
+        /// component's own address, which means nothing is bound until it takes effect.
         bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress)>,
+        /// DID -> (tip of the operation chain a binding relied on, its length), so a longer or different chain can cancel it.
+        bind_proof: BTreeMap<String, (Bytes, u32)>,
         /// DID -> rkey of the last bind post used. Bind posts must have a larger rkey.
         last_bind: BTreeMap<String, String>,
-        /// DID -> (rkey of the claim post, epoch it was last proven to exist). Starts at the claim's start.
-        held: BTreeMap<String, (String, u64)>,
+        /// DID -> (rkey of the claim post, epoch it was last proven to exist, repo snapshot time when the claim
+        /// started, repo snapshot time of the latest proof). Times are microseconds from the commit's `rev`.
+        held: BTreeMap<String, (String, u64, u64, u64)>,
         /// DID -> the latest payments sent straight to its linked wallet: (sender, amount, refund epoch, window, epoch paid).
         received: BTreeMap<String, Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, u64)>>,
+        /// DID -> network fees the sponsor vault paid for its claims. They are taken back out of what the account
+        /// is paid (or refunded), so using sponsored fees costs the account's own escrow, never the vault.
+        owed: BTreeMap<String, Amount>,
     }
 
     impl BskyClaim {
@@ -177,9 +188,11 @@ mod bskyclaim {
                 bot_did,
                 claim_text: BTreeMap::new(),
                 bindings: BTreeMap::new(),
+                bind_proof: BTreeMap::new(),
                 last_bind: BTreeMap::new(),
                 held: BTreeMap::new(),
                 received: BTreeMap::new(),
+                owed: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -219,6 +232,25 @@ mod bskyclaim {
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
             list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs));
             self.vault.deposit(funds);
+        }
+
+        /// Cancels a binding that has not taken effect yet. Present a valid operation chain for the DID that is at
+        /// least as long as the one the binding relied on and differs from it (for example a key rotation the binder
+        /// left out). Anyone may call. The previous binding, if there was one, stays.
+        pub fn challenge_bind(&mut self, did: String, ops: Vec<Bytes>) {
+            let (_, since, old) = self.bindings.get(&did).cloned().expect("no binding");
+            assert!(Consensus::current_epoch() < since, "the binding is already in effect");
+            let (tip, len) = self.bind_proof.get(&did).cloned().expect("no binding");
+            let chain = self.check_chain(&did, &ops);
+            assert!(chain.len >= len, "that chain is shorter than the one the binding relied on");
+            assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the binding already relies on");
+            self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
+            if old == CallerContext::current_component_address() {
+                self.bindings.remove(&did);
+            } else {
+                self.bindings.insert(did.clone(), (old, 0, old));
+            }
+            self.bind_proof.remove(&did);
         }
 
         /// The account `did`'s owner has bound, if one is in effect.
@@ -261,14 +293,15 @@ mod bskyclaim {
             assert!(text.contains(&code), "the post does not contain the bind code");
 
             let now = Consensus::current_epoch();
-            let current = self.active_binding(&did);
-            let entry = match current {
-                None => (address, now, address),
+            let nothing = CallerContext::current_component_address();
+            let entry = match self.active_binding(&did) {
                 Some(c) if c == address => (address, now, address),
                 Some(c) => (address, now + BIND_DELAY_EPOCHS, c),
+                None => (address, now + BIND_DELAY_EPOCHS, nothing),
             };
             self.known_len.insert(did.clone(), chain.len);
             self.last_bind.insert(did.clone(), rkey);
+            self.bind_proof.insert(did.clone(), (Bytes::from_vec(chain.tip.to_vec()), chain.len));
             self.bindings.insert(did, entry);
         }
 
@@ -311,6 +344,7 @@ mod bskyclaim {
             let used = self.sponsored.get(&did).map_or(0, |s| s.0);
             assert!(used < MAX_SPONSORED_STARTS, "this account has used its sponsored claims");
             self.begin_claim(did.clone(), claimant, ops, commit, mst_nodes, record, rkey);
+            self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).0 += 1;
             self.fee_vault.pay_fee(fee);
         }
@@ -345,13 +379,14 @@ mod bskyclaim {
             let used = self.sponsored.get(&did).map_or(0, |s| s.2);
             assert!(used < MAX_SPONSORED_CONFIRMS, "this account has used its sponsored confirmations");
             self.begin_confirm(did.clone(), ops, commit, mst_nodes, record, rkey);
+            self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).2 += 1;
             self.fee_vault.pay_fee(fee);
         }
 
         fn begin_confirm(&mut self, did: String, ops: Vec<Bytes>, commit: Bytes, mst_nodes: Vec<Bytes>, record: Bytes, rkey: String) {
             assert!(self.pending.contains_key(&did), "no pending claim");
-            let (held_rkey, _) = self.held.get(&did).cloned().expect("no pending claim");
+            let (held_rkey, _, start_rev, last_rev) = self.held.get(&did).cloned().expect("no pending claim");
             assert!(rkey == held_rkey, "that is not the post the claim was made with");
             let chain = self.check_chain(&did, &ops);
             if let Some(&known) = self.known_len.get(&did) {
@@ -363,8 +398,12 @@ mod bskyclaim {
                 .expect("invalid repo proof");
             let text = record_text(record.as_slice()).expect("record has no text");
             assert!(self.claim_text.get(&did).is_some_and(|t| t.as_str() == text), "the post has changed since the claim started");
+            // A proof is only as fresh as the repo snapshot it carries. An old snapshot still shows the post, even if
+            // it has since been deleted, so a hold time counts the time between the snapshots, not just epochs.
+            let rev = commit_rev_micros(commit.as_slice()).expect("bad commit revision");
+            assert!(rev >= last_rev, "that snapshot of your account is older than one already proven");
             self.known_len.insert(did.clone(), chain.len);
-            self.held.insert(did, (rkey, Consensus::current_epoch()));
+            self.held.insert(did, (rkey, Consensus::current_epoch(), start_rev, rev));
         }
 
         /// Pays the fee of the claimant's `finalize_claim`, called from the fee phase. Only when a claim is
@@ -377,13 +416,14 @@ mod bskyclaim {
             }
             let now = Consensus::current_epoch();
             let text = self.claim_text.get(&did).map(|t| t.as_str()).unwrap_or("");
-            let seen = self.held.get(&did).map_or(start, |h| h.1);
+            let (seen, gap) = self.held.get(&did).map_or((start, 0), |h| (h.1, h.3.saturating_sub(h.2)));
             assert!(
-                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text, seen, self.active_binding(&did).is_some()))),
+                self.deposits.get(&did).is_some_and(|d| d.iter().any(|e| payable(e, now, start, text, seen, gap, self.active_binding(&did).is_some()))),
                 "nothing is payable yet"
             );
             let used = self.sponsored.get(&did).map_or(0, |s| s.1);
             assert!(used < MAX_SPONSORED_FINALS, "this account has used its sponsored payouts");
+            self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).1 += 1;
             self.fee_vault.pay_fee(fee);
         }
@@ -573,7 +613,8 @@ mod bskyclaim {
             let is_link_post = text.contains("tari-bind:") || self.last_bind.get(&did).is_some_and(|lb| rkey.as_str() <= lb.as_str());
             let stored = if is_link_post { String::new() } else { text.to_string() };
             self.claim_text.insert(did.clone(), stored);
-            self.held.insert(did.clone(), (rkey, Consensus::current_epoch()));
+            let rev = commit_rev_micros(commit.as_slice()).expect("bad commit revision");
+            self.held.insert(did.clone(), (rkey, Consensus::current_epoch(), rev, rev));
             self.pending.insert(did, (claimant, Bytes::from_vec(chain.tip.to_vec()), chain.len, Consensus::current_epoch()));
         }
 
@@ -581,10 +622,11 @@ mod bskyclaim {
         /// one the claim relied on: a later key rotation, or the canonical branch of a fork. Anyone may call.
         /// It works while any deposit's challenge window, counted from the claim's start, is still open.
         pub fn challenge(&mut self, did: String, ops: Vec<Bytes>) {
-            let (_, tip, _, start) = self.pending.get(&did).expect("no pending claim");
+            let (_, tip, claim_len, start) = self.pending.get(&did).expect("no pending claim");
             let longest = self.deposits.get(&did).map_or(0, |d| d.iter().map(|e| e.3).max().unwrap_or(0));
             assert!(Consensus::current_epoch() < *start + longest, "the challenge window has closed");
             let chain = self.check_chain(&did, &ops);
+            assert!(chain.len >= *claim_len, "that chain is shorter than the one the claim relied on");
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the claim already relies on");
             self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
             self.pending.remove(&did);
@@ -604,10 +646,11 @@ mod bskyclaim {
             let now = Consensus::current_epoch();
             let list = self.deposits.remove(&did).unwrap_or_default();
             let text = self.claim_text.get(&did).cloned().unwrap_or_default();
-            let seen = self.held.get(&did).map_or(start, |h| h.1);
-            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen, bound.is_some()));
+            let (seen, gap) = self.held.get(&did).map_or((start, 0), |h| (h.1, h.3.saturating_sub(h.2)));
+            let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen, gap, bound.is_some()));
             assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
+            let took = self.reimburse(&did, total);
             if waiting.is_empty() {
                 self.pending.remove(&did);
                 self.claim_text.remove(&did);
@@ -615,7 +658,7 @@ mod bskyclaim {
             } else {
                 self.deposits.insert(did, waiting);
             }
-            let paid = self.vault.withdraw(total);
+            let paid = self.vault.withdraw(total - took);
             match bound {
                 Some(to) => {
                     ComponentManager::get(to).invoke("deposit", args![paid]);
@@ -635,7 +678,8 @@ mod bskyclaim {
             if list.is_empty() {
                 self.deposits.remove(&did);
             }
-            self.vault.withdraw(amount)
+            let took = self.reimburse(&did, amount);
+            self.vault.withdraw(amount - took)
         }
 
         pub fn deposits_for(&self, did: String) -> Vec<(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64)> {
@@ -649,6 +693,34 @@ mod bskyclaim {
 
         pub fn total_escrowed(&self) -> Amount {
             self.vault.balance()
+        }
+
+        /// Records a sponsored fee against `did`. The account's escrow has to be able to cover everything it has
+        /// drawn, so draining the sponsor vault costs more than the attacker's own deposit.
+        fn charge_sponsored(&mut self, did: &str, fee: Amount) {
+            let total = self.deposits.get(did).map_or(Amount::zero(), |l| l.iter().fold(Amount::zero(), |a, e| a + e.1));
+            let owed = self.owed.get(did).copied().unwrap_or(Amount::zero());
+            assert!(total >= owed + fee, "this account's escrow is too small to cover more sponsored fees");
+            self.owed.insert(did.to_string(), owed + fee);
+        }
+
+        /// Moves what `did` owes the sponsor vault out of `available` into it, and returns how much was moved.
+        fn reimburse(&mut self, did: &str, available: Amount) -> Amount {
+            if self.vault.resource_address() != TARI_TOKEN {
+                return Amount::zero();
+            }
+            let owed = self.owed.get(did).copied().unwrap_or(Amount::zero());
+            if !owed.is_positive() || !available.is_positive() {
+                return Amount::zero();
+            }
+            let take = if owed < available { owed } else { available };
+            if owed == take {
+                self.owed.remove(did);
+            } else {
+                self.owed.insert(did.to_string(), owed - take);
+            }
+            self.fee_vault.deposit(self.vault.withdraw(take));
+            take
         }
 
         fn note_received(&mut self, did: &str, sender: RistrettoPublicKeyBytes, amount: Amount, refund_epoch: u64, window: u64) {
@@ -666,7 +738,13 @@ mod bskyclaim {
 
         fn active_binding(&self, did: &str) -> Option<ComponentAddress> {
             let (address, since, old) = self.bindings.get(did)?;
-            Some(if Consensus::current_epoch() >= *since { *address } else { *old })
+            if Consensus::current_epoch() >= *since {
+                Some(*address)
+            } else if *old == CallerContext::current_component_address() {
+                None
+            } else {
+                Some(*old)
+            }
         }
 
         fn check_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::ChainInfo {
@@ -681,8 +759,11 @@ mod bskyclaim {
 
 /// A deposit pays out once its challenge window has run since the claim started, the claim post (of a linked
 /// account) said what the sender asked for, and (if asked) the post was proven to still be up `hold` epochs after the claim started.
-fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64, bound: bool) -> bool {
-    now >= start + e.3 && (e.4.is_empty() || (bound && text.contains(e.4.as_str()))) && seen >= start + e.5
+fn payable(e: &(RistrettoPublicKeyBytes, Amount, u64, u64, String, u64), now: u64, start: u64, text: &str, seen: u64, gap: u64, bound: bool) -> bool {
+    now >= start + e.3
+        && (e.4.is_empty() || (bound && text.contains(e.4.as_str())))
+        && seen >= start + e.5
+        && gap >= e.5.saturating_mul(EPOCH_MICROS)
 }
 
 fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {
