@@ -310,6 +310,37 @@ async function watchBindings(): Promise<void> {
   }
 }
 
+/**
+ * Watches claims that are waiting out their challenge window. A claim relies on the operation chain it was proven
+ * with; if the account's real chain has moved on (a key was rotated, so the claim may come from a stolen old key) the
+ * claim is cancelled with the newer chain. Same job as the link watch, for claims.
+ */
+async function watchClaims(): Promise<void> {
+  if (!LIVE || !relayWallet) return;
+  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(COMPONENT)]);
+  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
+  const deposits = (comp?.body.state[3] ?? {}) as Record<string, unknown[][]>;
+  const pending = (comp?.body.state[4] ?? {}) as Record<string, unknown[]>;
+  for (const [did, p] of Object.entries(pending)) {
+    const start = Number(p[3]);
+    const longest = Math.max(0, ...(deposits[did] ?? []).map((d) => Number(d[3])));
+    // a claim can only be challenged while some deposit's window is still open
+    if (Number(epoch) >= start + longest) continue;
+    const reliedOn = (p[1] as { hex: string }).hex;
+    const len = Number(p[2]);
+    const now = await bskyLib.currentChain(did);
+    if (now.ops.length >= len && now.tipHex !== reliedOn) {
+      log(`cancelling a claim on ${did}: its operation chain has changed`);
+      try {
+        const out = await chain.challengeClaim(relayWallet, did, now.ops, (s) => log("  ·", s));
+        log(`claim cancelled: ${out.transactionId}`);
+      } catch (e) {
+        log("couldn't cancel the claim:", e instanceof Error ? e.message : e);
+      }
+    }
+  }
+}
+
 async function notifyDeposits(): Promise<void> {
   const all = await readDeposits();
   const firstRun = !state.initialised;
@@ -424,8 +455,9 @@ async function main() {
       await notifyReceived();
       try {
         await watchBindings();
+        await watchClaims();
       } catch (e) {
-        log("link watch failed:", e instanceof Error ? e.message : e);
+        log("chain watch failed:", e instanceof Error ? e.message : e);
       }
       await answerMentions();
       save();

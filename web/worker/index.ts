@@ -11,7 +11,8 @@ interface Env {
 }
 
 const MAX_COVER = 90_000;
-const COVER_TTL = 60 * 60 * 24 * 365;
+// long enough for any gift's refund period, short enough that nothing is hosted for ever
+const COVER_TTL = 60 * 60 * 24 * 90;
 
 let ready: Promise<void> | null = null;
 const ENT: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };

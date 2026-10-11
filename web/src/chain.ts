@@ -394,6 +394,11 @@ export async function confirmClaim(wallet: Wallet, proof: ClaimProof, onStage?: 
   return run(wallet, instructions, 120_000n, onStage);
 }
 
+/** Cancels a pending claim by presenting the account's newer operation chain (during its challenge window). */
+export async function challengeClaim(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
+  return run(wallet, [call(CONFIG.component, "challenge", [lit(did), lit(ops)])], 120_000n, onStage);
+}
+
 /** Cancels a link that hasn't taken effect yet by presenting the account's newer operation chain. */
 export async function challengeBind(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
   return run(wallet, [call(CONFIG.component, "challenge_bind", [lit(did), lit(ops)])], 120_000n, onStage);

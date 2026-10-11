@@ -22,9 +22,9 @@ Reviewed 2026-10-11: the escrow contract (`bskyclaim`), the verifier (`atp-verif
 - **Envelope notes can be pre-registered by anyone** (first write wins) for a predictable deposit. The text is cleaned
   and capped at 80 characters, but it can be offensive or misleading. Plan: commit a hash of the envelope in the
   deposit so the registry can be checked against the chain.
-- **Uploaded cover pictures are not moderated** and are served from this domain for a year (20 uploads per address per hour).
-- **The first link and claims rely on someone noticing a stolen-key attack in time.** The bot's watchtower covers
-  links; it does not yet cover claims.
+- **Uploaded cover pictures are not moderated** and are served from this domain for 90 days (20 uploads per address per hour).
+- **Stolen-key attacks rely on someone noticing in time.** The bot's watchtower now cancels suspicious links and
+  claims, but if the bot is down nobody else is watching. Anyone can run the same check (`challenge`, `challenge_bind`).
 - **A malicious linked account can make payments to it fail** (its `deposit` can panic). That only affects the account
   that chose the link, but a relayed tip to it will fail until it is changed.
 - **The tip budget is spendable by whoever controls the account's current key**, including a stale one. `max_tip` limits it.
