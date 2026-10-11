@@ -6,10 +6,25 @@ Live on Esmeralda at https://skydrop.tari.mw
 
 ![Skydrop architecture](docs/architecture.svg)
 
+## What it does
+
+- **Send to a handle.** The money waits in an escrow contract filed under the account's permanent `did:plc`. The owner collects it with one Bluesky post.
+- **Link a wallet once.** One signed post links an account to a wallet. After that, gifts with no safety window and no phrase land in it instantly, and the bot says so ("You received…").
+- **Challenges.** A sender can require a specific phrase in a post (and that the post stays up for a while). Challenge gifts need a linked wallet, and linking and the challenge are always separate posts.
+- **Decline.** The owner of a linked wallet can send a gift back to its sender; unanswered phrase gifts are swept back after about three days.
+- **Envelopes.** Customisable red-packet style gifts (designs, a note, your own picture) with link previews on Telegram and Bluesky. The deposit commits to a hash of its envelope.
+- **Tip by post.** Fund a budget once, then tip by posting `@taridrop.bsky.social tip @someone 5`.
+- **Safety windows and watchtowers.** A proof can't show an account's history is complete, so larger gifts can wait out a window, and the bot cancels links and claims made with a stolen, rotated-away key.
+- English and Simplified Chinese, light and dark.
+
+See [Security review](docs/SECURITY.md) for what was checked, what was fixed and what is still open.
+
 ## Docs
 
 - [Architecture](docs/ARCHITECTURE.md): the pieces, data model, claim and tip flows, trust model.
 - [Explainer video](video/README.md): how to regenerate the 31 second vertical video.
+- [Security review](docs/SECURITY.md): findings, fixes and open items.
+- [Test checklist](docs/TESTING.md): an end-to-end walk through with real accounts.
 - [Integration guide](docs/INTEGRATION.md): deep links, the TypeScript modules, the contract reference, relayers, running your own instance.
 
 ## How the proof works

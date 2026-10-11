@@ -146,7 +146,7 @@ async function png(url: URL, env: Env, req: Request): Promise<Response> {
   if (await overLimit(req, env, "og", 60)) return new Response("slow down", { status: 429 });
   ready ??= initWasm(resvgWasm);
   await ready;
-  const coverBytes = cover ? await env.COVERS.get(cover, "arrayBuffer") : null;
+  const coverBytes = cover && !(await banned(cover, env)) ? await env.COVERS.get(cover, "arrayBuffer") : null;
   const built = card(style, handle, note, amount, coverBytes ? "x" : "");
   const svg = coverBytes ? built.svg.replace("__COVER__", "data:image/jpeg;base64," + toBase64(coverBytes)) : built.svg;
   const chars = [...new Set(built.text)];
@@ -177,9 +177,12 @@ async function saveCover(req: Request, env: Env): Promise<Response> {
   return json({ id });
 }
 
+/** An operator can take a picture down with `wrangler kv key put --binding COVERS "ban:<id>" 1`. */
+const banned = async (id: string, env: Env): Promise<boolean> => !!(await env.COVERS.get(`ban:${id}`, "arrayBuffer"));
+
 async function serveCover(url: URL, env: Env): Promise<Response> {
   const id = url.pathname.replace(/^\/c\//, "").replace(/\.jpg$/, "");
-  const buf = isCoverId(id) ? await env.COVERS.get(id, "arrayBuffer") : null;
+  const buf = isCoverId(id) && !(await banned(id, env)) ? await env.COVERS.get(id, "arrayBuffer") : null;
   if (!buf) return new Response("not found", { status: 404 });
   return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
 }

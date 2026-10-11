@@ -22,7 +22,9 @@ Reviewed 2026-10-11: the escrow contract (`bskyclaim`), the verifier (`atp-verif
 
 ## Open items (known, not fixed)
 
-- **Uploaded cover pictures are not moderated** and are served from this domain for 90 days (20 uploads per address per hour).
+- **Uploaded cover pictures are not screened.** An operator can take one down with
+  `wrangler kv key put --binding COVERS "ban:<id>" 1` (the id is the 16 characters in `/c/<id>.jpg`); a banned picture stops
+  being served and stops appearing on previews. They are served from this domain for 90 days (20 uploads per address per hour).
 - **Stolen-key attacks rely on someone noticing in time.** The bot's watchtower now cancels suspicious links and
   claims, but if the bot is down nobody else is watching. Anyone can run the same check (`challenge`, `challenge_bind`).
 - Epoch length is assumed to be about an hour when converting a hold time into real time.
