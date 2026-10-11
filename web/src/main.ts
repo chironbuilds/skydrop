@@ -423,6 +423,7 @@ function renderHome(): void {
       { class: "grid2" },
       h("a", { class: "card action", href: "#/send" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Send"), h("p", null, "Pick a Bluesky handle and an amount. We hold it safely on-chain until they claim it.")),
       h("a", { class: "card action", href: "#/tips" }, h("span", { class: "icon" }, icons.drop(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Tip by post"), h("p", null, "Fund a budget once, then tip anyone by posting a line on Bluesky. Nobody holds your keys.")),
+      h("a", { class: "card action", href: "#/link" }, h("span", { class: "icon" }, icons.wallet(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Link wallet"), h("p", null, "Link your wallet to your Bluesky account once. Gifts then land in it instantly, with nothing to claim.")),
       h("a", { class: "card action", href: "#/claim" }, h("span", { class: "icon alt" }, icons.gift(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Collect"), h("p", null, "Someone sent you tTARI? Post one line on Bluesky to prove it's you, then collect.")),
     ),
     h(
@@ -475,6 +476,7 @@ function renderSend(prefill?: string): void {
   // how long the claim post must stay up before the money is released (epochs; only with a phrase)
   const holdSelect = h("select", { class: "input", "aria-label": "How long the post must stay up" }, [0, 1, 3, 6, 12, 24].map((n) => h("option", { value: String(n) }, n ? `Must stay up for ${eta(n)}` : "No need to keep it up"))) as HTMLSelectElement;
   const hold = (): number => (challenge() ? Number(holdSelect.value) : 0);
+  holdSelect.style.display = "none";
   const challenge = (): string => challengeInput.value.replace(/\s+/g, " ").trim();
   const challengeProblem = (): string => {
     const c = challenge();
@@ -541,6 +543,7 @@ function renderSend(prefill?: string): void {
     const a = amount();
     const short = needsFunds(a ?? 0n);
     const problem = challengeProblem();
+    holdSelect.style.display = challenge() ? "" : "none";
     mount(
       challengeNote,
       problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null,
@@ -643,9 +646,14 @@ function renderSend(prefill?: string): void {
     h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
     h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
     h("div", null, h("label", { class: "f" }, "Envelope"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("p", { class: "help" }, "Optional. The envelope and note travel in the claim link you share, so they see it when they open it.")),
-    h("div", null, h("label", { class: "f" }, "Challenge (optional)"), challengeInput, challengeNote, h("div", { style: "margin-top:8px" }, holdSelect), h("p", { class: "help" }, "Make them post something specific. The money is only released if their claim post contains this exact phrase (capital letters and all), and the contract checks it. If you pick a time, the post also has to stay up that long: they prove it again after the time has passed, and a deleted post can't be proven. If they never do, you can take your money back after the refund time.")),
+    h(
+      "details",
+      { class: "opt" },
+      h("summary", null, "Add a challenge", h("span", { class: "tag" }, "optional")),
+      h("div", { class: "stack", style: "margin-top:12px" }, h("p", { class: "help", style: "margin:0" }, "Ask them to post a specific phrase before the money is released. The contract checks it, and they link a wallet first. You can also require the post to stay up for a while."), challengeInput, challengeNote, holdSelect),
+    ),
     h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
-    h("div", null, sendBtn, stage),
+    h("div", { class: "send-bar" }, sendBtn, stage),
   );
   drawChoices();
   drawEnvelope();
