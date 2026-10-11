@@ -863,7 +863,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
       try {
         say("Looking for your post on Bluesky");
         const post = await bsky.findClaimPost(p.did, code, claimPost().used);
-        if (!post) throw new Error("We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
+        if (!post) throw new Error((await bsky.whyNoClaimPost(p.did, code, claimPost().used)) || "We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
         say("Submitting the proof. The contract checks every signature itself");

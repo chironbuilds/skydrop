@@ -129,3 +129,24 @@ export function claimPostText(symbol: string, code: string, phrases: string[]): 
   // the senders' phrases lead the post, the claim line follows
   return { text: [...used, tail].join("\n"), used, dropped };
 }
+
+/** Why no post matched: a claim post for another wallet, or one missing a phrase. Empty if there is no claim post at all. */
+export async function whyNoClaimPost(did: string, code: string, phrases: string[]): Promise<string> {
+  try {
+    const r = await fetch(`${CONFIG.publicApi}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=30&filter=posts_no_replies`);
+    if (!r.ok) return "";
+    const feed = (await r.json()) as { feed: { post: { author: { did: string }; record?: { text?: string } } }[] };
+    const mine = feed.feed.filter((f) => f.post.author.did === did).map((f) => f.post.record?.text ?? "");
+    const claims = mine.filter((t) => t.includes("tari-claim:"));
+    if (!claims.length) return "";
+    const withCode = claims.find((t) => t.includes(code));
+    if (!withCode) {
+      const other = /tari-claim:[0-9a-f]{32}/.exec(claims[0]!)?.[0] ?? "a claim code";
+      return `Your latest claim post has ${other}, but the wallet in this browser expects ${code}. The code is tied to the wallet, so post the text shown on this page (same browser you're verifying in).`;
+    }
+    const missing = phrases.find((p) => !withCode.includes(p));
+    return missing ? `Your post is missing the sender's phrase “${missing}”. It has to match exactly, capital letters included.` : "";
+  } catch {
+    return "";
+  }
+}
