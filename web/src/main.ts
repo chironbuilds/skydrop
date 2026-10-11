@@ -883,7 +883,7 @@ function renderLink(prefill?: string): void {
     const addrInput = h("input", { class: "input", placeholder: "otl_… or component_…", "aria-label": "Address to link" }) as HTMLInputElement;
     const changer = changing
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
-      : h("button", { class: "btn ghost sm", style: "margin-top:10px", onclick: () => { changing = true; draw(); } }, "Link a different address");
+      : h("button", { class: "btn ghost sm", style: "margin-top:2px", onclick: () => { changing = true; draw(); } }, "Link a different address");
     if (submitted === target && current !== target) {
       mount(stepsEl, h("div", { class: "note good" }, `Link submitted. ${short(target, 14, 6)} takes over from the old address after about one epoch.`), changer);
       return;
@@ -897,9 +897,13 @@ function renderLink(prefill?: string): void {
       stepsEl,
       current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes over after about one epoch; until then the old one keeps receiving.`) : null,
       h("div", { class: "note" }, `Linking ${where}.`),
-      changer,
-      h("div", { class: "step active" }, h("div", null, h("b", null, "1. Post this on Bluesky"), h("p", { class: "help" }, "It proves the account is yours. The code ties it to this wallet, so it can't link anyone else."), h("pre", { class: "codebox" }, post()), h("div", { class: "row" }, h("a", { class: "btn primary", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Post it on Bluesky"), h("button", { class: "btn ghost", onclick: () => copy(post()) }, "Copy")))),
-      h("div", { class: "step" }, h("div", null, h("b", null, "2. Link it"), h("p", { class: "help" }, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link my wallet"), logEl)),
+      h("div", { style: "margin:0 0 4px" }, changer),
+      h(
+        "div",
+        { class: "steps", style: "margin-top:8px" },
+        h("div", { class: "step active" }, h("div", { class: "num" }, "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: "step active" }, h("div", { class: "num" }, "2"), h("div", null, h("h3", null, "Link it"), h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
+      ),
     );
   };
 
