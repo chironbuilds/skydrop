@@ -90,6 +90,12 @@ const ZH: Record<string, string> = {
   "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.":
     "每笔付款可以设置自己的安全期。如果有人盗用 Bluesky 密钥来领取，安全期让真正的主人有时间取消。",
   Instant: "即时",
+  "All set": "一切就绪",
+  "Nothing to collect": "没有需要领取的款项",
+  "A gift with a challenge shows up here until its phrase is posted.": "带口令的礼物会显示在这里，直到发布了对应的话。",
+  "Change linked wallet": "更换关联的钱包",
+  "Link my wallet": "关联我的钱包",
+  "When someone sends tTARI to this account it shows up here. Link a wallet once and future gifts arrive instantly.": "有人给这个账号发 tTARI 时会显示在这里。关联一次钱包，以后的礼物就会即时到账。",
   Refundable: "可取回",
   "Claim started": "已开始领取",
   "Needs a link": "需先关联",
@@ -281,6 +287,7 @@ const timeZh = (s: string): string =>
     .replace(/^right away$/, "马上");
 
 const PATTERNS: Pattern[] = [
+  [/^@(\S+) has a linked wallet \((.+)\), so gifts land there directly\.$/, (m) => `@${m[1]} 已关联钱包（${m[2]}），礼物会直接发到那里。`],
   [/^(\S+) has started claiming this\. It's released when its safety window and any phrase are done\.$/, (m) => `${m[1]} 已开始领取。安全期和口令都完成后才会释放。`],
   [/^(\S+) must link a wallet first, then post “(.+)”(?: and keep it up for (.+))?\.$/, (m) => `${m[1]} 需要先关联钱包，然后发布「${m[2]}」${m[3] ? `并保留帖子 ${timeZh(m[3])}` : ""}。`],
   [/^(\S+) has linked a wallet\. Waiting for a post that says “(.+)”(?: and keep it up for (.+))?\.$/, (m) => `${m[1]} 已关联钱包，正在等待包含「${m[2]}」的帖子${m[3] ? `（并保留 ${timeZh(m[3])}）` : ""}。`],
