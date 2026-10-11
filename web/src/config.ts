@@ -2,8 +2,8 @@
 export const CONFIG = {
   network: "esmeralda" as const,
   /** The BskyClaim escrow component (per-deposit challenge windows and challenge phrases). */
-  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_9075535254baad3451acbc951141c783f6c9f6e870518f931fd58a4154ca5b27",
-  template: "template_744ffdcca6afdc6bbcdc682f5e9f13e54b04f5ac22ecae74a2e33329db5cc44d",
+  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_2e5a47487f53be5ee6d795fc3d4b94b148c583713c3aed693da21eaf4b18b599",
+  template: "template_ebf68e07b3583f61178369e7a4cd73b5c831752f15710f91c4ac143f8a03dee8",
   /** µT per tTARI. */
   unit: 1_000_000n,
   symbol: "tTARI",
@@ -13,6 +13,8 @@ export const CONFIG = {
   minDeposit: 1000n,
   /** Largest challenge window the component accepts. */
   maxWindow: 10,
+  /** Epochs a new link waits before it takes effect (set when the component was created). */
+  bindDelayEpochs: 0,
   /** Longest challenge phrase the component accepts (bytes). */
   maxChallenge: 80,
   /** The bot account that relays tip posts. */

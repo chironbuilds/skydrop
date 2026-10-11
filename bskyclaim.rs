@@ -327,13 +327,17 @@ fn set_epoch(test: &mut TemplateTest, e: u64) {
 
 impl Env {
     fn new() -> Self {
+        Self::new_with_link_delay(2)
+    }
+
+    fn new_with_link_delay(link_delay: u64) -> Self {
         let mut test = TemplateTest::new(CRATE_PATH, [BSKYCLAIM]);
         set_epoch(&mut test, 1);
         let template = test.get_template_address("BskyClaim");
         let admin = user(&mut test);
         let tx = test
             .transaction()
-            .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string()])
+            .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string(), link_delay])
             .build_and_seal(&admin.key);
         test.execute_expect_success(tx, vec![admin.badge.clone()]);
         let component = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
@@ -1550,7 +1554,7 @@ fn only_a_standard_account_can_be_linked() {
     let tx = env
         .test
         .transaction()
-        .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string()])
+        .call_function(template, "new", args![TARI_TOKEN, Amount::from(1_000u64), WINDOW, BOT.to_string(), 2u64])
         .build_and_seal(&owner.key);
     env.test.execute_expect_success(tx, vec![owner.badge.clone()]);
     let not_an_account = env.test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
@@ -1578,4 +1582,17 @@ fn watching_an_account_makes_proofs_from_an_older_chain_fail() {
     // a watcher reports the current chain; from then on the stale one is refused
     assert_eq!(env.observe(&watcher, &acct), None);
     expect_err(env.start_claim(&thief, thief.id, &stale, &post), "stale operation chain");
+}
+
+#[test]
+fn with_no_link_delay_a_link_is_live_at_once() {
+    let mut env = Env::new_with_link_delay(0);
+    let (sender, wallet, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    let post = env.bind_post(&acct, wallet.account, wallet.id, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&relayer, &acct, wallet.account, wallet.id, &post), None);
+    assert_eq!(env.bound(&acct.did), Some(wallet.account));
+    let before = env.balance(&wallet);
+    assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 100, 0), None);
+    assert_eq!(env.balance(&wallet), before + Amount::from(1_000_000u64));
 }

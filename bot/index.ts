@@ -57,6 +57,8 @@ interface State {
   seenPaid?: Record<string, string[]>;
   /** did -> when the account's operation chain was last checked against what the contract has seen */
   observedAt?: Record<string, number>;
+  /** when the bot last paid to record a chain, to keep the cost bounded */
+  observeTimes?: number[];
 }
 
 const STATE_FILE = join(here, "state.json");
@@ -354,8 +356,9 @@ async function watchClaims(): Promise<void> {
 
 /**
  * Keeps the contract's record of each account's longest operation chain up to date, for accounts that matter most
- * (linked wallets and tip budgets). Once the contract has seen a rotation, a proof made with the older chain by a
- * stolen key is refused. Checked at most hourly per account; only costs a transaction when the chain has grown.
+ * (linked wallets, tip budgets and any account with a gift waiting). Once the contract has seen a rotation, a proof
+ * made with an older, rotated-away key is refused. This is what makes an instant link safe: it is checked every ten
+ * minutes per account and only costs a transaction when the chain has grown (at most 20 a day).
  */
 async function observeChains(): Promise<void> {
   if (!LIVE || !relayWallet) return;
@@ -364,13 +367,20 @@ async function observeChains(): Promise<void> {
   const known = (comp?.body.state[5] ?? {}) as Record<string, number>;
   const bindings = Object.keys((comp?.body.state[12] ?? {}) as Record<string, unknown>);
   const budgets = Object.keys((comp?.body.state[8] ?? {}) as Record<string, unknown>).map((k) => k.split(":")[0]!);
+  const waiting = Object.keys((comp?.body.state[3] ?? {}) as Record<string, unknown>);
   state.observedAt ??= {};
-  for (const did of new Set([...bindings, ...budgets])) {
-    if (Date.now() - (state.observedAt[did] ?? 0) < 3600_000) continue;
+  state.observeTimes = (state.observeTimes ?? []).filter((t) => Date.now() - t < 24 * 3600_000);
+  for (const did of new Set([...bindings, ...budgets, ...waiting])) {
+    if (Date.now() - (state.observedAt[did] ?? 0) < 600_000) continue;
     state.observedAt[did] = Date.now();
     try {
       const now = await bskyLib.currentChain(did);
       if (now.ops.length > Number(known[did] ?? 0)) {
+        if (state.observeTimes.length >= 20) {
+          log("chain recording limit reached for today");
+          return;
+        }
+        state.observeTimes.push(Date.now());
         const out = await chain.observeChain(relayWallet, did, now.ops, (s) => log("  ·", s));
         log(`recorded a newer operation chain for ${did}: ${out.transactionId}`);
       }

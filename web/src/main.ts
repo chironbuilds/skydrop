@@ -1004,6 +1004,12 @@ function renderLink(prefill?: string, flow = false): void {
       toast("Wallet linked", "good");
       confetti();
       current = await chain.readBinding(provider, profile.did);
+      // with no delay the link is live now: carry on to the next step of a challenge gift
+      if (flow && current === mine()) {
+        const handle = profile.handle;
+        const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 1800);
+        cleanups.push(() => clearTimeout(t));
+      }
     } catch (e) {
       toast(chain.friendly(e), "bad");
     }
@@ -1046,7 +1052,7 @@ function renderLink(prefill?: string, flow = false): void {
       ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
       : h("button", { class: "btn ghost sm", onclick: () => { changing = true; draw(); } }, "Change address");
     if (submitted === target && current !== target) {
-      mount(stepsEl, h("div", { class: "note good" }, `Link submitted. It takes effect in about ${eta(2)}: the wait lets anyone stop it if it was made with a stolen key. ${flow ? "Keep this page open and we'll carry on for you." : ""}`), changer);
+      mount(stepsEl, h("div", { class: "note good" }, `Link submitted. It takes effect in about ${eta(CONFIG.bindDelayEpochs)}: the wait lets anyone stop it if it was made with a stolen key. ${flow ? "Keep this page open and we'll carry on for you." : ""}`), changer);
       return;
     }
     const where = target === wallet.componentAddress ? "this wallet" : short(target, 14, 6);
@@ -1057,7 +1063,7 @@ function renderLink(prefill?: string, flow = false): void {
     mount(
       stepsEl,
       flow ? flowBar(1) : null,
-      current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes effect after a short wait (about ${eta(2)}); until then the old one keeps receiving.`) : null,
+      current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes effect after a short wait (about ${eta(CONFIG.bindDelayEpochs)}); until then the old one keeps receiving.`) : null,
       changing
         ? h("div", { class: "stack" }, h("div", { class: "note" }, `Linking ${where}.`), changer)
         : h("div", { class: "note linkrow" }, h("span", null, `Linking ${where}.`), changer),

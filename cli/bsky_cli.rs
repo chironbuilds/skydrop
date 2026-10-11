@@ -205,6 +205,8 @@ async fn main() {
             let min: u64 = arg(2, "1000").parse().unwrap();
             let window: u64 = arg(3, "2").parse().unwrap();
             let bot_did = arg(4, "did:plc:lsdjnz7b7du3e3rkawynfsqd");
+            // epochs a new link waits before it takes effect (an epoch is about half an hour)
+            let bind_delay: u64 = arg(5, "0").parse().unwrap();
             let mut p = connect_as("wallet").await;
             let me = max_epoch(&p).await;
             let call = |fee: u64| {
@@ -213,7 +215,8 @@ async fn main() {
                         TARI_TOKEN,
                         Amount::new(u128::from(min)),
                         window,
-                        bot_did.clone()
+                        bot_did.clone(),
+                        bind_delay
                     ])
                     .pay_fee(fee)
                     .prepare()

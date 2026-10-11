@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (36 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (37 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
@@ -271,7 +271,7 @@ Other CLI commands: `addr`, `balance`, `deposit`, `code`, `claim`, `challenge`, 
 
 - A deposit or tip with window 0 and no challenge phrase for a bound DID is paid straight to the address (no escrow, no refund).
 - Anything else escrows as before, and `finalize_claim` pays the bound address (the caller gets an empty bucket).
-- A binding (first or replacement) applies after 2 epochs. During that time anyone can cancel it with `challenge_bind(did, ops)` by presenting an operation chain that is at least as long as the one it relied on and differs from it; the previous address, if any, keeps receiving meanwhile. A bind post can only be used once (rkeys must increase), so an old post cannot move the binding back.
+- A binding (first or replacement) applies after `bind_delay_epochs` epochs (a constructor argument, 0 = instant; the live deployment uses 0). During that time anyone can cancel it with `challenge_bind(did, ops)` by presenting an operation chain that is at least as long as the one it relied on and differs from it; the previous address, if any, keeps receiving meanwhile. A bind post can only be used once (rkeys must increase), so an old post cannot move the binding back.
 
 For a linked account the claim post needs no `tari-claim:` code, only the sender's challenge phrase: the payout goes to the linked address whoever submits it, so a copied post can only pay the owner. A pending claim of a linked account can only be restarted by a newer post (larger rkey), and anyone may call `finalize_claim` for it. Unlinked accounts still need the code (it ties the post to the claimant's wallet). The intended order is: link a wallet once, then do challenges with just the phrase.
 

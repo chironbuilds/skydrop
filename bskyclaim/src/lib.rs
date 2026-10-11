@@ -52,9 +52,10 @@ const SWEEP_AFTER_EPOCHS: u64 = 72;
 const MAX_CHALLENGE: usize = 80;
 /// Longest claim post the contract keeps for checking challenges (bytes). Bluesky allows 3000.
 const MAX_CLAIM_TEXT: usize = 4096;
-/// Epochs before a binding takes effect. During them anyone can cancel it with a newer operation chain (see
-/// `challenge_bind`), because the proof cannot show that the chain it came from is complete.
-const BIND_DELAY_EPOCHS: u64 = 2;
+/// The most epochs a binding may be made to wait before it takes effect (the component sets its own, see `new`).
+/// During the wait anyone can cancel it with a newer operation chain (see `challenge_bind`), because the proof
+/// cannot show that the chain it came from is complete.
+const MAX_BIND_DELAY_EPOCHS: u64 = 10;
 /// An epoch as a length of real time (an hour), for holding a post up: the repo snapshots that prove it must be at
 /// least this much apart per epoch of hold time.
 const EPOCH_MICROS: u64 = 3_600_000_000;
@@ -189,6 +190,8 @@ mod bskyclaim {
         owed: BTreeMap<String, Amount>,
         /// Sender key (hex) -> money returned to them by declined or swept deposits, taken back with `take_returned`.
         returned: BTreeMap<String, Amount>,
+        /// Epochs a binding waits before it takes effect.
+        bind_delay: u64,
     }
 
     impl BskyClaim {
@@ -197,7 +200,9 @@ mod bskyclaim {
             min_deposit: Amount,
             max_window_epochs: u64,
             bot_did: String,
+            bind_delay_epochs: u64,
         ) -> Component<Self> {
+            assert!(bind_delay_epochs <= MAX_BIND_DELAY_EPOCHS, "link delay above the maximum");
             assert!(min_deposit.is_positive(), "minimum deposit must be positive");
             assert!(valid_did(&bot_did), "bot must be a did:plc identifier");
             Component::new(Self {
@@ -220,6 +225,7 @@ mod bskyclaim {
                 received: BTreeMap::new(),
                 owed: BTreeMap::new(),
                 returned: BTreeMap::new(),
+                bind_delay: bind_delay_epochs,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -344,8 +350,8 @@ mod bskyclaim {
             let nothing = CallerContext::current_component_address();
             let entry = match self.active_binding_full(&did) {
                 Some((c, co)) if c == address && co == owner => (address, now, address, owner, owner),
-                Some((c, co)) => (address, now + BIND_DELAY_EPOCHS, c, owner, co),
-                None => (address, now + BIND_DELAY_EPOCHS, nothing, owner, owner),
+                Some((c, co)) => (address, now + self.bind_delay, c, owner, co),
+                None => (address, now + self.bind_delay, nothing, owner, owner),
             };
             self.known_len.insert(did.clone(), chain.len);
             self.last_bind.insert(did.clone(), rkey);
