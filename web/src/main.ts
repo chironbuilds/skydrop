@@ -543,7 +543,7 @@ function renderSend(prefill?: string): void {
   const done = (p: bsky.Profile, a: bigint, w: number): void => {
     confetti();
     const note = env.cleanNote(noteInput.value);
-    const link = env.withEnvelope(`${location.origin}${location.pathname}#/claim/${p.handle}`, style.id, note);
+    const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`);
     const noteLine = note ? `\n“${note}”` : "";
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(

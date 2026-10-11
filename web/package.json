@@ -12,6 +12,7 @@
     "@chironbuilder/ootle-sdk": "0.1.20",
     "@ipld/car": "5.4.0",
     "@ipld/dag-cbor": "9.2.2",
+    "@resvg/resvg-wasm": "2.6.2",
     "@tari-project/ootle": "file:./vendor/ootle-patched",
     "@tari-project/ootle-indexer": "0.3.0",
     "@tari-project/ootle-wasm": "file:./vendor/ootle-wasm-patched",

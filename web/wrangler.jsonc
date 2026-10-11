@@ -1,6 +1,7 @@
 {
   "name": "skydrop",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./dist" },
+  "main": "./worker/index.ts",
+  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/e/*", "/og"] },
   "routes": [{ "pattern": "skydrop.tari.mw", "custom_domain": true }]
 }
