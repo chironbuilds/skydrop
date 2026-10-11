@@ -14,6 +14,10 @@
 //! * A deposit may carry a challenge phrase. It is only paid out if the claim post also contained that
 //!   phrase, so a sender can ask for something specific to be said publicly. Deposits whose phrase was not
 //!   posted stay escrowed (the claimant can post again), which keeps a hostile phrase from blocking others.
+//! * An owner may `bind` their account to an Ootle account address with one signed post. Deposits and tips
+//!   for a bound account that need no challenge window and no phrase are paid straight to that address;
+//!   anything else still escrows, and a payout goes to the bound address too. A new binding replaces an old
+//!   one only after a delay, and a post can be used once, so an old post cannot move the binding back.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
 use atp_verify::{record_text, sha256, verify_plc_chain, verify_record};
@@ -33,6 +37,9 @@ const MAX_DEPOSITS_PER_DID: usize = 32;
 const MAX_CHALLENGE: usize = 80;
 /// Longest claim post the contract keeps for checking challenges (bytes). Bluesky allows 3000.
 const MAX_CLAIM_TEXT: usize = 4096;
+/// Epochs before a replacement binding takes over from the one it replaces.
+const BIND_DELAY_EPOCHS: u64 = 1;
+const BIND_DOMAIN: &[u8] = b"tari-bsky-bind:v1:";
 const MAX_BLOCK_LEN: usize = 16 * 1024;
 /// Ceiling on the fee one sponsored call may offer from the sponsor vault (µT).
 const MAX_SPONSORED_FEE: u64 = 100_000;
@@ -50,6 +57,22 @@ fn claim_code(component: &str, did: &str, claimant: &RistrettoPublicKeyBytes) ->
     data.extend_from_slice(&claimant.into_array());
     let digest = sha256(&data);
     let mut s = String::from("tari-claim:");
+    for b in &digest[..16] {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// The text an owner must post to bind `did` to the account `address` here: `tari-bind:` plus this code.
+fn bind_code(component: &str, did: &str, address: &ComponentAddress) -> String {
+    let mut data = BIND_DOMAIN.to_vec();
+    data.extend_from_slice(component.as_bytes());
+    data.push(b':');
+    data.extend_from_slice(did.as_bytes());
+    data.push(b':');
+    data.extend_from_slice(address.to_string().as_bytes());
+    let digest = sha256(&data);
+    let mut s = String::from("tari-bind:");
     for b in &digest[..16] {
         s.push_str(&format!("{b:02x}"));
     }
@@ -109,6 +132,10 @@ mod bskyclaim {
         bot_did: String,
         /// DID -> text of the post the pending claim was proven with, checked against deposit phrases at payout.
         claim_text: BTreeMap<String, String>,
+        /// DID -> (bound account, epoch it takes effect, the account it replaces, if any).
+        bindings: BTreeMap<String, (ComponentAddress, u64, Option<ComponentAddress>)>,
+        /// DID -> rkey of the last bind post used. Bind posts must have a larger rkey.
+        last_bind: BTreeMap<String, String>,
     }
 
     impl BskyClaim {
@@ -133,6 +160,8 @@ mod bskyclaim {
                 last_tip: BTreeMap::new(),
                 bot_did,
                 claim_text: BTreeMap::new(),
+                bindings: BTreeMap::new(),
+                last_bind: BTreeMap::new(),
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
@@ -158,10 +187,67 @@ mod bskyclaim {
             let amount = funds.amount();
             assert!(amount >= self.min_deposit, "deposit below the minimum");
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
+            if window_epochs == 0 && challenge.is_empty() {
+                if let Some(to) = self.active_binding(&did) {
+                    ComponentManager::get(to).invoke("deposit", args![funds]);
+                    return;
+                }
+            }
             let list = self.deposits.entry(did).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for this account");
             list.push((sender, amount, refund_epoch, window_epochs, challenge));
             self.vault.deposit(funds);
+        }
+
+        /// The account `did`'s owner has bound, if one is in effect.
+        pub fn binding_for(&self, did: String) -> Option<ComponentAddress> {
+            self.active_binding(&did)
+        }
+
+        /// The exact text an owner must post to bind `did` to `address`.
+        pub fn expected_bind_text(&self, did: String, address: ComponentAddress) -> String {
+            bind_code(&CallerContext::current_component_address().to_string(), &did, &address)
+        }
+
+        /// Binds `did` to the Ootle account `address`. The proof is a post in the DID's repo containing the bind
+        /// code for `address`; the post's signature is the authority, so anyone may submit it. A first binding
+        /// applies at once. A replacement applies after a delay, and the old one keeps working until then.
+        pub fn bind(
+            &mut self,
+            did: String,
+            address: ComponentAddress,
+            ops: Vec<Bytes>,
+            commit: Bytes,
+            mst_nodes: Vec<Bytes>,
+            record: Bytes,
+            rkey: String,
+        ) {
+            assert!(rkey.len() == 13, "posts have 13-character record keys");
+            if let Some(last) = self.last_bind.get(&did) {
+                assert!(rkey.as_str() > last.as_str(), "this post, or a later one, was already used to bind");
+            }
+            let chain = self.check_chain(&did, &ops);
+            if let Some(&known) = self.known_len.get(&did) {
+                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
+            }
+            let nodes = slices(&mst_nodes, MAX_NODES);
+            assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
+            verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
+                .expect("invalid repo proof");
+            let text = record_text(record.as_slice()).expect("record has no text");
+            let code = bind_code(&CallerContext::current_component_address().to_string(), &did, &address);
+            assert!(text.contains(&code), "the post does not contain the bind code");
+
+            let now = Consensus::current_epoch();
+            let current = self.active_binding(&did);
+            let entry = match current {
+                None => (address, now, None),
+                Some(c) if c == address => (address, now, None),
+                Some(c) => (address, now + BIND_DELAY_EPOCHS, Some(c)),
+            };
+            self.known_len.insert(did.clone(), chain.len);
+            self.last_bind.insert(did.clone(), rkey);
+            self.bindings.insert(did, entry);
         }
 
         /// The exact text a claimant must put in a post for `claimant` to claim `did`'s funds here.
@@ -357,6 +443,13 @@ mod bskyclaim {
             }
             self.known_len.insert(did.clone(), chain.len);
             self.last_tip.insert(did, rkey);
+            if window == 0 {
+                if let Some(to) = self.active_binding(&recipient) {
+                    let paid = self.vault.withdraw(amount);
+                    ComponentManager::get(to).invoke("deposit", args![paid]);
+                    return;
+                }
+            }
             let list = self.deposits.entry(recipient).or_default();
             assert!(list.len() < MAX_DEPOSITS_PER_DID, "too many deposits for the recipient");
             list.push((owner, amount, Consensus::current_epoch() + refund_after, window, String::new()));
@@ -418,13 +511,21 @@ mod bskyclaim {
             let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text));
             assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
+            let bound = self.active_binding(&did);
             if waiting.is_empty() {
                 self.pending.remove(&did);
                 self.claim_text.remove(&did);
             } else {
                 self.deposits.insert(did, waiting);
             }
-            self.vault.withdraw(total)
+            let paid = self.vault.withdraw(total);
+            match bound {
+                Some(to) => {
+                    ComponentManager::get(to).invoke("deposit", args![paid]);
+                    self.vault.withdraw(Amount::zero())
+                }
+                None => paid,
+            }
         }
 
         /// Returns the deposit at `index` to its sender once its refund epoch has passed.
@@ -451,6 +552,11 @@ mod bskyclaim {
 
         pub fn total_escrowed(&self) -> Amount {
             self.vault.balance()
+        }
+
+        fn active_binding(&self, did: &str) -> Option<ComponentAddress> {
+            let (address, since, old) = self.bindings.get(did)?;
+            if Consensus::current_epoch() >= *since { Some(*address) } else { *old }
         }
 
         fn check_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::ChainInfo {

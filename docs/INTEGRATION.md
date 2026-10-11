@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (19 engine tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (23 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>
@@ -264,3 +264,11 @@ Other CLI commands: `addr`, `balance`, `deposit`, `code`, `claim`, `challenge`, 
 - Treat claim windows as a feature. For anything above tip money, offer a window, and tell users why.
 - A tip budget's spending authority is the Bluesky account itself. Show `max_tip` prominently and keep it low.
 - Testnet only. The contract has not been audited.
+
+## Linking a wallet (instant payouts)
+
+`bind(did, address, ops, commit, mst_nodes, record, rkey)` links a did:plc to an Ootle account. The proof is a post in the DID's repo containing `tari-bind:<hex>` = sha256("tari-bsky-bind:v1:" ‖ component ‖ ":" ‖ did ‖ ":" ‖ address)[..16]; anyone may relay it. Reads: `binding_for(did)`, `expected_bind_text(did, address)`; state index 12 holds `did -> (address, effective epoch, replaced address)`, 13 the last bind rkey.
+
+- A deposit or tip with window 0 and no challenge phrase for a bound DID is paid straight to the address (no escrow, no refund).
+- Anything else escrows as before, and `finalize_claim` pays the bound address (the caller gets an empty bucket).
+- A first binding applies at once. A replacement applies after one epoch, the old address keeps receiving until then, and a bind post can only be used once (rkeys must increase), so an old post cannot move the binding back.

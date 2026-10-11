@@ -48,6 +48,13 @@ export async function claimCode(component: string, did: string, claimant: Uint8A
   return `tari-claim:${toHex(digest.slice(0, 16))}`;
 }
 
+/** What an owner posts to link `did` to the Ootle account `address`. */
+export async function bindCode(component: string, did: string, address: string): Promise<string> {
+  const enc = new TextEncoder();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(`tari-bsky-bind:v1:${component}:${did}:${address}`)));
+  return `tari-bind:${toHex(digest.slice(0, 16))}`;
+}
+
 export const composeUrl = (text: string): string => `https://bsky.app/intent/compose?text=${encodeURIComponent(text)}`;
 
 export interface ClaimProof {

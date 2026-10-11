@@ -97,7 +97,7 @@ function eta(epochs: number): string {
 // layout
 // ---------------------------------------------------------------------------------------------------------
 
-type Tab = "home" | "send" | "claim" | "tips" | "how";
+type Tab = "home" | "send" | "claim" | "tips" | "link" | "how";
 
 function layout(active: Tab, ...content: (Node | null)[]): void {
   const link = (href: string, label: string, tab: Tab, cls = "") =>
@@ -114,6 +114,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         link("#/send", "Send", "send"),
         link("#/claim", "Collect", "claim"),
         link("#/tips", "Tip by post", "tips"),
+        link("#/link", "Link wallet", "link", "hide-sm"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
         h("button", { class: "lang", "aria-label": currentLang() === "zh" ? "Switch to English" : "切换到中文", onclick: () => setLang(currentLang() === "zh" ? "en" : "zh") }, currentLang() === "zh" ? "EN" : "中文"),
@@ -452,9 +453,12 @@ function renderSend(prefill?: string): void {
   let coverId = "";
   let coverUrl = "";
   let uploading = false;
+  // the wallet this account has linked, if any: sends with no window and no phrase land there at once
+  let bound: string | null = null;
 
   const field = handleField(prefill ?? "", (p) => {
     profile = p;
+    bound = null;
     update();
     if (p) void showWaiting(p);
   });
@@ -551,7 +555,12 @@ function renderSend(prefill?: string): void {
     try {
       const esc = await chain.readEscrow(provider, p.did);
       noteEpoch(esc.epoch);
-      mount(waiting, esc.deposits.length ? h("div", { class: "note good", style: "margin-top:12px" }, `${chain.formatTari(chain.total(esc.deposits))} ${CONFIG.symbol} is already waiting for @${p.handle}.`) : null);
+      if (profile?.did === p.did) bound = esc.binding;
+      mount(
+        waiting,
+        esc.deposits.length ? h("div", { class: "note good", style: "margin-top:12px" }, `${chain.formatTari(chain.total(esc.deposits))} ${CONFIG.symbol} is already waiting for @${p.handle}.`) : null,
+        esc.binding ? h("div", { class: "note good", style: "margin-top:12px" }, `@${p.handle} has linked a wallet. A gift with no safety window and no phrase arrives there immediately.`) : null,
+      );
     } catch {
       mount(waiting);
     }
@@ -603,7 +612,7 @@ function renderSend(prefill?: string): void {
         { class: "success" },
         h("div", { class: "delivered" }, "Dispatched"),
         h("h2", { class: "page", style: "margin:8px 0" }, "On its way"),
-        h("p", { class: "sub" }, `${chain.formatTari(a)} ${CONFIG.symbol} is now held on-chain for @${p.handle}. ${w ? `They can collect it after a safety window of ${eta(w)}.` : "They can collect it as soon as they verify."}`),
+        h("p", { class: "sub" }, bound && !w && !challenge() ? `${chain.formatTari(a)} ${CONFIG.symbol} went straight to @${p.handle}'s linked wallet.` : `${chain.formatTari(a)} ${CONFIG.symbol} is now held on-chain for @${p.handle}. ${w ? `They can collect it after a safety window of ${eta(w)}.` : "They can collect it as soon as they verify."}`),
         profileCard(p),
       ),
       h("div", { class: "note" }, `The Skydrop bot (@${CONFIG.botHandle}) mentions them on Bluesky within a few minutes. Add a personal note of your own too, it's what gets noticed.`),
@@ -775,6 +784,127 @@ function renderTips(prefill?: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// link a wallet to a Bluesky account
+// ---------------------------------------------------------------------------------------------------------
+
+function renderLink(prefill?: string): void {
+  let profile: bsky.Profile | null = null;
+  let code = "";
+  let busy = false;
+  let current: string | null = null;
+  // the account to link: this wallet by default, or any account the owner pastes
+  let target = wallet.componentAddress;
+  let changing = false;
+  let submitted = "";
+  let addrProblem = "";
+  const mine = (): string => target;
+  const card = h("div", { class: "card stack" });
+  const stepsEl = h("div");
+  const logEl = h("div", { class: "log" });
+  const say = (s: string) => logEl.appendChild(h("div", null, s));
+  const field = handleField(prefill ?? lastHandle(), (p) => {
+    profile = p;
+    if (p) saveHandle(p.handle);
+    void load();
+  });
+
+  const load = async (): Promise<void> => {
+    if (!profile) return mount(stepsEl);
+    mount(stepsEl, h("div", { class: "skel" }));
+    code = await bsky.bindCode(CONFIG.component, profile.did, mine());
+    current = await chain.readBinding(provider, profile.did);
+    draw();
+  };
+
+  const useAddress = async (raw: string): Promise<void> => {
+    const a = raw.trim();
+    addrProblem = "";
+    if (!/^component_[0-9a-f]{64}$/.test(a)) addrProblem = "That should be an account address: component_ followed by 64 characters (your wallet shows it).";
+    else {
+      try {
+        await provider.getSubstate(a);
+      } catch {
+        addrProblem = "That account doesn't exist on this network yet. Send it some tTARI first, then link it.";
+      }
+    }
+    if (!addrProblem && profile) {
+      target = a;
+      code = await bsky.bindCode(CONFIG.component, profile.did, target);
+      changing = false;
+    }
+    draw();
+  };
+
+  const post = (): string => `Linking my Skydrop wallet to this account, so tips arrive directly. ${code}`;
+
+  const runBind = async (): Promise<void> => {
+    if (!profile || busy) return;
+    if (needsFunds()) return void toast("You need a little tTARI for network fees first.", "bad");
+    busy = true;
+    mount(logEl);
+    try {
+      say("Looking for your post on Bluesky");
+      const found = await bsky.findClaimPost(profile.did, code);
+      if (!found) throw new Error("We couldn't find a post containing your link code yet. Post it publicly, wait a few seconds, then try again.");
+      say("Fetching the signed copy of your post");
+      const proof = await bsky.buildClaimProof(profile.did, found.rkey);
+      say("Submitting the proof. The contract checks every signature itself");
+      await chain.bindAccount(wallet, proof, mine(), say);
+      await refreshBalance();
+      submitted = target;
+      toast("Wallet linked", "good");
+      confetti();
+      current = await chain.readBinding(provider, profile.did);
+    } catch (e) {
+      toast(chain.friendly(e), "bad");
+    }
+    busy = false;
+    draw();
+  };
+
+  const watch = window.setInterval(async () => {
+    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin") return;
+    try {
+      if (await bsky.findClaimPost(profile.did, code)) void runBind();
+    } catch {
+      /* retried on the next tick */
+    }
+  }, 5000);
+  cleanups.push(() => clearInterval(watch));
+
+  const draw = (): void => {
+    if (!profile) return;
+    const p = profile;
+    const addrInput = h("input", { class: "input", placeholder: "component_…", "aria-label": "Account address to link" }) as HTMLInputElement;
+    const changer = changing
+      ? h("div", { class: "stack", style: "margin-top:10px" }, h("label", { class: "f" }, "Link a different account"), addrInput, addrProblem ? h("div", { class: "note bad" }, addrProblem) : null, h("div", { class: "row" }, h("button", { class: "btn primary sm", onclick: () => void useAddress(addrInput.value) }, "Use this address"), h("button", { class: "btn ghost sm", onclick: () => { changing = false; addrProblem = ""; draw(); } }, "Cancel")))
+      : h("button", { class: "btn ghost sm", style: "margin-top:10px", onclick: () => { changing = true; draw(); } }, "Link a different address");
+    if (submitted === target && current !== target) {
+      mount(stepsEl, h("div", { class: "note good" }, `Link submitted. ${short(target, 14, 6)} takes over from the old address after about one epoch.`), changer);
+      return;
+    }
+    const where = target === wallet.componentAddress ? "this wallet" : short(target, 14, 6);
+    if (current === mine()) {
+      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything else still waits for you to collect it, and is paid there too.`), profileCard(p)), changer);
+      return;
+    }
+    mount(
+      stepsEl,
+      current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${short(current, 14, 6)}. Linking ${where} instead takes over after about one epoch; until then the old one keeps receiving.`) : null,
+      h("div", { class: "note" }, `Linking ${where}.`),
+      changer,
+      h("div", { class: "step active" }, h("div", null, h("b", null, "1. Post this on Bluesky"), h("p", { class: "help" }, "It proves the account is yours. The code ties it to this wallet, so it can't link anyone else."), h("pre", { class: "codebox" }, post()), h("div", { class: "row" }, h("a", { class: "btn primary", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Post it on Bluesky"), h("button", { class: "btn ghost", onclick: () => copy(post()) }, "Copy")))),
+      h("div", { class: "step" }, h("div", null, h("b", null, "2. Link it"), h("p", { class: "help" }, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link my wallet"), logEl)),
+    );
+  };
+
+  mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
+  layout("link", h("h2", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
+  if (!prefill) field.input.focus();
+  void load();
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // collect
 // ---------------------------------------------------------------------------------------------------------
 
@@ -871,7 +1001,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const others = e.pending && !mine;
     const waitingTotal = chain.total(e.deposits);
 
-    const doneCard = collected === null ? null : h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")));
+    const doneCard = collected === null ? null : h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, e.binding && e.binding !== wallet.componentAddress ? `It was paid to the wallet @${p.handle} has linked (${short(e.binding, 14, 6)}).` : "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")));
     if (doneCard && !e.deposits.length) {
       mount(stepsEl, doneCard);
       return;
@@ -1010,6 +1140,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     mount(
       stepsEl,
       doneCard,
+      e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
       others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,
       sponsorOk ? h("div", { class: "note good", style: "margin-top:12px" }, "Network fees are covered. You don't need any tTARI to collect.") : needsFunds() && cur === 1 ? h("div", { style: "margin-top:12px" }, fundsNote()) : null,
@@ -1141,6 +1272,7 @@ function renderHow(): void {
         h("li", null, h("b", null, "They post a code."), " The code is a hash of their wallet's key, so the post can only ever pay out to the wallet that asked."),
         h("li", null, h("b", null, "The contract checks the math."), " Bluesky accounts are cryptographic identities. The contract verifies the account's identity history, the signature on their repository and the path to the post. No server is asked."),
         h("li", null, h("b", null, "They collect."), " After the safety window you chose, the escrow pays out to their wallet."),
+        h("li", null, h("b", null, "Or they link a wallet once."), " With one signed post, an account can link an Ootle address (", h("a", { href: "#/link" }, "Link wallet"), "). After that, gifts with no safety window and no phrase are paid there instantly, and anything collected goes there too. Changing the address later takes about an epoch to apply."),
       ),
     ),
     h("details", null, h("summary", null, "What's the safety window for?"), h("p", null, "A proof can show an account's history is valid, but not that it's complete. If someone stole a Bluesky signing key and the real owner had already rotated it, the thief could present the old history. The window lets anyone submit the owner's rotation and cancel the claim. Small tips can skip it. Large transfers should use it.")),
@@ -1164,6 +1296,7 @@ function route(): void {
   if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
   else if (kind === "tips") renderTips(param || undefined);
+  else if (kind === "link") renderLink(param || undefined);
   else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();
   else renderHome();

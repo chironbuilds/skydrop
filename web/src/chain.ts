@@ -11,6 +11,7 @@ import {
   TARI_RESOURCE_ADDRESS,
   TransactionBuilder,
   amountLiteral,
+  componentAddressLiteral,
   resolveMaxEpoch,
   resourceAddressLiteral,
   sendTransaction,
@@ -91,6 +92,8 @@ export interface Escrow {
   maxWindow: number;
   /** The text of the post the pending claim was proven with. */
   claimText: string;
+  /** The Ootle account this Bluesky account has linked, if one is in effect now. Funds that need no window or phrase go straight to it. */
+  binding: string | null;
 }
 
 type Cbor = unknown;
@@ -110,7 +113,34 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
     deposits: deposits.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), refundEpoch: Number(d[2]), window: Number(d[3]), challenge: String(d[4] ?? "") })),
     pending: pend ? { claimant: bytesHex(pend[0]), len: Number(pend[2]), start: Number(pend[3]) } : null,
     claimText: String((state[11] as Record<string, string> | undefined)?.[did] ?? ""),
+    binding: bindingOf(state[12], did, epoch),
   };
+}
+
+/** A component address as the state stores it, written the way the wallet writes it. */
+const addressText = (v: Cbor): string => (typeof v === "string" ? v : `component_${bytesHex(v)}`);
+
+/** Component state index 12: DID -> [account, epoch it takes effect, the account it replaces or null]. */
+function bindingOf(map: Cbor, did: string, epoch: number): string | null {
+  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+  if (!b) return null;
+  if (epoch >= Number(b[1])) return addressText(b[0]);
+  return b[2] ? addressText(b[2]) : null;
+}
+
+/** The account `did` has linked, if any. */
+export async function readBinding(provider: IndexerProvider, did: string): Promise<string | null> {
+  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(CONFIG.component)]);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  return bindingOf(comp?.body.state[12], did, epoch);
+}
+
+/** Links the Bluesky account in `proof` to `address`: the proof is a post that carries the bind code for that address. */
+export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const instructions = [
+    call(CONFIG.component, "bind", [lit(proof.did), componentAddressLiteral(address as never), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
+  ];
+  return run(wallet, instructions, 120_000n, onStage);
 }
 
 /** What is payable right now to a claim that started at `start`. */
