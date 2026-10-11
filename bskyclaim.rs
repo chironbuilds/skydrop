@@ -1006,3 +1006,45 @@ break"), "control characters");
     assert_eq!(env.balance(&alice), before + Amount::from(4_000_000u64));
     assert_eq!(env.escrowed(), Amount::from(1_000_000u64));
 }
+
+#[test]
+fn two_deposits_with_different_phrases_can_be_claimed_together_or_one_at_a_time() {
+    let mut env = Env::new();
+    let (s1, s2, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit_with(&s1, &acct.did, 3_000_000, 100, 0, "I love Tari"), None);
+    assert_eq!(env.deposit_with(&s2, &acct.did, 2_000_000, 100, 0, "gm Ootle"), None);
+    let code = env.code_for(&acct.did, &alice);
+    let before = env.balance(&alice);
+
+    // A post with only the first phrase releases only the first deposit; the claim stays pending for the other.
+    let first = acct.post(&format!("I love Tari\nclaiming {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &first), None);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(3_000_000u64));
+    assert_eq!(env.escrowed(), Amount::from(2_000_000u64));
+    expect_err(env.finalize(&alice, &acct.did), "required phrase");
+
+    // A second post with the other phrase releases the rest.
+    let second = acct.post(&format!("gm Ootle\nclaiming {code}"), "3kbbbbbbbbbbb");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &second), None);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(5_000_000u64));
+    assert_eq!(env.escrowed(), Amount::zero());
+}
+
+#[test]
+fn one_post_with_both_phrases_releases_both_deposits() {
+    let mut env = Env::new();
+    let (s1, s2, alice) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit_with(&s1, &acct.did, 3_000_000, 100, 0, "I love Tari"), None);
+    assert_eq!(env.deposit_with(&s2, &acct.did, 2_000_000, 100, 0, "gm Ootle"), None);
+    let code = env.code_for(&acct.did, &alice);
+    let before = env.balance(&alice);
+    let post = acct.post(&format!("I love Tari\ngm Ootle\nclaiming {code}"), "3kaaaaaaaaaaa");
+    assert_eq!(env.start_claim(&alice, alice.id, &acct, &post), None);
+    assert_eq!(env.finalize(&alice, &acct.did), None);
+    assert_eq!(env.balance(&alice), before + Amount::from(5_000_000u64));
+    assert_eq!(env.escrowed(), Amount::zero());
+}

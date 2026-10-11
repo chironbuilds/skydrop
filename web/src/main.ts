@@ -839,12 +839,16 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   cleanups.push(() => clearInterval(poll));
 
   const watch = window.setInterval(async () => {
-    if (!profile || !esc || busy || checking || autoOff || collected !== null || !esc.deposits.length) return;
+    if (!profile || !esc || busy || checking || autoOff || !esc.deposits.length) return;
+    let again = false;
     if (esc.pending?.claimant === myKeyHex) {
-      if (canAuto() && chain.payableNow(esc, esc.pending.start).amount > 0n) void autoCollect?.();
-      return;
+      const pay = chain.payableNow(esc, esc.pending.start);
+      if (canAuto() && pay.amount > 0n) void autoCollect?.();
+      // what is left only needs a phrase the first post didn't have: keep watching for a post that has it
+      again = pay.amount === 0n && pay.waitingAmount === 0n && pay.missing.length > 0;
+      if (!again) return;
     }
-    if (!watching) return;
+    if (!watching && !again) return;
     checking = true;
     try {
       if (await bsky.findClaimPost(profile.did, code, claimPost().used)) {
@@ -867,8 +871,9 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const others = e.pending && !mine;
     const waitingTotal = chain.total(e.deposits);
 
-    if (collected !== null) {
-      mount(stepsEl, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend"))));
+    const doneCard = collected === null ? null : h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")));
+    if (doneCard && !e.deposits.length) {
+      mount(stepsEl, doneCard);
       return;
     }
 
@@ -1004,6 +1009,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
 
     mount(
       stepsEl,
+      doneCard,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
       others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,
       sponsorOk ? h("div", { class: "note good", style: "margin-top:12px" }, "Network fees are covered. You don't need any tTARI to collect.") : needsFunds() && cur === 1 ? h("div", { style: "margin-top:12px" }, fundsNote()) : null,
