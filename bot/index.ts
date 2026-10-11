@@ -19,6 +19,7 @@ import * as bskyLib from "../web/src/bsky";
 import { builtinWallet } from "../web/src/wallet";
 import type { Wallet } from "../web/src/wallet";
 import { fromHex } from "../web/src/cbor";
+import { shareLink, type EnvelopeRecord } from "../web/src/envelope-data";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMPONENT = CONFIG.component;
@@ -154,9 +155,39 @@ async function handleTip(n: Notif, ref: { uri: string; cid: string }, root: { ur
   return true;
 }
 
-async function post(text: string, reply?: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } }) {
+/** A link with a preview card: the label in the text is made the link, and the card carries the envelope image. */
+interface Card {
+  label: string;
+  uri: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+}
+
+async function post(text: string, reply?: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } }, card?: Card) {
   const rt = new RichText({ text });
   await rt.detectFacets(agent);
+  let embed: Record<string, unknown> | undefined;
+  if (card) {
+    const at = rt.text.indexOf(card.label);
+    if (at >= 0) {
+      const enc = new TextEncoder();
+      const byteStart = enc.encode(rt.text.slice(0, at)).length;
+      rt.facets = [...(rt.facets ?? []), { index: { byteStart, byteEnd: byteStart + enc.encode(card.label).length }, features: [{ $type: "app.bsky.richtext.facet#link", uri: card.uri }] }];
+    }
+    if (LIVE) {
+      try {
+        const img = await fetch(card.imageUrl);
+        if (img.ok) {
+          const bytes = new Uint8Array(await img.arrayBuffer());
+          const up = await agent.uploadBlob(bytes, { encoding: "image/png" });
+          embed = { $type: "app.bsky.embed.external", external: { uri: card.uri, title: card.title, description: card.description, thumb: up.data.blob } };
+        }
+      } catch (e) {
+        log("couldn't attach the preview image:", e instanceof Error ? e.message : e);
+      }
+    }
+  }
   if (!LIVE) {
     log("[dry-run] would post:\n   " + text.replace(/\n/g, "\n   "));
     return;
@@ -167,7 +198,7 @@ async function post(text: string, reply?: { root: { uri: string; cid: string }; 
     log("rate limit reached; skipping a post");
     return;
   }
-  await agent.post({ text: rt.text, facets: rt.facets, reply, langs: ["en"], createdAt: new Date().toISOString() });
+  await agent.post({ text: rt.text, facets: rt.facets, reply, embed: embed as never, langs: ["en"], createdAt: new Date().toISOString() });
   state.postTimes.push(now);
 }
 
@@ -200,13 +231,35 @@ async function notifyDeposits(): Promise<void> {
     if (handle === "handle.invalid") continue;
     const careful = fresh.some((d) => d.window > 0) ? "\nA short safety window protects larger transfers." : "";
     const ask = fresh.find((d) => d.challenge)?.challenge;
+    // the envelope the sender picked, if their app registered one, so the mention shows the same card as their own link
+    let saved: EnvelopeRecord | null = null;
+    for (const d of fresh) {
+      try {
+        const r = await fetch(`${CLAIM_URL}/envelope?fp=${encodeURIComponent(d.fp)}`);
+        if (r.ok) {
+          saved = (await r.json()) as EnvelopeRecord;
+          break;
+        }
+      } catch {
+        /* no envelope: plain card */
+      }
+    }
+    const link = shareLink(CLAIM_URL, handle, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${fmt(total)} tTARI`, saved?.c ?? "");
+    const query = link.includes("?") ? link.slice(link.indexOf("?")) : "";
+    const imageUrl = `${CLAIM_URL}/og${query}${query ? "&" : "?"}h=${encodeURIComponent(handle)}`;
+    const label = "Open your gift";
     let text =
       `@${handle} 🎁 You have ${fmt(total)} tTARI waiting for you on Tari (testnet).\n` +
-      `Prove you own this account and collect it. No wallet needed:\n${CLAIM_URL}/#/claim/${handle}${careful}`;
-    const withAsk = ask ? `${text}
-The sender asks you to say: “${ask}”` : text;
+      `Prove you own this account and collect it. No wallet needed:\n${label} ↗${careful}`;
+    const withAsk = ask ? `${text}\nThe sender asks you to say: “${ask}”` : text;
     if ([...withAsk].length <= 295) text = withAsk;
-    await post(text);
+    await post(text, undefined, {
+      label,
+      uri: link,
+      title: `@${handle}, you got a gift on Tari`,
+      description: saved?.m ? `“${saved.m}”` : `${fmt(total)} tTARI is waiting for you. Collect it with one Bluesky post.`,
+      imageUrl,
+    });
     state.lastNotified[did] = Date.now();
   }
   state.initialised = true;

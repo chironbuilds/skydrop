@@ -2,7 +2,7 @@
   "name": "skydrop",
   "compatibility_date": "2026-10-01",
   "main": "./worker/index.ts",
-  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/e/*", "/og", "/cover", "/c/*"] },
+  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/e/*", "/og", "/cover", "/c/*", "/envelope"] },
   "kv_namespaces": [{ "binding": "COVERS", "id": "434c3d7a147e47f6beeadf0b75fbec1f" }],
   "routes": [{ "pattern": "skydrop.tari.mw", "custom_domain": true }]
 }

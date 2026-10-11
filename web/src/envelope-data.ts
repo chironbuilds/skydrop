@@ -40,7 +40,6 @@ export const isCoverId = (s: string | null | undefined): s is string => !!s && /
 export function shareLink(origin: string, handle: string, styleId: string, note: string, amount: string, cover = ""): string {
   const n = cleanNote(note);
   const c = isCoverId(cover) ? cover : "";
-  if ((!styleId || styleId === "air") && !n && !c) return `${origin}/#/claim/${handle}`;
   const q: string[] = [];
   if (styleId && styleId !== "air") q.push("e=" + encodeURIComponent(styleId));
   if (n) q.push("m=" + encodeURIComponent(n));
@@ -48,3 +47,5 @@ export function shareLink(origin: string, handle: string, styleId: string, note:
   if (amount) q.push("a=" + encodeURIComponent(amount));
   return `${origin}/e/${handle}${q.length ? "?" + q.join("&") : ""}`;
 }
+
+export interface EnvelopeRecord { e: string; m: string; c: string; a: string }

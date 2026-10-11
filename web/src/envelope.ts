@@ -1,5 +1,5 @@
 import { h } from "./dom";
-import type { Style } from "./envelope-data";
+import type { EnvelopeRecord, Style } from "./envelope-data";
 export * from "./envelope-data";
 
 /**
@@ -139,4 +139,26 @@ export async function presetCover(id: string): Promise<Blob> {
   const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/jpeg", 0.85));
   if (!blob) throw new Error("Couldn't draw that design.");
   return blob;
+}
+
+/** The fingerprint the bot and the app both use for a deposit: sender key, amount (µT), refund epoch, window. */
+export const depositFp = (senderHex: string, amount: bigint, refundEpoch: number, window: number): string => `${senderHex}:${amount}:${refundEpoch}:${window}`;
+
+
+/** Tells the Worker which envelope goes with a deposit. Best effort: a failure only means the bot uses the plain card. */
+export async function registerEnvelope(fp: string, rec: Partial<EnvelopeRecord>): Promise<void> {
+  try {
+    await fetch("/envelope", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fp, ...rec }) });
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function fetchEnvelope(fp: string, base = ""): Promise<EnvelopeRecord | null> {
+  try {
+    const r = await fetch(`${base}/envelope?fp=${encodeURIComponent(fp)}`);
+    return r.ok ? ((await r.json()) as EnvelopeRecord) : null;
+  } catch {
+    return null;
+  }
 }

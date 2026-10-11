@@ -574,6 +574,13 @@ function renderSend(prefill?: string): void {
     try {
       const esc = await chain.readEscrow(provider, profile.did);
       await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge() }, esc.epoch, say);
+      // let the bot's mention and the "Remind them" link use the same envelope as the link shown after sending
+      void env.registerEnvelope(env.depositFp(toHex(wallet.publicKey), a, esc.epoch + CONFIG.refundAfterEpochs, windowEpochs), {
+        e: style.id,
+        m: env.cleanNote(noteInput.value),
+        c: coverId,
+        a: `${chain.formatTari(a)} ${CONFIG.symbol}`,
+      });
       await refreshBalance();
       done(profile, a, windowEpochs);
     } catch (e) {
@@ -1058,8 +1065,11 @@ function renderSent(): void {
       );
     }
     const profiles = await Promise.all(data.items.map((d) => profileFor(d.did)));
+    const mineHex = toHex(wallet.publicKey);
+    const envelopes = await Promise.all(data.items.map((d) => env.fetchEnvelope(env.depositFp(mineHex, d.amount, d.refundEpoch, d.window))));
     const rows = data.items.map((d, i) => {
       const p = profiles[i];
+      const saved = envelopes[i];
       const left = d.refundEpoch - data.epoch;
       const ready = left <= 0;
       const handle = p ? `@${p.handle}` : short(d.did, 14, 6);
@@ -1083,7 +1093,7 @@ function renderSent(): void {
           mount(btn, "Take it back");
         }
       });
-      const link = `${location.origin}${location.pathname}#/claim/${p?.handle ?? d.did}`;
+      const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "");
       const nudge = `@${p?.handle ?? ""} there's ${chain.formatTari(d.amount)} ${CONFIG.symbol} waiting for you on Tari 🎁 Collect it here:\n${link}`;
       return h(
         "div",

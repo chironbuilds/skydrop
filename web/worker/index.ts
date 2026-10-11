@@ -43,7 +43,7 @@ function page(url: URL): Response {
 <meta property="og:image" content="${esc(img)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta property="og:url" content="${esc(url.href)}"><meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${esc(img)}">
-<meta name="theme-color" content="${style.paper}"><meta http-equiv="refresh" content="0;url=${esc(dest)}"></head>
+<meta property="og:image:type" content="image/png"><meta property="og:image:secure_url" content="${esc(img)}"><meta name="theme-color" content="${style.paper}"></head>
 <body><p><a href="${esc(dest)}">Open your gift</a></p><script>location.replace(${JSON.stringify(dest).replace(/</g, "\\u003c")})</script></body></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });
 }
@@ -175,12 +175,50 @@ async function serveCover(url: URL, env: Env): Promise<Response> {
   return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
 }
 
+const FP_RE = /^[0-9a-f]{64}:\d{1,20}:\d{1,12}:\d{1,6}$/;
+
+/**
+ * Remembers which envelope went with a deposit, keyed by the deposit's fingerprint (sender key, amount, refund
+ * epoch, window), so the bot's mention and the sender's "Remind them" link can show the same card. The first
+ * write wins, so nobody can swap the envelope of a deposit after its sender registered it.
+ */
+async function saveEnvelope(req: Request, env: Env): Promise<Response> {
+  const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
+  const text = await req.text();
+  if (text.length > 600) return json({ error: "too big" }, 413);
+  let body: { fp?: string; e?: string; m?: string; c?: string; a?: string };
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  if (!body.fp || !FP_RE.test(body.fp)) return json({ error: "bad fingerprint" }, 400);
+  const key = `env:${body.fp}`;
+  if (await env.COVERS.get(key, "arrayBuffer")) return json({ ok: true, kept: true });
+  const rec = {
+    e: styleOf(body.e).id,
+    m: cleanNote(body.m ?? ""),
+    c: isCoverId(body.c) ? body.c : "",
+    a: cleanAmount(body.a ?? null),
+  };
+  await env.COVERS.put(key, new TextEncoder().encode(JSON.stringify(rec)).buffer as ArrayBuffer, { expirationTtl: 60 * 60 * 24 * 90 });
+  return json({ ok: true });
+}
+
+async function readEnvelope(url: URL, env: Env): Promise<Response> {
+  const fp = url.searchParams.get("fp") ?? "";
+  const buf = FP_RE.test(fp) ? await env.COVERS.get(`env:${fp}`, "arrayBuffer") : null;
+  if (!buf) return new Response("not found", { status: 404 });
+  return new Response(buf, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith("/e/")) return page(url);
     if (url.pathname === "/og") return png(url, env);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
+    if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);
     if (url.pathname.startsWith("/c/")) return serveCover(url, env);
     return env.ASSETS.fetch(req);
   },
