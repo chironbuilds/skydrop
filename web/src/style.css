@@ -319,3 +319,37 @@ footer code { font-family: var(--mono); font-size: 12px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* envelopes: the sender picks a style and a note, the recipient sees it on the claim page */
+.env { position: relative; width: 100%; max-width: 320px; aspect-ratio: 1.55; margin: 8px auto 0; transition: margin .5s cubic-bezier(.2,.8,.2,1); perspective: 900px; }
+.env.open { margin-top: 125px; }
+.env-hello { padding-top: 6px; }
+.env-hello .env { margin-bottom: 8px; }
+.env-body { position: absolute; inset: 0; z-index: 2; background: var(--paper); border: 2.5px solid var(--edge); border-radius: 10px; box-shadow: 4px 4px 0 var(--edge); }
+.env-body::before { content: ""; position: absolute; inset: 0; border-radius: 8px; background: linear-gradient(to top right, transparent 49.4%, rgba(0,0,0,.18) 50%, transparent 50.6%) 0 0/50% 100% no-repeat, linear-gradient(to top left, transparent 49.4%, rgba(0,0,0,.18) 50%, transparent 50.6%) 100% 0/50% 100% no-repeat; }
+.env-flap { position: absolute; left: 0; right: 0; top: 0; height: 62%; z-index: 3; background: var(--flap); clip-path: polygon(0 0, 100% 0, 50% 100%); border-radius: 10px 10px 0 0; transform-origin: top; transition: transform .55s cubic-bezier(.2,.8,.2,1), z-index 0s .25s; filter: drop-shadow(0 2px 0 rgba(0,0,0,.25)); }
+.env-seal { position: absolute; left: 50%; top: 62%; z-index: 4; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; background: var(--seal); color: var(--eink); border: 2.5px solid var(--edge); display: grid; place-items: center; font-size: 20px; font-weight: 800; line-height: 1; transition: opacity .25s, transform .4s; }
+.env-letter { position: absolute; left: 7%; right: 7%; top: 6%; bottom: 14%; z-index: 1; background: #fffdf6; color: #191730; border: 2px solid #191730; border-radius: 6px; padding: 14px 14px 0; font-family: var(--serif); font-size: 17px; line-height: 1.3; overflow: hidden; transition: transform .6s .2s cubic-bezier(.2,.8,.2,1); text-align: center; }
+.env-amt { position: absolute; left: 0; right: 0; bottom: 10px; z-index: 4; text-align: center; font-family: var(--mono); font-weight: 600; font-size: 15px; color: var(--eink); letter-spacing: .02em; }
+.env.open .env-flap { transform: rotateX(180deg); z-index: 0; }
+.env.open .env-seal { opacity: 0; transform: scale(.4); }
+.env.open .env-letter { transform: translateY(-58%); z-index: 1; }
+.env.open .env-letter span { display: block; }
+.env-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 4px; }
+.env-opt { all: unset; box-sizing: border-box; cursor: pointer; text-align: center; padding: 8px 6px 6px; border: 2.5px solid var(--edge); border-radius: 10px; background: var(--card); transition: transform .12s, box-shadow .12s; }
+.env-opt:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--edge); }
+.env-opt[aria-checked="true"] { box-shadow: 3px 3px 0 var(--red); border-color: var(--red); }
+.env-opt:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.env-opt .mini { height: 38px; border: 2px solid var(--edge); border-radius: 5px; background: var(--paper); position: relative; overflow: hidden; margin-bottom: 6px; }
+.env-opt .mini::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 62%; background: var(--flap); clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.env-opt .mini i { position: absolute; left: 50%; top: 58%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--seal); border: 1.5px solid var(--edge); }
+.env-opt b { display: block; font-size: 13px; }
+.env-opt small { color: var(--faint); font-size: 11px; }
+.env-note { margin-top: 12px; }
+.env-preview { margin: 14px 0 2px; }
+.env-preview .env { max-width: 260px; }
+.env-preview .env.open { margin-top: 100px; }
+.env-hello { text-align: center; margin: 4px 0 10px; }
+.env-hello .from { font-family: var(--mono); font-size: 13px; color: var(--faint); margin: 12px 0 0; }
+@media (max-width: 560px) { .env-pick { grid-template-columns: repeat(2, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .env, .env * { transition: none !important; } }

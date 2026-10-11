@@ -6,6 +6,7 @@ import * as bsky from "./bsky";
 import * as chain from "./chain";
 import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } from "./dom";
 import { toHex } from "./cbor";
+import * as env from "./envelope";
 import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
 
@@ -445,6 +446,7 @@ function renderSend(prefill?: string): void {
   let profile: bsky.Profile | null = null;
   let windowEpochs = 0;
   let busy = false;
+  let style = env.STYLES[0]!;
 
   const field = handleField(prefill ?? "", (p) => {
     profile = p;
@@ -458,6 +460,19 @@ function renderSend(prefill?: string): void {
   const sendBtn = h("button", { class: "btn primary block" }, "Send") as HTMLButtonElement;
   const fundsEl = h("div");
   const card = h("div", { class: "card stack" });
+  const noteInput = h("input", { class: "input", maxlength: String(env.MAX_NOTE), placeholder: "Happy birthday! Buy yourself a coffee.", "aria-label": "Note on the envelope" }) as HTMLInputElement;
+  const pickEl = h("div", { class: "env-pick", role: "radiogroup", "aria-label": "Envelope" });
+  const previewEl = h("div", { class: "env-preview" });
+  const drawEnvelope = (): void => {
+    mount(
+      pickEl,
+      env.STYLES.map((o) =>
+        h("button", { class: "env-opt", role: "radio", "aria-checked": String(style.id === o.id), style: `--paper:${o.paper};--flap:${o.flap};--seal:${o.seal}`, onclick: () => { style = o; drawEnvelope(); } }, h("div", { class: "mini" }, h("i")), h("b", null, o.name), h("small", null, o.tag)),
+      ),
+    );
+    const a = amount();
+    mount(previewEl, env.envelope(style, env.cleanNote(noteInput.value), { amount: a ? `${chain.formatTari(a)} ${CONFIG.symbol}` : undefined, open: true }));
+  };
 
   const amount = (): bigint | null => chain.parseTari(amountInput.value);
 
@@ -500,7 +515,8 @@ function renderSend(prefill?: string): void {
     }
   };
 
-  amountInput.addEventListener("input", update);
+  amountInput.addEventListener("input", () => { update(); drawEnvelope(); });
+  noteInput.addEventListener("input", drawEnvelope);
   amountInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !sendBtn.disabled) sendBtn.click();
   });
@@ -526,8 +542,10 @@ function renderSend(prefill?: string): void {
 
   const done = (p: bsky.Profile, a: bigint, w: number): void => {
     confetti();
-    const link = `${location.origin}${location.pathname}#/claim/${p.handle}`;
-    const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
+    const note = env.cleanNote(noteInput.value);
+    const link = env.withEnvelope(`${location.origin}${location.pathname}#/claim/${p.handle}`, style.id, note);
+    const noteLine = note ? `\n“${note}”` : "";
+    const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
       card,
       h(
@@ -555,10 +573,12 @@ function renderSend(prefill?: string): void {
     card,
     h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
     h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
+    h("div", null, h("label", { class: "f" }, "Envelope"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("p", { class: "help" }, "Optional. The envelope and note travel in the claim link you share, so they see it when they open it.")),
     h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
     h("div", null, sendBtn, stage),
   );
   drawChoices();
+  drawEnvelope();
   update();
   layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account. ", h("a", { href: "#/sent" }, "Your sends")), card);
   if (!prefill) field.input.focus();
@@ -707,7 +727,16 @@ function renderTips(prefill?: string): void {
 // collect
 // ---------------------------------------------------------------------------------------------------------
 
-function renderClaim(prefill?: string): void {
+function giftEl(g: { style: env.Style; note: string }): HTMLElement {
+  const e = env.envelope(g.style, g.note);
+  const wrap = h("div", { class: "env-hello" }, e, h("p", { class: "from" }, "Tap the envelope"));
+  const open = (): void => { e.classList.add("open"); wrap.querySelector(".from")?.remove(); };
+  e.addEventListener("click", open);
+  setTimeout(open, 900);
+  return wrap;
+}
+
+function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }): void {
   let profile: bsky.Profile | null = null;
   let esc: chain.Escrow | null = null;
   let code = "";
@@ -937,6 +966,7 @@ function renderClaim(prefill?: string): void {
   layout(
     "claim",
     h("h2", { class: "page" }, "Collect your tTARI"),
+    gift && (gift.note || gift.style.id !== "air") ? giftEl(gift) : null,
     h("p", { class: "sub" }, "Enter your Bluesky handle. You'll post one line to prove it's you."),
     h("div", { class: "card" }, h("label", { class: "f" }, "Your Bluesky handle"), field.el),
     stepsEl,
@@ -1063,10 +1093,12 @@ function renderHow(): void {
 function route(): void {
   cleanups.forEach((f) => f());
   cleanups = [];
-  const [, kind = "", arg = ""] = location.hash.replace(/^#/, "").split("/");
+  const [, kind = "", rawArg = ""] = location.hash.replace(/^#/, "").split("/");
+  const [arg = "", query = ""] = rawArg.split("?");
   const param = decodeURIComponent(arg);
+  const q = new URLSearchParams(query);
   if (kind === "send") renderSend(param || undefined);
-  else if (kind === "claim") renderClaim(param || undefined);
+  else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? "") });
   else if (kind === "tips") renderTips(param || undefined);
   else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();
