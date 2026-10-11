@@ -427,6 +427,18 @@ function renderHome(): void {
       h("a", { class: "card action", href: "#/claim" }, h("span", { class: "icon alt" }, icons.gift(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Collect"), h("p", null, "Someone sent you tTARI? Post one line on Bluesky to prove it's you, then collect.")),
     ),
     h(
+      "section",
+      { class: "how3", "aria-label": "How it works" },
+      h("h2", { class: "how3-title" }, "Three steps, no wallet needed"),
+      h(
+        "ol",
+        null,
+        h("li", null, h("span", { class: "n" }, "1"), h("div", null, h("b", null, "You send"), h("p", null, "Type a Bluesky handle, pick an amount and an envelope. The tTARI waits on-chain under their account."))),
+        h("li", null, h("span", { class: "n" }, "2"), h("div", null, h("b", null, "They get a mention"), h("p", null, "The Skydrop bot tells them on Bluesky, with your envelope and note."))),
+        h("li", null, h("span", { class: "n" }, "3"), h("div", null, h("b", null, "They prove it's them"), h("p", null, "One post from their account, checked by the contract itself. Link a wallet once and later gifts arrive instantly."))),
+      ),
+    ),
+    h(
       "div",
       { class: "trust" },
       h("div", null, h("b", null, "No oracle"), h("span", null, "The contract itself checks your account's cryptographic signatures. Nobody vouches for you.")),

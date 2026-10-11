@@ -400,3 +400,14 @@ details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size
 .status.progress .badge { background: #2350d8; border-color: #2350d8; color: #fff; }
 .status.refund { border-color: #2e9a5b; background: rgba(46, 154, 91, 0.1); }
 .status.refund .badge { background: #2e9a5b; border-color: #2e9a5b; color: #fff; }
+
+.how3 { margin: 36px 0 8px; }
+.how3-title { font-family: var(--serif); font-size: 28px; letter-spacing: -0.02em; margin: 0 0 16px; }
+.how3 ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(3, 1fr); }
+.how3 li { display: flex; gap: 14px; align-items: flex-start; padding: 16px; border: 2px solid var(--edge); border-radius: 10px; background: var(--card); box-shadow: var(--shadow-sm); }
+.how3 .n { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #f4c542; color: #191730; border: 2px solid var(--edge); font-family: var(--mono); font-weight: 700; }
+.how3 b { display: block; font-family: var(--serif); font-size: 20px; margin-bottom: 4px; }
+.how3 p { margin: 0; color: var(--muted); font-size: 14px; }
+@media (max-width: 760px) { .how3 ol { grid-template-columns: 1fr; } }
+
+@media (min-width: 761px) { .grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
