@@ -283,6 +283,11 @@ const ZH: Record<string, string> = {
   "Steps": "步骤",
   "Needs a claim": "需要领取",
   "Change address": "更换地址",
+  Settings: "设置",
+  Language: "语言",
+  Theme: "主题",
+  Light: "浅色",
+  Auto: "自动",
 };
 
 type Pattern = [RegExp, (m: RegExpMatchArray) => string];

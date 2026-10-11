@@ -425,3 +425,24 @@ details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size
 @media (max-width: 400px) { .top { gap: 6px; } .brand-name { display: none; } }
 
 @media (max-width: 400px) { .top { padding-left: 12px; padding-right: 12px; } .nav a { padding: 7px 5px; } .lang { padding: 0 6px; } .chip { padding: 6px 10px; } }
+
+/* settings menu: language, theme and the links that don't fit */
+.menuwrap { position: relative; margin-left: 6px; }
+.menu-btn { all: unset; cursor: pointer; width: 40px; height: 40px; border-radius: 50%; display: inline-grid; place-items: center; border: 2px solid var(--edge); background: var(--card); color: var(--text); box-shadow: 2px 2px 0 var(--drop); }
+.menu-btn:hover { background: var(--hi); color: #191730; }
+.menu-btn:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.menu-panel { display: none; position: absolute; right: 0; top: 50px; min-width: 250px; z-index: 40; padding: 8px; background: var(--card); border: 2px solid var(--edge); border-radius: 10px; box-shadow: var(--shadow); }
+.menuwrap.open .menu-panel { display: block; }
+.menu-panel .mi { display: block; padding: 10px 12px; border-radius: 6px; font-weight: 600; color: var(--text); text-decoration: none; }
+.menu-panel .mi:hover { background: var(--hi); color: #191730; }
+.menu-sep { height: 0; border-top: 2px dashed var(--line-strong); margin: 6px 4px; }
+.menu-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 12px; }
+.menu-label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.seg { display: inline-flex; border: 2px solid var(--edge); border-radius: 999px; overflow: hidden; }
+.seg-b { all: unset; cursor: pointer; padding: 5px 12px; font-size: 13px; font-weight: 600; color: var(--text); }
+.seg-b + .seg-b { border-left: 2px solid var(--edge); }
+.seg-b.on { background: var(--hi); color: #191730; }
+.seg-b:focus-visible { outline: 3px solid var(--blue); outline-offset: -3px; }
+.only-sm, .only-xs { display: none !important; }
+@media (max-width: 760px) { .only-sm { display: block !important; } }
+@media (max-width: 480px) { .only-xs { display: block !important; } }

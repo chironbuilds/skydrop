@@ -8,6 +8,7 @@ import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } fr
 import { toHex } from "./cbor";
 import * as env from "./envelope";
 import { currentLang, setLang, startChinese } from "./i18n";
+import type { Lang } from "./i18n";
 import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
 
@@ -23,19 +24,86 @@ const storedTheme = (): string | null => {
 // ?theme= wins for this visit; otherwise the choice made with the toggle; otherwise the system setting
 const chosenTheme = themeParam === "dark" || themeParam === "light" ? themeParam : storedTheme();
 if (chosenTheme === "dark" || chosenTheme === "light") document.documentElement.dataset.theme = chosenTheme;
-const isDark = (): boolean => {
-  const t = document.documentElement.dataset.theme;
-  return t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+type ThemeMode = "light" | "dark" | "auto";
+const themeMode = (): ThemeMode => {
+  const t = storedTheme();
+  return t === "light" || t === "dark" ? t : "auto";
 };
-function toggleTheme(button: HTMLElement): void {
-  const next = isDark() ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
+function applyTheme(mode: ThemeMode): void {
   try {
-    localStorage.setItem(THEME_KEY, next);
+    if (mode === "auto") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, mode);
   } catch {
     /* storage can be blocked: the choice just lasts this visit */
   }
-  mount(button, isDark() ? icons.sun(16) : icons.moon(16));
+  if (mode === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = mode;
+}
+
+/** One small menu for everything that isn't navigation: the links that don't fit on a phone, language and theme. */
+function settingsMenu(): HTMLElement {
+  const wrap = h("div", { class: "menuwrap" });
+  const btn = h("button", { class: "menu-btn", "aria-label": "Settings", "aria-haspopup": "true", "aria-expanded": "false" }, icons.menu(18)) as HTMLButtonElement;
+  const onDoc = (ev: Event): void => {
+    if (!wrap.contains(ev.target as Node)) close();
+  };
+  const onKey = (ev: KeyboardEvent): void => {
+    if (ev.key === "Escape") close();
+  };
+  const close = (): void => {
+    wrap.classList.remove("open");
+    btn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("click", onDoc);
+    document.removeEventListener("keydown", onKey);
+  };
+  const open = (): void => {
+    wrap.classList.add("open");
+    btn.setAttribute("aria-expanded", "true");
+    setTimeout(() => {
+      document.addEventListener("click", onDoc);
+      document.addEventListener("keydown", onKey);
+    });
+  };
+  btn.addEventListener("click", () => (wrap.classList.contains("open") ? close() : open()));
+  const seg = (items: [string, string][], active: string, on: (v: string) => void): HTMLElement =>
+    h(
+      "div",
+      { class: "seg", role: "group" },
+      items.map(([v, label]) =>
+        h(
+          "button",
+          {
+            class: "seg-b" + (v === active ? " on" : ""),
+            "aria-pressed": String(v === active),
+            onclick: (e: Event) => {
+              const me = e.currentTarget as HTMLElement;
+              me.parentElement!.querySelectorAll(".seg-b").forEach((x) => {
+                x.classList.toggle("on", x === me);
+                x.setAttribute("aria-pressed", String(x === me));
+              });
+              on(v);
+            },
+          },
+          label,
+        ),
+      ),
+    );
+  const item = (href: string, label: string, cls: string) => h("a", { href, class: `mi ${cls}`, onclick: close }, label);
+  mount(
+    wrap,
+    btn,
+    h(
+      "div",
+      { class: "menu-panel", role: "menu" },
+      item("#/tips", "Tip by post", "only-xs"),
+      item("#/link", "Link wallet", "only-sm"),
+      item("#/how", "How it works", "only-sm"),
+      h("div", { class: "menu-sep only-sm" }),
+      h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Language"), seg([["en", "English"], ["zh", "中文"]], currentLang(), (v) => setLang(v as Lang))),
+      h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Theme"), seg([["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]], themeMode(), (v) => applyTheme(v as ThemeMode))),
+    ),
+  );
+  return wrap;
 }
 
 const root = document.getElementById("app")!;
@@ -141,9 +209,8 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         link("#/link", "Link wallet", "link", "hide-sm"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
-        h("button", { class: "lang theme", "aria-label": "Switch between light and dark", onclick: (e: Event) => toggleTheme(e.currentTarget as HTMLElement) }, isDark() ? icons.sun(16) : icons.moon(16)),
-        h("button", { class: "lang", "aria-label": currentLang() === "zh" ? "Switch to English" : "切换到中文", onclick: () => setLang(currentLang() === "zh" ? "en" : "zh") }, currentLang() === "zh" ? "EN" : "中文"),
         h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
+        settingsMenu(),
       ),
     ),
     ...content,
