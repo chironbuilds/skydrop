@@ -75,6 +75,8 @@ async function plcLog(did: string): Promise<Record<string, unknown>[]> {
 
 /** Finds the user's post containing `code`, newest first. */
 export async function findClaimPost(did: string, code: string, phrases: string[] = []): Promise<{ uri: string; rkey: string } | null> {
+  // with no code a post only counts if it carries the phrases (otherwise every post would match)
+  if (!code && !phrases.length) return null;
   const r = await fetch(
     `${CONFIG.publicApi}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(did)}&limit=50&filter=posts_no_replies`,
   );
@@ -122,7 +124,7 @@ export { toHex, fromHex };
 
 /** The claim post to suggest: the code, then each phrase the senders asked for, as long as a post can hold. */
 export function claimPostText(symbol: string, code: string, phrases: string[]): { text: string; used: string[]; dropped: number } {
-  const tail = `Claiming my ${symbol} on Tari. ${code}`;
+  const tail = code ? `Claiming my ${symbol} on Tari. ${code}` : `Claiming my ${symbol} on Tari.`;
   const used: string[] = [];
   let dropped = 0;
   let len = [...tail].length;

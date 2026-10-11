@@ -1231,3 +1231,33 @@ fn proving_the_post_too_early_does_not_release_a_held_deposit() {
     assert_eq!(env.confirm(&alice, &acct, &post), None);
     assert_eq!(env.finalize(&alice, &acct.did), None);
 }
+
+#[test]
+fn a_linked_account_claims_with_just_the_phrase_and_anyone_can_finish_it() {
+    let mut env = Env::new();
+    let (sender, wallet, helper, stranger) = (user(&mut env.test), user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    assert_eq!(env.deposit_with(&sender, &acct.did, 2_000_000, 100, 0, "Make Tari Great Again"), None);
+
+    // not linked yet: a post with only the phrase is refused
+    let bare = acct.post("Make Tari Great Again", "3kaaaaaaaaaaa");
+    expect_err(env.start_claim(&helper, helper.id, &acct, &bare), "claim code");
+
+    // link first, then the phrase alone is enough
+    let link = env.bind_post(&acct, wallet.account, "3kbbbbbbbbbbb");
+    assert_eq!(env.bind(&helper, &acct, wallet.account, &link), None);
+    let post = acct.post("Make Tari Great Again", "3kccccccccccc");
+    assert_eq!(env.start_claim(&helper, helper.id, &acct, &post), None);
+
+    // a copied older post cannot restart the pending claim, a newer one can
+    expect_err(env.start_claim(&stranger, stranger.id, &acct, &bare), "newer post");
+    let newer = acct.post("Make Tari Great Again!", "3kdddddddddddd".get(..13).unwrap());
+    assert_eq!(env.start_claim(&stranger, stranger.id, &acct, &newer), None);
+
+    // anyone may finish it, and the money goes to the linked wallet, not to them
+    let (w0, s0) = (env.balance(&wallet), env.balance(&stranger));
+    assert_eq!(env.finalize(&stranger, &acct.did), None);
+    assert_eq!(env.balance(&wallet), w0 + Amount::from(2_000_000u64));
+    assert_eq!(env.balance(&stranger), s0);
+    assert_eq!(env.escrowed(), Amount::zero());
+}

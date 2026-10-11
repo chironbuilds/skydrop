@@ -946,7 +946,9 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   const canAuto = (): boolean => !autoOff && wallet.kind === "builtin";
   // Phrases senders asked for. The post has to contain the ones that fit in it; deposits whose phrase didn't fit stay escrowed.
   const claimPost = (): { text: string; used: string[]; dropped: number } =>
-    bsky.claimPostText(CONFIG.symbol, code, [...new Set((esc?.deposits ?? []).map((d) => d.challenge).filter(Boolean))]);
+    bsky.claimPostText(CONFIG.symbol, codeNow(), [...new Set((esc?.deposits ?? []).map((d) => d.challenge).filter(Boolean))]);
+  // A linked account's payouts go to its linked address, so its challenge post needs the sender's phrase only.
+  const codeNow = (): string => (esc?.binding && esc.deposits.some((d) => d.challenge) ? "" : code);
 
   const stepsEl = h("div");
   const field = handleField(prefill ?? lastHandle(), (p) => {
@@ -995,7 +997,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     if (!watching && !again) return;
     checking = true;
     try {
-      if (await bsky.findClaimPost(profile.did, code, claimPost().used)) {
+      if (await bsky.findClaimPost(profile.did, codeNow(), claimPost().used)) {
         watching = false;
         if (canAuto()) void autoVerify?.();
         else toast("We found your post. Press Verify to continue.", "good");
@@ -1049,8 +1051,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       mount(verifyBtn, ...spinnerLabel("Verifying…"));
       try {
         say("Looking for your post on Bluesky");
-        const post = await bsky.findClaimPost(p.did, code, claimPost().used);
-        if (!post) throw new Error((await bsky.whyNoClaimPost(p.did, code, claimPost().used)) || "We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
+        const post = await bsky.findClaimPost(p.did, codeNow(), claimPost().used);
+        if (!post) throw new Error((codeNow() ? await bsky.whyNoClaimPost(p.did, code, claimPost().used) : "") || "We couldn't find a post containing your code yet. Post it publicly, wait a few seconds, then try again.");
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
         say("Submitting the proof. The contract checks every signature itself");
@@ -1204,6 +1206,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       stepsEl,
       doneCard,
       holdNote,
+      !e.binding && e.deposits.some((d) => d.challenge) ? h("div", { class: "note warn", style: "margin-top:12px" }, "Tip: link your wallet first (one post, once). After that, the sender's challenge needs just their phrase, with no code in your post. ", h("a", { href: `#/link/${p.handle}` }, "Link my wallet"), ".") : null,
+      e.binding && codeNow() === "" ? h("div", { class: "note good", style: "margin-top:12px" }, "Your wallet is linked, so the challenge post needs only the phrase below. Your money goes to your linked wallet.") : null,
       e.binding ? h("div", { class: "note good", style: "margin-top:12px" }, e.binding === wallet.componentAddress ? "This account is linked to your wallet. Anything that needs a safety window or a phrase is paid there once you've collected it." : `@${p.handle} has linked ${short(e.binding, 14, 6)}. Whatever you collect here is paid to that account, not to this wallet.`) : null,
       h("div", { class: "card", style: "margin-top:16px;text-align:center" }, h("div", { class: "pill" }, `Waiting for @${p.handle}`), h("div", { class: "amount", style: "margin-top:10px" }, chain.formatTari(waitingTotal), h("small", null, CONFIG.symbol))),
       others ? h("div", { class: "note warn", style: "margin-top:12px" }, "Another wallet has started a claim on this account. If that isn't you, the real owner can cancel it. You can still start your own claim below.") : null,

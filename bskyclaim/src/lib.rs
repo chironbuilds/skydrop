@@ -20,6 +20,8 @@
 //!   one only after a delay, and a post can be used once, so an old post cannot move the binding back.
 //! * A deposit with a phrase may also ask that the claim post stay up for some epochs. The claimant then
 //!   re-proves the same post (`confirm_claim`) once that time has passed, and only then is it paid.
+//! * For a linked account the claim post needs no claim code: whoever submits it, the money goes to the
+//!   linked address. Such a claim can only be restarted by a newer post, so a copied old post cannot reset it.
 //! * `refund` returns an unclaimed deposit to its sender after the refund epoch.
 
 use atp_verify::{record_text, sha256, verify_plc_chain, verify_record};
@@ -340,7 +342,7 @@ mod bskyclaim {
         }
 
         fn begin_confirm(&mut self, did: String, ops: Vec<Bytes>, commit: Bytes, mst_nodes: Vec<Bytes>, record: Bytes, rkey: String) {
-            let (claimant, _, _, _) = self.pending.get(&did).cloned().expect("no pending claim");
+            assert!(self.pending.contains_key(&did), "no pending claim");
             let (held_rkey, _) = self.held.get(&did).cloned().expect("no pending claim");
             assert!(rkey == held_rkey, "that is not the post the claim was made with");
             let chain = self.check_chain(&did, &ops);
@@ -352,8 +354,6 @@ mod bskyclaim {
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
                 .expect("invalid repo proof");
             let text = record_text(record.as_slice()).expect("record has no text");
-            let code = claim_code(&CallerContext::current_component_address().to_string(), &did, &claimant);
-            assert!(text.contains(&code), "the post does not contain the claim code");
             assert!(self.claim_text.get(&did).is_some_and(|t| t.as_str() == text), "the post has changed since the claim started");
             self.known_len.insert(did.clone(), chain.len);
             self.held.insert(did, (rkey, Consensus::current_epoch()));
@@ -364,7 +364,9 @@ mod bskyclaim {
         pub fn sponsor_finalize(&mut self, did: String, fee: Amount) {
             assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
             let (claimant, _, _, start) = self.pending.get(&did).cloned().expect("no pending claim");
-            require_signer(claimant);
+            if self.active_binding(&did).is_none() {
+                require_signer(claimant);
+            }
             let now = Consensus::current_epoch();
             let text = self.claim_text.get(&did).map(|t| t.as_str()).unwrap_or("");
             let seen = self.held.get(&did).map_or(start, |h| h.1);
@@ -545,7 +547,16 @@ mod bskyclaim {
                 .expect("invalid repo proof");
             let text = record_text(record.as_slice()).expect("record has no text");
             let code = claim_code(&CallerContext::current_component_address().to_string(), &did, &claimant);
-            assert!(text.contains(&code), "the post does not contain the claim code");
+            if !text.contains(&code) {
+                // Without the code the post is not tied to this claimant. That is only safe when the money cannot go
+                // to the claimant: a linked account's payouts go to its linked address. And a copied old post must
+                // not be able to restart a pending claim, so it has to be newer than the one already proven.
+                assert!(self.active_binding(&did).is_some(), "the post does not contain the claim code");
+                if self.pending.contains_key(&did) {
+                    let last = self.held.get(&did).map(|h| h.0.clone()).unwrap_or_default();
+                    assert!(rkey.as_str() > last.as_str(), "a newer post than the pending claim's is needed");
+                }
+            }
 
             assert!(text.len() <= MAX_CLAIM_TEXT, "claim post too long");
             self.known_len.insert(did.clone(), chain.len);
@@ -573,7 +584,11 @@ mod bskyclaim {
         /// longer window stay escrowed and the claim stays pending. Only the claimant can call it.
         pub fn finalize_claim(&mut self, did: String) -> Bucket {
             let (claimant, _, _, start) = self.pending.get(&did).cloned().expect("no pending claim");
-            require_signer(claimant);
+            let bound = self.active_binding(&did);
+            // a linked account is paid to its linked address whoever asks, so anyone may finish its claim
+            if bound.is_none() {
+                require_signer(claimant);
+            }
             let now = Consensus::current_epoch();
             let list = self.deposits.remove(&did).unwrap_or_default();
             let text = self.claim_text.get(&did).cloned().unwrap_or_default();
@@ -581,7 +596,6 @@ mod bskyclaim {
             let (ready, waiting): (Vec<_>, Vec<_>) = list.into_iter().partition(|e| payable(e, now, start, &text, seen));
             assert!(!ready.is_empty(), "the challenge window is still open, or a required phrase was not posted");
             let total = ready.iter().fold(Amount::zero(), |acc, e| acc + e.1);
-            let bound = self.active_binding(&did);
             if waiting.is_empty() {
                 self.pending.remove(&did);
                 self.claim_text.remove(&did);
