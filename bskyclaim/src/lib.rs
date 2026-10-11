@@ -132,8 +132,8 @@ mod bskyclaim {
         bot_did: String,
         /// DID -> text of the post the pending claim was proven with, checked against deposit phrases at payout.
         claim_text: BTreeMap<String, String>,
-        /// DID -> (bound account, epoch it takes effect, the account it replaces, if any).
-        bindings: BTreeMap<String, (ComponentAddress, u64, Option<ComponentAddress>)>,
+        /// DID -> (bound account, epoch it takes effect, the account it replaces). A first binding replaces itself.
+        bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress)>,
         /// DID -> rkey of the last bind post used. Bind posts must have a larger rkey.
         last_bind: BTreeMap<String, String>,
     }
@@ -241,9 +241,9 @@ mod bskyclaim {
             let now = Consensus::current_epoch();
             let current = self.active_binding(&did);
             let entry = match current {
-                None => (address, now, None),
-                Some(c) if c == address => (address, now, None),
-                Some(c) => (address, now + BIND_DELAY_EPOCHS, Some(c)),
+                None => (address, now, address),
+                Some(c) if c == address => (address, now, address),
+                Some(c) => (address, now + BIND_DELAY_EPOCHS, c),
             };
             self.known_len.insert(did.clone(), chain.len);
             self.last_bind.insert(did.clone(), rkey);
@@ -556,7 +556,7 @@ mod bskyclaim {
 
         fn active_binding(&self, did: &str) -> Option<ComponentAddress> {
             let (address, since, old) = self.bindings.get(did)?;
-            if Consensus::current_epoch() >= *since { Some(*address) } else { *old }
+            Some(if Consensus::current_epoch() >= *since { *address } else { *old })
         }
 
         fn check_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::ChainInfo {

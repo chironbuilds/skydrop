@@ -1156,3 +1156,16 @@ fn a_bind_needs_the_owners_post_for_that_exact_address() {
     assert!(env.bind(&relayer, &acct, wallet.account, &forged).is_some());
     assert_eq!(env.bound(&acct.did), None);
 }
+
+#[test]
+fn binding_state_survives_a_realistic_epoch() {
+    let mut env = Env::new();
+    set_epoch(&mut env.test, 12_125);
+    let (sender, wallet, relayer) = (user(&mut env.test), user(&mut env.test), user(&mut env.test));
+    let acct = Account::new();
+    let post = env.bind_post(&acct, wallet.account, "3kaaaaaaaaaaa");
+    assert_eq!(env.bind(&relayer, &acct, wallet.account, &post), None);
+    let other = Account::new();
+    assert_eq!(env.deposit(&sender, &other.did, 1_000_000, 12_200, WINDOW), None);
+    assert_eq!(env.deposit(&sender, &acct.did, 1_000_000, 12_200, 0), None);
+}

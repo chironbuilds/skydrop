@@ -235,7 +235,7 @@ If you run your own relayer for the same component, note that each tip post can 
 Use this to test changes or run a private escrow.
 
 1. **Build the template.** In a Linux or WSL workspace with tari-ootle checked out, `sync.sh` copies `atp-verify/`, `bskyclaim/` and the tests in. Then `cargo build --target wasm32-unknown-unknown --release --target-dir ~/ootle-target-atp` inside the template directory.
-2. **Run the tests.** `./run_tests.sh` (23 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
+2. **Run the tests.** `./run_tests.sh` (24 tests with a synthetic Bluesky account). Pass `--target-dir` to cargo, never the `CARGO_TARGET_DIR` environment variable: the template's child build deadlocks on the parent's lock.
 3. **Publish and create.**
    ```
    bsky_cli publish <bskyclaim.wasm>

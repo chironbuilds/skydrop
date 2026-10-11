@@ -119,14 +119,18 @@ export async function readEscrow(provider: IndexerProvider, did: string): Promis
 }
 
 /** A component address as the state stores it, written the way the wallet writes it. */
-const addressText = (v: Cbor): string => (typeof v === "string" ? v : `component_${bytesHex(v)}`);
+const addressText = (v: Cbor): string => {
+  if (typeof v === "string") return v;
+  const tagged = v as { value?: { hex?: string } };
+  return `component_${tagged.value?.hex ?? bytesHex(v)}`;
+};
 
-/** Component state index 12: DID -> [account, epoch it takes effect, the account it replaces or null]. */
+/** Component state index 12: DID -> [account, epoch it takes effect, the account it replaces (itself for a first link)]. */
 function bindingOf(map: Cbor, did: string, epoch: number): string | null {
   const b = (map as Record<string, Cbor[]> | undefined)?.[did];
   if (!b) return null;
   if (epoch >= Number(b[1])) return addressText(b[0]);
-  return b[2] ? addressText(b[2]) : null;
+  return addressText(b[2]);
 }
 
 /** The account `did` has linked, if any. */

@@ -177,6 +177,8 @@ async fn main() {
             let me = max_epoch(&p).await;
             let probe = IAccount::new(&p, me).pay_fee(8_000_000u64).publish_template(wasm.clone()).prepare().await.unwrap();
             let fee = fee_for(&p, probe).await;
+            // a budget above the balance can't be funded; the actual charge is usually well under it
+            let fee = fee.min(arg(2, "99999999999").parse().unwrap());
             println!("publish fee budget {fee} µT");
             let tx = IAccount::new(&p, me).pay_fee(fee).publish_template(wasm).prepare().await.unwrap();
             sign_dry_run_submit(&mut p, tx, submit).await;
@@ -188,7 +190,7 @@ async fn main() {
         "fund" => {
             let to = tari_ootle_address::OotleAddress::from_str(&args[1]).expect("recipient address");
             let amount: u64 = args[2].parse().unwrap();
-            let mut p = connect_as("wallet").await;
+            let mut p = connect_as(&arg(3, "wallet")).await;
             let me = max_epoch(&p).await;
             let tx = IAccount::new(&p, me)
                 .pay_fee(40_000u64)
