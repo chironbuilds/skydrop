@@ -1310,7 +1310,8 @@ function renderSent(): void {
       return mount(listEl, h("div", { class: "note bad" }, chain.friendly(e)));
     }
     noteEpoch(data.epoch);
-    if (!data.items.length) {
+    const delivered = await chain.readDeliveredBy(provider, myKeyHex).catch(() => [] as chain.Delivered[]);
+    if (!data.items.length && !delivered.length) {
       return mount(
         listEl,
         h("div", { class: "card" }, h("h3", { style: "margin:0 0 6px;font-family:var(--serif);font-size:26px" }, "Nothing waiting"), h("p", { class: "sub", style: "margin:0 0 14px" }, "Anything you send that nobody has collected yet shows up here, and you can take it back after its refund time."), h("a", { class: "btn primary", href: "#/send" }, "Send some")),
@@ -1319,6 +1320,8 @@ function renderSent(): void {
     const profiles = await Promise.all(data.items.map((d) => profileFor(d.did)));
     const mineHex = toHex(wallet.publicKey);
     const envelopes = await Promise.all(data.items.map((d) => env.fetchEnvelope(env.depositFp(mineHex, d.amount, d.refundEpoch, d.window))));
+    const escs = new Map<string, chain.Escrow>();
+    await Promise.all([...new Set(data.items.map((d) => d.did))].map(async (did) => { try { escs.set(did, await chain.readEscrow(provider, did)); } catch { /* status falls back to plain waiting */ } }));
     const rows = data.items.map((d, i) => {
       const p = profiles[i];
       const saved = envelopes[i];
@@ -1345,6 +1348,18 @@ function renderSent(): void {
           mount(btn, "Take it back");
         }
       });
+      const esc = escs.get(d.did);
+      const who = p ? `@${p.handle}` : "they";
+      const keep = d.hold ? ` and keep it up for ${eta(d.hold)}` : "";
+      const st: { tone: string; label: string; text: string } = ready
+        ? { tone: "refund", label: "Refundable", text: "Nobody has collected this. You can take it back now." }
+        : esc?.pending
+          ? { tone: "progress", label: "Claim started", text: `${who} has started claiming this. It's released when its safety window and any phrase are done.` }
+          : d.challenge && !esc?.binding
+            ? { tone: "wait", label: "Needs a link", text: `${who} must link a wallet first, then post “${d.challenge}”${keep}.` }
+            : d.challenge
+              ? { tone: "wait", label: "Needs the phrase", text: `${who} has linked a wallet. Waiting for a post that says “${d.challenge}”${keep}.` }
+              : { tone: "wait", label: "Waiting", text: `Waiting for ${who} to collect it.` };
       const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", saved?.a || `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "");
       const nudge = `@${p?.handle ?? ""} there's ${chain.formatTari(d.amount)} ${CONFIG.symbol} waiting for you on Tari 🎁 Collect it here:\n${link}`;
       return h(
@@ -1354,17 +1369,28 @@ function renderSent(): void {
           h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect", d.challenge ? ` · must post “${d.challenge}”${d.hold ? ` and keep it up ${eta(d.hold)}` : ""}` : ""))),
           h("div", { class: "amount", style: "font-size:34px" }, chain.formatTari(d.amount), h("small", null, CONFIG.symbol)),
         ),
-        h("div", { class: "note", style: "margin-top:14px" }, ready ? "Nobody has collected this. You can take it back now." : `Waiting for them to collect. You can take it back in ${eta(left)}.`),
+        h("div", { class: `status ${st.tone}`, style: "margin-top:14px" }, h("span", { class: "badge" }, st.label), h("span", null, st.text)),
+        ready ? null : h("p", { class: "help", style: "margin:8px 0 0" }, `You can take it back in ${eta(left)}.`),
         h("div", { class: "row", style: "margin-top:12px" }, ready ? btn : null, p ? h("a", { class: "btn ghost sm", href: bsky.composeUrl(nudge), target: "_blank", rel: "noopener" }, "Remind them", icons.external(14)) : null, h("a", { class: "btn ghost sm", href: `#/claim/${p?.handle ?? ""}` }, "Open claim page")),
         say,
       );
     });
-    mount(listEl, ...rows);
+    const deliveredProfiles = await Promise.all(delivered.slice(0, 8).map((x) => profileFor(x.did)));
+    const deliveredEls = delivered.length
+      ? [
+          h("h3", { style: "margin:20px 0 0;font-family:var(--serif);font-size:24px" }, "Delivered instantly"),
+          ...delivered.slice(0, 8).map((x, i) => {
+            const p = deliveredProfiles[i];
+            return h("div", { class: "card", style: "padding:16px" }, h("div", { class: "row", style: "justify-content:space-between;align-items:center;flex-wrap:nowrap" }, h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 40, height: 40, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:40px;height:40px" }), h("div", null, h("div", { style: "font-weight:700" }, p ? `@${p.handle}` : short(x.did, 14, 6)), h("div", { class: "help", style: "margin:0" }, "Paid straight to their linked wallet"))), h("div", { class: "amount", style: "font-size:26px" }, chain.formatTari(x.amount), h("small", null, CONFIG.symbol))));
+          }),
+        ]
+      : [];
+    mount(listEl, ...(rows.length ? rows : [h("div", { class: "note" }, "Nothing is waiting. Everything you've sent has been delivered or collected.")]), ...deliveredEls);
   };
 
   const poll = window.setInterval(() => { if (!busy) void load(); }, 60_000);
   cleanups.push(() => clearInterval(poll));
-  layout("send", h("h2", { class: "page" }, "Your sends"), h("p", { class: "sub" }, "Everything this wallet has put in escrow that nobody has collected yet."), listEl);
+  layout("send", h("h2", { class: "page" }, "Your sends"), h("p", { class: "sub" }, "What this wallet has sent: gifts still waiting to be collected, and ones that were delivered instantly."), listEl);
   void load();
 }
 

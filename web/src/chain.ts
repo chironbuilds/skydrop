@@ -378,6 +378,24 @@ export async function readSentBy(provider: IndexerProvider, keyHex: string): Pro
 }
 
 /** Takes a deposit back. The contract wants its position in the recipient's list, so find it fresh each time. */
+export interface Delivered {
+  did: string;
+  amount: bigint;
+  epoch: number;
+}
+
+/** Payments this wallet sent that went straight to a linked wallet, newest first (component state index 15). */
+export async function readDeliveredBy(provider: IndexerProvider, keyHex: string): Promise<Delivered[]> {
+  const sub = await provider.getSubstate(CONFIG.component);
+  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
+  const all = (comp?.body.state[15] ?? {}) as Record<string, Cbor[][]>;
+  const out: Delivered[] = [];
+  for (const [did, list] of Object.entries(all)) {
+    for (const d of list) if (bytesHex(d[0]) === keyHex) out.push({ did, amount: BigInt(d[1] as number), epoch: Number(d[4]) });
+  }
+  return out.sort((a, b) => b.epoch - a.epoch);
+}
+
 export async function refundDeposit(wallet: Wallet, provider: IndexerProvider, d: SentDeposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const esc = await readEscrow(provider, d.did);
   const mine = toHex(wallet.publicKey);

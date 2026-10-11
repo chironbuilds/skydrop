@@ -90,6 +90,15 @@ const ZH: Record<string, string> = {
   "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.":
     "每笔付款可以设置自己的安全期。如果有人盗用 Bluesky 密钥来领取，安全期让真正的主人有时间取消。",
   Instant: "即时",
+  Refundable: "可取回",
+  "Claim started": "已开始领取",
+  "Needs a link": "需先关联",
+  "Needs the phrase": "需发布口令",
+  Waiting: "等待中",
+  "Delivered instantly": "即时到账的礼物",
+  "Paid straight to their linked wallet": "已直接发到对方关联的钱包",
+  "Nothing is waiting. Everything you've sent has been delivered or collected.": "没有待领取的款项，你发出的都已送达或被领取。",
+  "What this wallet has sent: gifts still waiting to be collected, and ones that were delivered instantly.": "这个钱包发出的礼物：尚未被领取的，以及即时到账的。",
   Careful: "谨慎",
   Vault: "保险库",
   "Recommended for small amounts": "小额推荐",
@@ -272,6 +281,11 @@ const timeZh = (s: string): string =>
     .replace(/^right away$/, "马上");
 
 const PATTERNS: Pattern[] = [
+  [/^(\S+) has started claiming this\. It's released when its safety window and any phrase are done\.$/, (m) => `${m[1]} 已开始领取。安全期和口令都完成后才会释放。`],
+  [/^(\S+) must link a wallet first, then post “(.+)”(?: and keep it up for (.+))?\.$/, (m) => `${m[1]} 需要先关联钱包，然后发布「${m[2]}」${m[3] ? `并保留帖子 ${timeZh(m[3])}` : ""}。`],
+  [/^(\S+) has linked a wallet\. Waiting for a post that says “(.+)”(?: and keep it up for (.+))?\.$/, (m) => `${m[1]} 已关联钱包，正在等待包含「${m[2]}」的帖子${m[3] ? `（并保留 ${timeZh(m[3])}）` : ""}。`],
+  [/^Waiting for (\S+) to collect it\.$/, (m) => `等待 ${m[1]} 领取。`],
+  [/^You can take it back in (.+)\.$/, (m) => `${timeZh(m[1]!)} 后你可以取回。`],
   [/^@(\S+) is currently linked to (\S+)\. Linking (.+) instead takes over after about one epoch; until then the old one keeps receiving\.$/, (m) => `@${m[1]} 目前关联的是 ${m[2]}。改为关联 ${m[3]} 约一个周期后生效，在此之前旧地址继续收款。`],
   [/^@(\S+) hasn't linked a wallet\. They collect your gift by proving they own the account\.$/, (m) => `@${m[1]} 还没有关联钱包。对方需要证明自己拥有该账号才能领取你的礼物。`],
   [/^@(\S+) has linked a wallet\. A gift with no safety window and no phrase arrives there immediately\.$/, (m) => `@${m[1]} 已关联钱包。没有安全期、没有口令的礼物会立即到账。`],
