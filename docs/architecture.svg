@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" role="img" aria-labelledby="t d">
+  <title id="t">Skydrop architecture</title>
+  <desc id="d">The browser app and the bot talk to Bluesky and to the BskyClaim contract on Ootle. The contract verifies Bluesky's signatures itself.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#191730"/></marker>
+    <pattern id="stripe" width="48" height="12" patternUnits="userSpaceOnUse" patternTransform="skewX(-35)"><rect width="14" height="12" fill="#d9362b"/><rect x="14" width="10" height="12" fill="#fffaf0"/><rect x="24" width="14" height="12" fill="#2350d8"/><rect x="38" width="10" height="12" fill="#fffaf0"/></pattern>
+    <style>
+      text { font-family: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif; fill: #191730; }
+      .h { font-family: Fraunces, Georgia, serif; font-weight: 800; font-size: 20px; letter-spacing: -0.3px; }
+      .m { font-family: "DM Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.4px; }
+      .s { font-size: 13px; }
+      .t { font-size: 12px; fill: #5a5470; }
+      .box { fill: #fffaf0; stroke: #191730; stroke-width: 2.5; }
+      .in { fill: #f6ecd6; stroke: #191730; stroke-width: 1.6; }
+      .hi { fill: #f6d44c; stroke: #191730; stroke-width: 2; }
+      .ln { stroke: #191730; stroke-width: 2.2; fill: none; }
+      .dash { stroke-dasharray: 6 5; }
+      .sh { fill: #191730; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="640" fill="#f0e6d0"/>
+  <rect width="1000" height="12" fill="url(#stripe)"/>
+  <line x1="0" y1="12" x2="1000" y2="12" stroke="#191730" stroke-width="2.5"/>
+  <text x="30" y="52" class="h" style="font-size:30px">Skydrop, end to end</text>
+  <text x="30" y="74" class="t">The contract checks Bluesky's own signatures. Nobody in the middle is trusted with the money.</text>
+
+  <!-- browser -->
+  <rect x="36" y="106" width="270" height="270" class="sh"/>
+  <rect x="30" y="100" width="270" height="270" class="box"/>
+  <text x="46" y="128" class="h">Browser</text>
+  <text x="46" y="146" class="m">SKYDROP.TARI.MW</text>
+  <rect x="46" y="160" width="238" height="44" class="in"/>
+  <text x="58" y="180" class="s">Web app (Vite + TypeScript)</text>
+  <text x="58" y="196" class="t">send, collect, tip budgets</text>
+  <rect x="46" y="212" width="238" height="44" class="in"/>
+  <text x="58" y="232" class="s">Proof assembler</text>
+  <text x="58" y="248" class="t">PLC log + repo CAR + MST path</text>
+  <rect x="46" y="264" width="114" height="46" class="hi"/>
+  <text x="54" y="283" class="s" style="font-weight:700">Built-in</text>
+  <text x="54" y="299" class="t" style="fill:#191730">seed in browser</text>
+  <rect x="170" y="264" width="114" height="46" class="hi"/>
+  <text x="178" y="283" class="s" style="font-weight:700">Sapient</text>
+  <text x="178" y="299" class="t" style="fill:#191730">window.tari</text>
+  <text x="46" y="334" class="t">Built-in wallet can use sponsored</text>
+  <text x="46" y="350" class="t">fees. Sapient pays its own small fee.</text>
+
+  <!-- cloudflare -->
+  <rect x="36" y="426" width="270" height="86" class="sh"/>
+  <rect x="30" y="420" width="270" height="86" class="box"/>
+  <text x="46" y="448" class="h" style="font-size:17px">Cloudflare Worker</text>
+  <text x="46" y="466" class="m">STATIC ASSETS · CUSTOM DOMAIN</text>
+  <text x="46" y="488" class="t">Serves the app. Holds no keys, no state.</text>
+  <path d="M165 420 V376" class="ln" marker-end="url(#a)"/>
+  <text x="175" y="402" class="t">files</text>
+
+  <!-- bluesky -->
+  <rect x="396" y="106" width="240" height="212" class="sh"/>
+  <rect x="390" y="100" width="240" height="212" class="box"/>
+  <text x="406" y="128" class="h">Bluesky</text>
+  <text x="406" y="146" class="m">ATPROTO</text>
+  <rect x="406" y="158" width="208" height="42" class="in"/>
+  <text x="416" y="176" class="s">User's PDS repo</text>
+  <text x="416" y="191" class="t">signed commit, MST, posts</text>
+  <rect x="406" y="206" width="208" height="42" class="in"/>
+  <text x="416" y="224" class="s">plc.directory</text>
+  <text x="416" y="239" class="t">did:plc identity operations</text>
+  <rect x="406" y="254" width="208" height="42" class="in"/>
+  <text x="416" y="272" class="s">Public AppView API</text>
+  <text x="416" y="287" class="t">profiles, feeds, notifications</text>
+
+  <!-- bot -->
+  <rect x="396" y="396" width="240" height="136" class="sh"/>
+  <rect x="390" y="390" width="240" height="136" class="box"/>
+  <text x="406" y="418" class="h">Skydrop bot</text>
+  <text x="406" y="436" class="m">RACKNERD · SYSTEMD</text>
+  <text x="406" y="458" class="s">@taridrop.bsky.social</text>
+  <text x="406" y="478" class="t">Mentions recipients of new deposits.</text>
+  <text x="406" y="494" class="t">Relays "tip @x 5" posts to the contract.</text>
+  <text x="406" y="510" class="t">Holds no funds. Cannot forge a tip.</text>
+
+  <!-- ootle -->
+  <rect x="706" y="106" width="270" height="480" class="sh"/>
+  <rect x="700" y="100" width="270" height="480" class="box"/>
+  <text x="716" y="128" class="h">Ootle (Esmeralda)</text>
+  <text x="716" y="146" class="m">TESTNET · TEMPLATE ENGINE</text>
+  <rect x="716" y="160" width="238" height="30" class="in"/>
+  <text x="728" y="180" class="s">Indexer (reads state)</text>
+  <rect x="716" y="198" width="238" height="30" class="in"/>
+  <text x="728" y="218" class="s">Validators (execute + order txs)</text>
+  <rect x="716" y="244" width="238" height="324" fill="#fffaf0" stroke="#d9362b" stroke-width="2.5"/>
+  <text x="728" y="268" class="h" style="font-size:17px">BskyClaim component</text>
+  <rect x="728" y="280" width="214" height="30" class="in"/><text x="738" y="300" class="s">vault · escrowed tTARI</text>
+  <rect x="728" y="316" width="214" height="30" class="in"/><text x="738" y="336" class="s">deposits per did:plc</text>
+  <rect x="728" y="352" width="214" height="30" class="in"/><text x="738" y="372" class="s">pending claims + known_len</text>
+  <rect x="728" y="388" width="214" height="30" class="in"/><text x="738" y="408" class="s">fee_vault · sponsored fees</text>
+  <rect x="728" y="424" width="214" height="30" class="in"/><text x="738" y="444" class="s">tip budgets + last_tip</text>
+  <rect x="728" y="466" width="214" height="90" class="hi"/>
+  <text x="738" y="486" class="s" style="font-weight:700">atp-verify (in WASM)</text>
+  <text x="738" y="504" class="t" style="fill:#191730">PLC chain · repo signature</text>
+  <text x="738" y="520" class="t" style="fill:#191730">MST path · claim code</text>
+  <text x="738" y="536" class="t" style="fill:#191730">tip post parser</text>
+  <text x="738" y="551" class="t" style="fill:#191730">No ZK, no oracle</text>
+
+  <!-- flows -->
+  <path d="M300 160 H390" class="ln" marker-end="url(#a)"/>
+  <text x="306" y="138" class="m">LOOKUP,</text><text x="306" y="150" class="m">FIND POST</text>
+  <path d="M300 230 H350 V260 H390" class="ln dash" marker-start="url(#a)"/>
+  <text x="306" y="222" class="m">PROOF BLOCKS</text>
+  <path d="M300 300 C 340 360, 560 360, 700 330" class="ln" marker-end="url(#a)"/>
+  <text x="440" y="368" class="m" style="fill:#d9362b">DEPOSIT · START_CLAIM · FINALIZE</text>
+  <path d="M510 390 V318" class="ln" marker-end="url(#a)"/>
+  <text x="520" y="382" class="m">MENTIONS, REPLIES</text>
+  <path d="M630 470 C 670 470, 670 440, 700 436" class="ln" marker-end="url(#a)"/>
+  <text x="396" y="548" class="m" style="fill:#d9362b">TIP_SPONSORED(PROOF) → CONTRACT</text>
+
+  <!-- legend -->
+  <text x="30" y="560" class="m">SOLID = SIGNED TRANSACTION OR API CALL</text>
+  <text x="30" y="578" class="m">DASHED = READ ONLY</text>
+  <text x="30" y="604" class="t">Money moves only through the contract. Bluesky data is trusted only after the contract verifies its signatures.</text>
+</svg>

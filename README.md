@@ -2,6 +2,15 @@
 
 Send tTARI (Tari Ootle testnet) to any Bluesky account. The owner collects it by proving, on-chain, that they control the account. No wallet is needed to claim, and nobody has to be trusted.
 
+Live on Esmeralda at https://skydrop.tari.mw
+
+![Skydrop architecture](docs/architecture.svg)
+
+## Docs
+
+- [Architecture](docs/ARCHITECTURE.md): the pieces, data model, claim and tip flows, trust model.
+- [Integration guide](docs/INTEGRATION.md): deep links, the TypeScript modules, the contract reference, relayers, running your own instance.
+
 ## How the proof works
 
 The escrow is keyed by `did:plc`, not by handle, because handles can be recycled. To claim, the owner posts a message containing `tari-claim:<hex>`. The code is `sha256("tari-bsky-claim:v1:" || component || ":" || did || ":" || claimant key)[..16]`, so it is bound to this escrow and to the claimant's key.
@@ -25,11 +34,12 @@ The template verifies all of it inside WASM (`atp-verify/`). No ZK proof or orac
 |---|---|
 | `atp-verify/` | `no_std` Rust verifier: DAG-CBOR, PLC chain, MST, signatures |
 | `bskyclaim/` | The Ootle template (escrow component) |
-| `bskyclaim.rs` | Engine tests (synthetic atproto account), 10 tests |
+| `bskyclaim.rs` | Engine tests (synthetic atproto account), 15 tests |
 | `cli/bsky_cli.rs` | Esmeralda CLI: publish, new, deposit, fundfees, claim, finalize |
 | `src/` | Node proof assembler (PLC log plus repo CAR) |
 | `web/` | Skydrop frontend (Vite and TypeScript) |
-| `bot/` | Bluesky notifier bot |
+| `bot/` | Bluesky bot: notifies recipients and relays tip posts |
+| `docs/` | Architecture and integration docs |
 
 Rust crates build in a Linux or WSL workspace against tari-ootle. `sync.sh` copies them there.
 
