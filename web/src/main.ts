@@ -447,6 +447,9 @@ function renderSend(prefill?: string): void {
   let windowEpochs = 0;
   let busy = false;
   let style = env.STYLES[0]!;
+  let coverId = "";
+  let coverUrl = "";
+  let uploading = false;
 
   const field = handleField(prefill ?? "", (p) => {
     profile = p;
@@ -472,14 +475,38 @@ function renderSend(prefill?: string): void {
   const pickEl = h("div", { class: "env-pick", role: "radiogroup", "aria-label": "Envelope" });
   const previewEl = h("div", { class: "env-preview" });
   const drawEnvelope = (): void => {
+    const file = h("input", { type: "file", accept: "image/*", style: "display:none" }) as HTMLInputElement;
+    file.addEventListener("change", async () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      uploading = true;
+      update();
+      mount(previewEl, h("p", { class: "help" }, "Uploading your picture…"));
+      try {
+        const blob = await env.prepareCover(f);
+        coverId = await env.uploadCover(blob);
+        coverUrl = `/c/${coverId}.jpg`;
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "Couldn't use that picture", "bad");
+      }
+      uploading = false;
+      update();
+      drawEnvelope();
+    });
     mount(
       pickEl,
       env.STYLES.map((o) =>
         h("button", { class: "env-opt", role: "radio", "aria-checked": String(style.id === o.id), style: `--paper:${o.paper};--flap:${o.flap};--seal:${o.seal}`, onclick: () => { style = o; drawEnvelope(); } }, h("div", { class: "mini" }, h("i")), h("b", null, o.name), h("small", null, o.tag)),
       ),
+      h("button", { class: "env-up", onclick: () => file.click() }, h("div", { class: "mini", style: coverUrl ? `background-image:url(${coverUrl})` : "" }, coverUrl ? "" : "+"), h("b", null, coverUrl ? "Change picture" : "Your own picture"), h("small", null, "Any image")),
+      file,
     );
     const a = amount();
-    mount(previewEl, env.envelope(style, env.cleanNote(noteInput.value), { amount: a ? `${chain.formatTari(a)} ${CONFIG.symbol}` : undefined, open: true }));
+    mount(
+      previewEl,
+      env.envelope(style, env.cleanNote(noteInput.value), { amount: a ? `${chain.formatTari(a)} ${CONFIG.symbol}` : undefined, coverUrl: coverUrl || undefined }),
+      h("p", { class: "help", style: "margin-top:12px" }, "Tap the envelope to peek inside.", coverUrl ? h("span", null, " ", h("a", { href: "#", onclick: (ev: Event) => { ev.preventDefault(); coverId = ""; coverUrl = ""; drawEnvelope(); } }, "Remove picture")) : null),
+    );
   };
 
   const amount = (): bigint | null => chain.parseTari(amountInput.value);
@@ -503,7 +530,7 @@ function renderSend(prefill?: string): void {
     const short = needsFunds(a ?? 0n);
     const problem = challengeProblem();
     mount(challengeNote, problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null);
-    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem;
+    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem && !uploading;
     sendBtn.disabled = !ok;
     const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
     mount(
@@ -554,7 +581,7 @@ function renderSend(prefill?: string): void {
   const done = (p: bsky.Profile, a: bigint, w: number): void => {
     confetti();
     const note = env.cleanNote(noteInput.value);
-    const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`);
+    const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId);
     const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, include this in your claim post: ${challenge()}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
@@ -739,16 +766,15 @@ function renderTips(prefill?: string): void {
 // collect
 // ---------------------------------------------------------------------------------------------------------
 
-function giftEl(g: { style: env.Style; note: string }): HTMLElement {
-  const e = env.envelope(g.style, g.note);
+function giftEl(g: Gift): HTMLElement {
+  const e = env.envelope(g.style, g.note, { coverUrl: g.cover ? `/c/${g.cover}.jpg` : undefined, onToggle: () => wrap.querySelector(".from")?.remove() });
   const wrap = h("div", { class: "env-hello" }, e, h("p", { class: "from" }, "Tap the envelope"));
-  const open = (): void => { e.classList.add("open"); wrap.querySelector(".from")?.remove(); };
-  e.addEventListener("click", open);
-  setTimeout(open, 900);
   return wrap;
 }
 
-function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }): void {
+interface Gift { style: env.Style; note: string; cover: string }
+
+function renderClaim(prefill?: string, gift?: Gift): void {
   let profile: bsky.Profile | null = null;
   let esc: chain.Escrow | null = null;
   let code = "";
@@ -983,7 +1009,7 @@ function renderClaim(prefill?: string, gift?: { style: env.Style; note: string }
   layout(
     "claim",
     h("h2", { class: "page" }, "Collect your tTARI"),
-    gift && (gift.note || gift.style.id !== "air") ? giftEl(gift) : null,
+    gift && (gift.note || gift.cover || gift.style.id !== "air") ? giftEl(gift) : null,
     h("p", { class: "sub" }, "Enter your Bluesky handle. You'll post one line to prove it's you."),
     h("div", { class: "card" }, h("label", { class: "f" }, "Your Bluesky handle"), field.el),
     stepsEl,
@@ -1115,7 +1141,7 @@ function route(): void {
   const param = decodeURIComponent(arg);
   const q = new URLSearchParams(query);
   if (kind === "send") renderSend(param || undefined);
-  else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? "") });
+  else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
   else if (kind === "tips") renderTips(param || undefined);
   else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();

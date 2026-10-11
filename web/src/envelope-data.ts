@@ -33,22 +33,18 @@ export function cleanNote(s: string): string {
   return s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_NOTE);
 }
 
-export function withEnvelope(link: string, styleId: string, note: string, extra: Record<string, string> = {}): string {
-  const q: string[] = [];
-  if (styleId && styleId !== "air") q.push("e=" + encodeURIComponent(styleId));
-  const n = cleanNote(note);
-  if (n) q.push("m=" + encodeURIComponent(n));
-  return q.length ? `${link}?${q.join("&")}` : link;
-}
-
+/** An uploaded cover is stored by the Worker under the first 16 hex of its SHA-256. */
+export const isCoverId = (s: string | null | undefined): s is string => !!s && /^[0-9a-f]{16}$/.test(s);
 
 /** The link to share. With an envelope it points at /e/<handle>, which serves a preview card to crawlers (Telegram, Bluesky) and sends people on to the claim page. */
-export function shareLink(origin: string, handle: string, styleId: string, note: string, amount: string): string {
+export function shareLink(origin: string, handle: string, styleId: string, note: string, amount: string, cover = ""): string {
   const n = cleanNote(note);
-  if ((!styleId || styleId === "air") && !n) return `${origin}/#/claim/${handle}`;
+  const c = isCoverId(cover) ? cover : "";
+  if ((!styleId || styleId === "air") && !n && !c) return `${origin}/#/claim/${handle}`;
   const q: string[] = [];
   if (styleId && styleId !== "air") q.push("e=" + encodeURIComponent(styleId));
   if (n) q.push("m=" + encodeURIComponent(n));
+  if (c) q.push("c=" + c);
   if (amount) q.push("a=" + encodeURIComponent(amount));
   return `${origin}/e/${handle}${q.length ? "?" + q.join("&") : ""}`;
 }
