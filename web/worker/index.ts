@@ -95,7 +95,7 @@ function card(style: Style, handle: string, note: string, amount: string, cover:
   const lines = wrap(note || (amount ? `${amount} for you` : "A little something for you"), 46, 560);
   const who = handle ? `@${handle}` : "";
   const head = who ? `a gift for ${who}` : "a gift on Tari";
-  const text = [...lines, amount, head, "Skydrop", "skydrop.tari.mw", style.glyph].join("");
+  const text = [...lines, amount, head, "Skydrop", "skydrop.tari.mw", style.glyph, "福"].join("");
   const stripe = `<pattern id="s" width="40" height="40" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="20" height="40" fill="#d9362b"/><rect x="20" width="20" height="40" fill="#2350d8"/></pattern>`;
   // envelope: x 130..440, y 60..570. The cover covers the top 78% and its bottom edge bulges down in the middle.
   const x0 = 130, x1 = 440, y0 = 60, y1 = 570, cx = (x0 + x1) / 2;
@@ -113,7 +113,7 @@ function card(style: Style, handle: string, note: string, amount: string, cover:
 ${pic}
 <path d="${coverPath}" fill="none" stroke="#191730" stroke-width="5"/>
 <circle cx="${cx}" cy="${cb + bulge - 6}" r="44" fill="#e9cf9b" stroke="#191730" stroke-opacity=".35" stroke-width="3"/>
-<text x="${cx}" y="${cb + bulge + 8}" text-anchor="middle" font-family="Noto Sans SC" font-weight="700" font-size="38" fill="#a98b4d">${esc(style.glyph)}</text>
+<text x="${cx}" y="${cb + bulge + 8}" text-anchor="middle" font-family="Noto Sans SC" font-weight="700" font-size="38" fill="#a98b4d">${esc(cover ? "福" : style.glyph)}</text>
 <text x="540" y="120" font-family="Fraunces" font-weight="700" font-size="40" fill="#191730">Skydrop</text>
 <text x="540" y="168" font-family="Fraunces" font-weight="700" font-size="28" fill="#857e96">${esc(head)}</text>
 ${lines.map((l, i) => `<text x="540" y="${290 + i * 58}" font-family="Fraunces, Noto Sans SC" font-weight="700" font-size="46" fill="#191730">${esc(l)}</text>`).join("")}

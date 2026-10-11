@@ -357,3 +357,4 @@ footer code { font-family: var(--mono); font-size: 12px; }
 .env-opt small { color: var(--faint); font-size: 11px; }
 @media (max-width: 560px) { .env-pick { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .env, .env * { transition: none !important; } }
+.env-designs { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; font-size: 13px; color: var(--faint); }

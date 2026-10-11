@@ -476,14 +476,12 @@ function renderSend(prefill?: string): void {
   const previewEl = h("div", { class: "env-preview" });
   const drawEnvelope = (): void => {
     const file = h("input", { type: "file", accept: "image/*", style: "display:none" }) as HTMLInputElement;
-    file.addEventListener("change", async () => {
-      const f = file.files?.[0];
-      if (!f) return;
+    const useCover = async (make: () => Promise<Blob>): Promise<void> => {
       uploading = true;
       update();
-      mount(previewEl, h("p", { class: "help" }, "Uploading your picture…"));
+      mount(previewEl, h("p", { class: "help" }, "Preparing your cover…"));
       try {
-        const blob = await env.prepareCover(f);
+        const blob = await make();
         coverId = await env.uploadCover(blob);
         coverUrl = `/c/${coverId}.jpg`;
       } catch (e) {
@@ -492,6 +490,10 @@ function renderSend(prefill?: string): void {
       uploading = false;
       update();
       drawEnvelope();
+    };
+    file.addEventListener("change", () => {
+      const f = file.files?.[0];
+      if (f) void useCover(() => env.prepareCover(f));
     });
     mount(
       pickEl,
@@ -500,6 +502,7 @@ function renderSend(prefill?: string): void {
       ),
       h("button", { class: "env-up", onclick: () => file.click() }, h("div", { class: "mini", style: coverUrl ? `background-image:url(${coverUrl})` : "" }, coverUrl ? "" : "+"), h("b", null, coverUrl ? "Change picture" : "Your own picture"), h("small", null, "Any image")),
       file,
+      h("div", { class: "env-designs" }, h("span", null, "Or start from a design:"), env.PRESETS.map((d) => h("button", { class: "btn ghost sm", onclick: () => void useCover(() => env.presetCover(d.id)) }, d.name))),
     );
     const a = amount();
     mount(
@@ -1084,7 +1087,7 @@ function renderSent(): void {
         "div",
         { class: "card", style: "padding:20px" },
         h("div", { class: "row", style: "justify-content:space-between;align-items:flex-start" },
-          h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect"))),
+          h("div", { class: "row", style: "gap:12px;flex-wrap:nowrap" }, p?.avatar ? h("img", { src: p.avatar, alt: "", width: 48, height: 48, style: "border-radius:50%;border:2px solid var(--edge)" }) : h("div", { class: "avatar", style: "width:48px;height:48px" }), h("div", null, h("div", { style: "font-weight:700;font-size:18px" }, handle), h("div", { class: "help", style: "margin:0" }, d.window ? `Safety window ${eta(d.window)}` : "Instant collect", d.challenge ? ` · must post “${d.challenge}”` : ""))),
           h("div", { class: "amount", style: "font-size:34px" }, chain.formatTari(d.amount), h("small", null, CONFIG.symbol)),
         ),
         h("div", { class: "note", style: "margin-top:14px" }, ready ? "Nobody has collected this. You can take it back now." : `Waiting for them to collect. You can take it back in ${eta(left)}.`),
