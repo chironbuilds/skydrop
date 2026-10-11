@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import puppeteer from "puppeteer-core";
 import ffmpegPath from "ffmpeg-static";
 import { makeAudio } from "./audio.mjs";
+import { loadVoice } from "./voice.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FPS = 30;
@@ -38,10 +39,11 @@ if (stillIdx > 0) {
 
 const slams = [1.1, 8.6, 17.2, 19.95, 28.1];
 const wav = join(here, "audio.wav");
-makeAudio(wav, total, cuts, slams);
+const voice = process.argv.includes("--no-voice") ? [] : loadVoice();
+makeAudio(wav, total, cuts, slams, voice);
 console.log("audio ready");
 
-const out = join(here, "skydrop-explainer.mp4");
+const out = join(here, process.argv.includes("--no-voice") ? "skydrop-explainer-silent.mp4" : "skydrop-explainer-voice.mp4");
 const ff = spawn(ffmpegPath, [
   "-y", "-loglevel", "error",
   "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "mjpeg", "-i", "-",

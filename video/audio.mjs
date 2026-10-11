@@ -6,7 +6,7 @@ const SR = 44100;
 const BPM = 128;
 const BEAT = 60 / BPM;
 
-export function makeAudio(path, total, cuts, slams) {
+export function makeAudio(path, total, cuts, slams, voice = []) {
   const n = Math.floor(total * SR);
   const out = new Float32Array(n);
   let seed = 12345;
@@ -132,6 +132,21 @@ export function makeAudio(path, total, cuts, slams) {
       const x = noise();
       const hp = x - prev; prev = x;
       add(i0 + k, Math.sin(ph) * Math.exp(-t * 9) * 0.9 + hp * Math.exp(-t * 70) * 0.35);
+    }
+  }
+
+  // narration: duck everything else while someone is talking, then lay the voice on top
+  if (voice.length) {
+    const active = new Float32Array(n);
+    const vox = new Float32Array(n);
+    for (const v of voice) {
+      const i0 = Math.floor(v.start * SR);
+      for (let k = 0; k < v.samples.length; k++) { if (i0 + k < n) { vox[i0 + k] += v.samples[k]; active[i0 + k] = 1; } }
+    }
+    let g = 0;
+    for (let i = 0; i < n; i++) {
+      g += (active[i] - g) * (active[i] > g ? 0.002 : 0.00008);
+      out[i] = out[i] * (1 - 0.55 * g) + vox[i] * 1.5;
     }
   }
 
