@@ -3,6 +3,7 @@
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-expect-error wrangler turns .wasm imports into compiled modules
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
+import { handleGate, liveDeps } from "./gate";
 import { cleanNote, envelopeHash, isCoverId, styleOf, type Style } from "../src/envelope-data";
 
 interface Env {
@@ -226,6 +227,8 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    const gate = await handleGate(req, liveDeps(env.COVERS as never));
+    if (gate) return gate;
     if (url.pathname.startsWith("/e/")) return page(url);
     if (url.pathname === "/og") return png(url, env, req);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
