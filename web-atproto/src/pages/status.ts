@@ -7,7 +7,7 @@ const ROADMAP: [string, "done" | "next" | "later", string][] = [
   ["Port all contracts to Ootle 0.49.2", "done", "Signer checks and proof handling changed. All suites pass."],
   ["Campaign contract", "done", "Any size, nine rule kinds, allocations, rounds, referrals, soulbound receipts."],
   ["Browser build of the verifier", "done", "Powers the live proof and eligibility checks on this site."],
-  ["Publish contracts on Esmeralda", "next", "Needs a funded wallet and a go-ahead. A deploy script is ready."],
+  ["Publish Campaign and LinkRegistry on Esmeralda", "done", "Live on the testnet. The Escrow and ClaimPolicy aren't published yet."],
   ["Fund and claim from the browser", "next", "Wallet connection for creating and claiming, tested against a live deployment."],
   ["Move Skydrop's app to 0.49", "next", "skydrop.tari.mw still targets contracts from before the network reset."],
   ["Per-account Escrow ledgers", "done", "Nobody can fill the shared Escrow with dust any more. Nothing shared grows with deposits."],
@@ -59,7 +59,7 @@ export function statusPage(): Page {
 
       h("h2", { class: "big", style: "margin-top:40px" }, "Deployed addresses"),
       contractsOnNetwork()
-        ? h("div", { class: "tablewrap" }, h("table", null, h("tbody", null, [["Campaign template", DEPLOYMENT.campaignTemplate], ["LinkRegistry", DEPLOYMENT.linkRegistry], ["Verifier", DEPLOYMENT.verifier]].map(([a, b]) => h("tr", null, h("td", null, a), h("td", { class: "m" }, b))))))
+        ? h("div", { class: "tablewrap" }, h("table", null, h("tbody", null, [["Campaign template", DEPLOYMENT.campaignTemplate], ["LinkRegistry", DEPLOYMENT.linkRegistry], ["Verifier template", DEPLOYMENT.verifier]].map(([a, b]) => h("tr", null, h("td", null, a), h("td", { class: "m" }, b))))))
         : h("p", { class: "muted", style: "margin-top:8px" }, "None on the current network. Addresses from before the 0.49 reset no longer exist."),
 
       h("h2", { class: "big", style: "margin-top:40px" }, "Roadmap"),

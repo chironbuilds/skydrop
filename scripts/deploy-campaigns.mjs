@@ -66,7 +66,12 @@ for (const [name, file] of TEMPLATES) {
   out[name] = ups.find((id) => id.startsWith("template_"));
   console.log(name, out[name]);
 }
-const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry.replace("template_", ""), functionName: "new" }, [0, 20000]));
+// Arguments are hex CBOR literals: LinkRegistry::new(bind_delay: u64 = 0, record_vault_size: u32 = 20000).
+const uintLiteral = (n) => {
+  const hex = n < 24 ? n.toString(16).padStart(2, "0") : n < 256 ? `18${n.toString(16).padStart(2, "0")}` : n < 65536 ? `19${n.toString(16).padStart(4, "0")}` : `1a${n.toString(16).padStart(8, "0")}`;
+  return { Literal: hex };
+};
+const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry, functionName: "new" }, [uintLiteral(0), uintLiteral(20000)]));
 const registry = ups.find((id) => id.startsWith("component_") && id !== account);
 console.log("\nFor web-atproto/src/data/deployment.ts:");
 console.log(`  campaignTemplate: "${out.Campaign}",\n  linkRegistry: "${registry}",\n  verifier: "${out.Verifier}",`);
