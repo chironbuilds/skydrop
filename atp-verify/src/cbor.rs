@@ -214,3 +214,24 @@ pub fn text_field<'a>(b: &'a [u8], key: &str) -> Res<&'a str> {
     let (vs, _) = map_get(b, key)?;
     Ok(text(b, vs)?.0)
 }
+
+/// Navigates nested maps following `path` from the top-level map, returning the final value's
+/// (start, end). Every element except the last must name a map-valued field. An empty path denotes
+/// the top-level map itself.
+pub fn path_get(b: &[u8], path: &[&str]) -> Res<(usize, usize)> {
+    let mut range = (0usize, b.len());
+    let mut pos = 0usize;
+    for key in path {
+        let mut found = None;
+        for e in map(b, pos)? {
+            let (k, vs, ve, _) = e?;
+            if k == *key {
+                found = Some((vs, ve));
+                break;
+            }
+        }
+        range = found.ok_or(Error::Missing)?;
+        pos = range.0;
+    }
+    Ok(range)
+}

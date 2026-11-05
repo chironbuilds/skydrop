@@ -1,0 +1,48 @@
+<h1>Trust boundaries</h1>
+<p>This layer is testnet software with internal review and no third-party audit. This page sets out what it guarantees and, just as importantly, what it can't.</p>
+
+<h2>What a proof establishes</h2>
+<ul>
+  <li><b>A signing key was valid for this DID,</b> by walking the signed PLC log from a genesis operation whose hash is the DID.</li>
+  <li><b>That key signed a repo commit,</b> using low-S signatures, with the DID and version checked.</li>
+  <li><b>That commit holds this exact record,</b> by hashes from the signed root down to the record's bytes.</li>
+</ul>
+<p>Everything else is read from bytes those steps have authenticated. The CBOR reader doesn't enforce canonical form on purpose: non-canonical bytes only let an account mangle its own data, and every datum is covered by a signature or a hash. Any new path that reads a field without that coverage breaks this guarantee.</p>
+
+<h2>What it cannot establish</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Limit</th><th>Why</th><th>What to do about it</th></tr></thead>
+<tbody>
+<tr><td><b>One person, one account</b></td><td>Accounts are free.</td><td>Open campaigns can be farmed. Use vouch rules or an allocation list for anything of value, and keep open rewards small.</td></tr>
+<tr><td><b>When a record was made</b></td><td>An account signs its own timestamps, so it can backdate them. PLC directory timestamps aren't signed at all.</td><td>Target a post that's new, so engaging with it can't predate it. A voucher's snapshot is meaningful, because the voucher signs it.</td></tr>
+<tr><td><b>That a record still exists</b></td><td>An old commit still verifies after the record is deleted.</td><td>Rounds require a commit newer than the last one proven. Someone holding their own signing key could still sign a misleading one.</td></tr>
+<tr><td><b>That an identity log is complete</b></td><td>A later key rotation could have been left out.</td><td>The shared chain floor refuses shorter chains once anyone has shown a longer one, and challenge windows cover higher-value payouts. Until a rotation has been shown, a stale key can still prove things.</td></tr>
+<tr><td><b>That a handle belongs to an account</b></td><td><code>alsoKnownAs</code> is self-asserted, and resolving it back needs DNS or HTTPS. Anyone can claim <code>ceo.yourorg.com</code> in their own chain.</td><td>Never gate funds on a handle. Use a list signed by the org.</td></tr>
+<tr><td><b>Account status, did:web, follower counts, account age</b></td><td>None are in a signed repo a contract can check.</td><td>These need an attester. Where the use case allows, a vouch rule is the better design.</td></tr>
+<tr><td><b>Token expiry on service auth</b></td><td>A contract has no wall clock.</td><td>Single use, not expiry, is what bounds a token on-chain.</td></tr>
+</tbody></table></div>
+
+<h2>What a funder has to get right</h2>
+<ul>
+  <li><b>Choose vouchers carefully.</b> Whoever controls a voucher account controls who qualifies. If that account is compromised, so is the campaign.</li>
+  <li><b>Check an allocation list.</b> The contract enforces the root it was given, not whether the list is fair.</li>
+  <li><b>Fund enough.</b> A claim fails once the pool can't cover it, and first come is first served.</li>
+  <li><b>Consider the rules where you are.</b> Offering rewards can carry legal and tax obligations, which this software knows nothing about.</li>
+</ul>
+
+<h2>Known open issue: LinkRegistry capacity</h2>
+<div class="note warn"><strong>The LinkRegistry keeps every link and chain floor in one component, capped at 1 MiB, and that needs fixing before mainnet.</strong> Anyone can add entries with self-made identities for only the transaction fee. Every Campaign claim reads the registry for the chain floor, so a bloated registry raises everyone's claim cost, and a full one stops new key rotations and links being recorded. The Escrow's fix doesn't carry over directly: a contract can't ask whether a record exists, and a floor has to be readable for accounts that have never been seen.</div>
+
+<h2>Bugs found so far</h2>
+<p>Internal review of the policy stack found and fixed these before any real funds were at risk. Listed because more of the same kind may remain.</p>
+<ul>
+  <li>Unchecked metadata arithmetic let a dust deposit with a huge window block every claim for an account.</li>
+  <li>A key rotated away could still claim, because the floor wasn't shared across policies.</li>
+  <li>An unauthenticated setter could have been front-run to point linked payouts at a fake registry.</li>
+  <li>A single per-account deposit cap let a stranger fill a victim's slots. Caps are now per policy.</li>
+  <li>A junk slot at the front of a bounty pool could block every claim. Campaign ids now name their funder.</li>
+  <li>Every deposit lived in one 1 MiB component, so anyone could fill the shared Escrow with dust and block new deposits for everyone. Each account now has its own ledger, and nothing shared grows with deposits.</li>
+</ul>
+
+<h2>Reporting a problem</h2>
+<p>Open an issue or a private security advisory on <a href="https://github.com/chironbuilds/skydrop">the repository</a>. The live proof page has a tamper test, and if any of those checks passes, that's a bug worth reporting.</p>

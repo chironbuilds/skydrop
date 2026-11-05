@@ -1,0 +1,42 @@
+<h1>Custody, verification, and features — kept apart</h1>
+    <p class="section-lede">Ootle templates are immutable and a component is bound to its template for life. So the component that holds funds must never need new code: everything that changes lives in policies the vault delegates to. A new feature is a new policy plus one badge — the escrow is never redeployed, and no deposit is ever orphaned by an upgrade.</p>
+    <div class="arch">
+      <div class="node perm"><span class="badge">permanent</span><span class="lbl">Custody</span><span class="nm">Escrow</span><span class="ds">Holds funds, with one ledger per account id. Releases only to the badge-holding policy pinned on a deposit. Unconditional refund to the sender — the safety valve.</span></div>
+      <div class="node layer"><span class="badge">shared</span><span class="lbl">Identity</span><span class="nm">Verifier</span><span class="ds">The atp-verify crate (hot path, compile-time) and an immutable Verifier component for third parties. All atproto crypto lives here, once.</span></div>
+      <div class="node pol"><span class="badge">pluggable</span><span class="lbl">Features</span><span class="nm">Policies</span><span class="ds">ClaimPolicy, TipPolicy, LinkRegistry… Each verifies with the layer and drives release with a proof of its policy badge.</span></div>
+    </div>
+    <p class="flow-note">Release is authenticated the Radix/Ootle way: the engine can't tell a method who called it, so each approved policy holds a unique NFT <b>badge</b>. <code>release</code> takes a <code>Proof</code> of it, reads the badge's id, and confirms it matches the deposit's pinned policy — a policy can only ever move its own deposits.</p>
+
+    <p class="subhead">The Escrow interface</p>
+    <p class="section-lede">Small and frozen on purpose. These are the only methods that move funds; a policy never holds the escrowed vault, only its badge.</p>
+    <div class="deflist">
+      <div><code>open_account(account_id)</code><p>Creates the account's own ledger. Anyone may call it, and the caller pays for the storage. It fails if the ledger exists, because a contract can't ask whether a record exists, so a client checks first and sends this with the first deposit.</p></div>
+      <div><code>deposit(account_id, sender, refund_epoch, policy, metadata, funds)</code><p>Escrow funds for an account, pinned to the governing <code>policy</code>. <code>metadata</code> is opaque bytes the policy defines — the escrow never reads it.</p></div>
+      <div><code>policy_deposit(badge: Proof, account_id, sender, refund_epoch, policy, metadata, funds)</code><p>Escrow on a policy's behalf, authorized by its badge instead of a sender signature — for funds a policy controls, like a relayed tip from a budget or the unspent remainder of a credit line.</p></div>
+      <div><code>release(badge: Proof, account_id, index) &rarr; Bucket</code><p>Pay out one deposit. Authorized by a proof of the policy's badge; the badge id must equal the deposit's pinned policy, so no policy can touch another's funds.</p></div>
+      <div><code>release_to(badge: Proof, account_id, index, to)</code><p>Like <code>release</code>, but deposits straight into an account the policy has validated — a DID's linked wallet, or the new owner a recovery chose.</p></div>
+      <div><code>return_to_sender(badge: Proof, account_id, index)</code><p>Hand a deposit back to its sender early (a declined gift, an invalid one). It stays in the ledger, out of every policy's reach, and the sender collects it with <code>refund</code> right away.</p></div>
+      <div><code>refund(account_id, index) &rarr; Bucket</code><p>Return a deposit to its sender after its refund epoch. Needs no badge — the safety valve that works even if a policy is buggy or retired.</p></div>
+      <div><code>approve_policy(policy) &rarr; Bucket</code><p>Governance only (admin signature). Mints the policy's unique badge NFT; route the bucket into the policy's <code>receive_badge</code>.</p></div>
+      <div><code>deposits_for(account_id) &rarr; Vec&lt;Deposit&gt;</code><p>Every deposit for an account across all policies — the single place clients read, so funds are never stranded in a superseded component.</p></div>
+    </div>
+
+    <p class="subhead">Authorizing a policy</p>
+    <p class="section-lede">A new feature joins the system in four steps. After this the policy can release its own deposits forever, with no further escrow changes.</p>
+    <div class="step"><span class="no">1</span><div class="body"><h3>Deploy the Escrow once</h3><p><span class="mono">Escrow::new(resource, min_deposit, admin, ledger_vault_size)</span>. This is permanent; every future feature reuses it.</p></div></div>
+    <div class="step"><span class="no">2</span><div class="body"><h3>Deploy your policy</h3><p><span class="mono">MyPolicy::new(escrow, escrow.policy_badge_resource(), link_registry)</span> — the policy makes an empty vault for the badge it's about to receive, and pins the shared LinkRegistry whose <span class="mono">chain_floor</span> it checks.</p></div></div>
+    <div class="step"><span class="no">3</span><div class="body"><h3>Governance approves it</h3><p>The admin calls <span class="mono">escrow.approve_policy(my_policy)</span> and routes the returned badge into <span class="mono">my_policy.receive_badge(badge)</span> in one transaction.</p></div></div>
+    <div class="step"><span class="no">4</span><div class="body"><h3>It's live</h3><p>Senders can now escrow deposits pinned to the policy, and the policy releases them by presenting its badge. No escrow redeploy, and existing deposits never move.</p></div></div>
+    <div class="note"><b>The badge is a bearer token.</b> Authority rests on holding the badge, so it stays in the policy's vault and is never withdrawn — the standard capability pattern. Governance vets a policy's code before approving it, because an approved policy can release the deposits pinned to it (never another policy's, never past <code>refund</code>).</div>
+
+    <p class="subhead">Deposits &amp; metadata</p>
+    <p class="section-lede">A deposit is <span class="mono">(sender, amount, refund_epoch, policy, metadata, created_epoch)</span>. The escrow stores it and checks the resource, minimum and refund epoch; everything feature-specific lives in <span class="mono">metadata</span>, which only the policy interprets. ClaimPolicy, for example, encodes the challenge window as a big-endian <span class="mono">u64</span>:</p>
+    <div class="note"><b>Bounded by design.</b> Metadata is capped at 256 bytes, a refund epoch can be at most 20&nbsp;000 epochs out, and each account holds at most 64 deposits <em>per policy</em> (512 in all). Lanes are per policy so that someone spamming dust under one feature can never block deposits for the same account under another. Each account's deposits sit in its own ledger NFT, whose id is the SHA-256 of the account id, so the worst a stranger can do is fill one account's lane, never the Escrow itself.</div>
+<pre><code><span class="tok-c">// sender side: a 3-epoch challenge window</span>
+<span class="tok-k">let</span> metadata = Bytes::<span class="tok-f">from_vec</span>(<span class="tok-n">3u64</span>.<span class="tok-f">to_be_bytes</span>().<span class="tok-f">to_vec</span>());
+
+<span class="tok-c">// policy side: read it back, empty/short means 0 = pay immediately</span>
+<span class="tok-k">fn</span> <span class="tok-f">window_of</span>(m: &<span class="tok-t">Bytes</span>) -> <span class="tok-t">u64</span> {
+    <span class="tok-k">let</span> b = m.<span class="tok-f">as_slice</span>();
+    <span class="tok-k">if</span> b.<span class="tok-f">len</span>() >= <span class="tok-n">8</span> { <span class="tok-t">u64</span>::<span class="tok-f">from_be_bytes</span>(b[..<span class="tok-n">8</span>].<span class="tok-f">try_into</span>().<span class="tok-f">unwrap</span>()) } <span class="tok-k">else</span> { <span class="tok-n">0</span> }
+}</code></pre>

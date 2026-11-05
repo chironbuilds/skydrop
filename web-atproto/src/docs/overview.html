@@ -1,0 +1,30 @@
+<h1>Identity the chain can check itself</h1>
+    <p class="section-lede">Bluesky accounts are anchored in cryptography the contract can reproduce. A <span class="mono">did:plc</span> is the hash of a signed genesis operation; the operation log yields the account's repo signing key; the repo commit is signed by that key and commits to a Merkle search tree; the path to a record authenticates its bytes. The layer walks that chain in WASM, so the proof stands on the account's own signatures — nothing else.</p>
+    <div class="grid g3">
+      <div class="card"><span class="tag">no oracle</span><h3>Self-contained proofs</h3><p>A claim carries the identity history, the signed commit and the MST path. Every signature is checked on-chain; no off-chain attester is trusted.</p></div>
+      <div class="card"><span class="tag">reusable</span><h3>One layer, many contracts</h3><p>A shared crate and an immutable Verifier component. Build a new feature against it without re-implementing any atproto crypto.</p></div>
+      <div class="card"><span class="tag">bounded</span><h3>Hardened for a VM</h3><p>Low-S signatures, hash-linked MST, depth and size caps on every input, DAG-CBOR with no indefinite lengths. Reviewed internally, with no third-party audit yet. See the <a href="/docs/security">trust boundaries</a>.</p></div>
+    </div>
+<h2 id="menu">Everything a contract can prove</h2>
+    <p class="section-lede">The layer exposes everything that is <em>anchored</em> and therefore provable trustlessly in WASM. The honest boundary matters: some atproto facts live in DNS or a PDS and cannot be proven on-chain — those are marked, and need an explicit attestation rather than a misleading check.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Capability</th><th>What it proves</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="m">verify_chain</td><td>A <span class="mono">did:plc</span> operation log is valid and yields the current repo signing key.</td><td><span class="pill ok">trustless</span></td></tr>
+          <tr><td class="m">prove_record</td><td>The account's repo contains a specific record at <span class="mono">collection/rkey</span>.</td><td><span class="pill ok">trustless</span></td></tr>
+          <tr><td class="m">prove_record_field</td><td>Proves a record and reads one field atomically — a post's text, a like's subject, any lexicon field = value.</td><td><span class="pill ok">trustless</span></td></tr>
+          <tr><td class="m">asserts_handle</td><td>The DID→handle <em>claim</em> (<span class="mono">alsoKnownAs</span>), anchored by the signed chain. It proves what the account says, not that it owns the handle: anyone can assert any handle in their own chain, so never gate funds on it.</td><td><span class="pill ok">trustless</span></td></tr>
+          <tr><td class="m">verify_service_auth</td><td>A PDS service-auth JWT signed by the repo key; returns iss / aud / exp / lxm.</td><td><span class="pill ok">trustless</span></td></tr>
+          <tr><td class="m">handle → DID</td><td>That a handle resolves back to a DID. Lives in DNS / HTTPS; WASM cannot fetch it.</td><td><span class="pill gate">attestation</span></td></tr>
+          <tr><td class="m">did:web</td><td>A <span class="mono">did:web</span> document. Trust rests on TLS/DNS control of a domain, not a hash.</td><td><span class="pill gate">attestation</span></td></tr>
+          <tr><td class="m">account status</td><td>Active / deactivated / takedown — PDS hosting state, not in the signed repo.</td><td><span class="pill gate">attestation</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+<h2>Where to go next</h2>
+<ul>
+  <li><a href="/campaigns">Run a campaign</a> without writing any code.</li>
+  <li><a href="/verify">Watch a proof run</a> on a real account.</li>
+  <li><a href="/docs/integrate">Write your own policy</a> on the same layer.</li>
+</ul>

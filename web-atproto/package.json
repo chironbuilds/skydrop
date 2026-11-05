@@ -1,0 +1,22 @@
+{
+  "name": "atproto-ootle-site",
+  "private": true,
+  "type": "module",
+  "version": "2.0.0",
+  "scripts": {
+    "dev": "vite --port 5195",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 5196",
+    "test": "tsx scripts/test-lib.ts"
+  },
+  "dependencies": {
+    "@ipld/car": "5.4.0",
+    "@ipld/dag-cbor": "9.2.2",
+    "multiformats": "13.3.2"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vite": "6.0.5"
+  }
+}

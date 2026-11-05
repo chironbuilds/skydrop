@@ -42,3 +42,41 @@ Reviewed 2026-10-11: the escrow contract (`bskyclaim`), the verifier (`atp-verif
 - No secrets in the repository or its history; the bot's `.env` is mode 600 and ignored by git.
 - Worker: share pages escape every value placed in HTML and in the redirect script; uploads must be JPEG, are served
   as `image/jpeg` with `nosniff`, and are capped at 90 KB.
+
+## Verifier-layer invariants (the reusable bsky→Ootle layer)
+
+As `atp-verify` grows into a general identity layer other contracts build on, these invariants must hold for every
+new verification path. They were checked for the existing paths (2026-10-18 audit: no cross-account forgery, panic
+or DoS found) and must be re-checked for each addition.
+
+- **Everything trusted is signature- or hash-bound.** The CBOR reader deliberately does *not* enforce DAG-CBOR
+  canonical form (minimal integers, sorted/unique keys). This is safe only because every datum the verifier trusts is
+  bound either by the account's own signature (PLC ops, repo commit) or by a hash (the DID = `sha256(genesis)`, MST
+  nodes keyed by `sha256`, prev-linkage CIDs). A non-canonical encoding therefore only lets an account mangle *its
+  own* data, never forge another account's. **Any new path that reads a field without a covering signature or hash
+  breaks this and must either add that binding or enforce canonical form.**
+- **Handle resolution is one-directional on-chain.** `also_known_as` / `chain_asserts_handle` read the DID→handle
+  claim from the signed PLC chain (anchored, trustless). The reverse — that a handle resolves *back* to this DID —
+  lives in DNS (`_atproto.<handle>` TXT) or HTTPS (`/.well-known/atproto-did`), which the chain does not anchor and
+  WASM cannot fetch. A contract must treat `chain_asserts_handle` as "the DID claims this handle", not "this handle is
+  verified", unless it also accepts an off-chain attestation of the reverse mapping.
+- **did:web is domain-trust, not hash-anchored.** Unlike `did:plc` (where `did = sha256(genesis)`), a `did:web`
+  identifier has no cryptographic link from the DID string to its `did.json`; trust rests on TLS/DNS control of the
+  domain, which cannot be verified in WASM. Any did:web support must surface this as a weaker trust tier (e.g. require
+  an explicit attestation of the `did.json`), never present it as equivalent to did:plc.
+- **Account status / takedown is not anchored.** Whether an account is active, deactivated or taken down is PDS
+  hosting state (`com.atproto.sync.getRepoStatus`), not part of the signed repo or PLC chain, so it cannot be proven
+  trustlessly in WASM. A contract needing it must accept an off-chain attestation; the Verifier must not expose a
+  trustless-looking "account is active" check.
+- **Service-auth JWT (`jwt::verify_service_auth`).** Checked sound: the signature is verified over the exact ASCII
+  `header.payload` with the account's chain-derived key, so the header `alg` is never trusted (a wrong curve just
+  fails — no alg-confusion). The payload JSON reader rejects duplicate keys (no claim shadowing), floats, negatives
+  and `\u` escapes. `exp` is returned, not clock-checked — the calling contract must compare it to its own time.
+
+## Campaign contract and Escrow capacity (2026-11-05, Ootle 0.49.2)
+
+- **Fixed: the shared Escrow could be filled.** A substate is capped at 1 MiB and all deposits lived in one component, at about 79 bytes each: roughly 10,000 deposits at most, so anyone could fill it with minimum-size deposits and block new ones for everyone until they refunded. Each account now has its own ledger NFT (id sha256(account_id)) holding its deposits and fees owed. Ledgers sit in a vault that's replaced after `ledger_vault_size` accounts, and returned deposits stay in the ledger, pinned to escrow itself and refundable at once, replacing the shared `returned` map. Measured: 30 new accounts and 60 deposits took the component from 419 to 421 bytes (counters only). The cost: a new account needs `open_account` first, because the engine can't ask whether an NFT exists. The worst griefing left is filling one account's lanes, which was already bounded.
+- **Open: LinkRegistry has the same shape.** Links and chain floors live in one component. Anyone can add entries with self-made identities for only the fee, every Campaign claim reads it for the floor, so bloat raises everyone's claim cost and a full registry stops new rotations being recorded. The Escrow's fix doesn't carry over directly, because a floor has to be readable for accounts never seen and there's no existence check. Fix before mainnet.
+- **Campaign avoids this by design.** Each campaign is its own component and records claims as receipt NFTs, so its state doesn't grow per claimant (5 claims: 358 to 362 bytes).
+- **Campaign limits, by design.** The order of steps can't be proven, because accounts sign their own timestamps. Nor can the wording of a reply, or that a record wasn't deleted after the proof; rounds require a newer commit, which someone holding their own repo key could still sign. Open campaigns are farmable since accounts are free; vouch rules and allocation lists are the defence.
+- **Mutation check.** `scripts/wsl-mutate-campaign.sh` removes each of 21 safety checks in turn. All 21 were caught by the test suite.

@@ -5,3 +5,5 @@ Cargo.lock
 .env
 bot/state.json
 web/dist/
+web-atproto/dist/
+.wrangler/

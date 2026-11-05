@@ -206,6 +206,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         link("#/send", "Send", "send"),
         link("#/claim", "Collect", "claim"),
         link("#/tips", "Tip by post", "tips"),
+        h("a", { href: "/quests" }, "My quests"),
         link("#/link", "Link wallet", "link", "hide-sm"),
         link("#/how", "How it works", "how", "hide-sm"),
         h("span", { class: "net hide-sm" }, "Testnet"),
@@ -220,7 +221,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
       "Tari testnet: tTARI has no monetary value.",
       h("br"),
       "Escrow contract ",
-      h("code", null, short(CONFIG.component, 18, 6)),
+      h("code", null, CONFIG.escrow ? short(CONFIG.escrow, 18, 6) : "not deployed yet"),
       " · verified on-chain, no oracle, no middleman",
     ),
   );
@@ -711,7 +712,7 @@ function renderSend(prefill?: string): void {
       const rec = { e: style.id, m: env.cleanNote(noteInput.value), c: coverId };
       const plain = env.isPlainEnvelope(rec);
       const envelope = plain ? "" : await env.envelopeHash(rec);
-      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge(), hold: hold(), envelope }, esc.epoch, say);
+      await chain.sendTip(wallet, { did: profile.did, amount: a, window: windowEpochs, challenge: challenge(), hold: hold(), envelope }, esc.epoch, !!esc.binding, say);
       if (!plain) void env.registerEnvelope(rec);
       await refreshBalance();
       done(profile, a, windowEpochs);
@@ -726,7 +727,7 @@ function renderSend(prefill?: string): void {
     confetti();
     const note = env.cleanNote(noteInput.value);
     const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId);
-    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, link your wallet first, then post this: ${challenge()}${hold() ? ` (and keep the post up for ${eta(hold())})` : ""}` : "");
+    const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, your claim post also has to say: ${challenge()}${hold() ? ` (and stay up for ${eta(hold())})` : ""}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
       card,
@@ -951,7 +952,7 @@ function renderLink(prefill?: string, flow = false): void {
   const load = async (): Promise<void> => {
     if (!profile) return mount(stepsEl);
     mount(stepsEl, h("div", { class: "skel" }));
-    code = await bsky.bindCode(CONFIG.component, profile.did, mine(), targetOwner);
+    code = await bsky.bindCode(CONFIG.link, profile.did, mine(), targetOwner);
     current = await chain.readBinding(provider, profile.did);
     draw();
   };
@@ -978,7 +979,7 @@ function renderLink(prefill?: string, flow = false): void {
     if (!addrProblem && profile && owner) {
       target = account;
       targetOwner = owner;
-      code = await bsky.bindCode(CONFIG.component, profile.did, target, targetOwner);
+      code = await bsky.bindCode(CONFIG.link, profile.did, target, targetOwner);
       changing = false;
     }
     draw();
@@ -1130,7 +1131,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   const load = async (): Promise<void> => {
     if (!profile) return mount(stepsEl);
     mount(stepsEl, h("div", { class: "skel" }), h("div", { class: "skel" }));
-    code = await bsky.claimCode(CONFIG.component, profile.did, pubKey);
+    code = await bsky.claimCode(CONFIG.claim, profile.did, pubKey);
     sponsorOk = wallet.account !== null && (await chain.readSponsorBalance(provider)) >= chain.SPONSOR_FEE * 3n;
     await reload();
   };
@@ -1247,7 +1248,10 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
         say("Submitting the proof. The contract checks every signature itself");
-        if (sponsorOk) {
+        if (!codeNow()) {
+          // a linked account's code-free post: the payout can only go to the linked wallet
+          await chain.startLinkedClaim(wallet, proof, say);
+        } else if (sponsorOk) {
           try {
             say("Network fees are covered for you");
             await chain.startClaimSponsored(wallet, proof, say);
@@ -1287,7 +1291,10 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       mount(collectBtn, ...spinnerLabel("Collecting…"));
       try {
         const attempt = async (): Promise<void> => {
-          if (sponsorOk) {
+          if (esc?.binding && esc.pending?.claimant === esc.bindingOwner) {
+            // a linked claim pays into the linked wallet, whoever submits it
+            await chain.finalizeToLinked(wallet, p.did, say, true);
+          } else if (sponsorOk) {
             try {
               say("Network fees are covered for you");
               await chain.finalizeClaimSponsored(wallet, p.did, say, true);

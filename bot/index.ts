@@ -22,7 +22,6 @@ import { fromHex } from "../web/src/cbor";
 import { envelopeHash, shareLink, type EnvelopeRecord } from "../web/src/envelope-data";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const COMPONENT = CONFIG.component;
 const POLL_MS = 60_000;
 const COOLDOWN_MS = 6 * 3600_000;
 const MAX_POSTS_PER_HOUR = 20;
@@ -86,23 +85,17 @@ interface Dep {
 }
 
 async function readDeposits(): Promise<Record<string, Dep[]>> {
-  const sub = await provider.getSubstate(COMPONENT);
-  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  if (!comp) throw new Error("escrow component unreadable");
-  const raw = comp.body.state[3] as Record<string, unknown[][]>;
+  const { deposits } = await chain.readStack(provider);
   const out: Record<string, Dep[]> = {};
-  for (const [did, list] of Object.entries(raw)) {
-    out[did] = list.map((d) => {
-      const sender = (d[0] as { hex: string }).hex;
-      return { fp: `${sender}:${d[1]}:${d[2]}:${d[3]}`, amount: BigInt(d[1] as number), window: Number(d[3]), challenge: String(d[4] ?? ""), hold: Number(d[5] ?? 0), envelope: d[7] ? (d[7] as { hex: string }).hex : "" };
-    });
+  for (const [did, list] of Object.entries(deposits)) {
+    out[did] = list.map((d) => ({ fp: `${d.sender}:${d.amount}:${d.refundEpoch}:${d.created}`, amount: d.amount, window: d.window, challenge: d.challenge, hold: d.hold, envelope: d.envelope }));
   }
   return out;
 }
 
 const agent = new AtpAgent({ service: "https://bsky.social" });
 let provider: IndexerProvider;
-/** Signs the relay transactions. It holds no funds: fees come from the escrow's fee vault and the tipper's budget. */
+/** Signs the relay transactions (tip relays, challenges, chain observations). It pays their small network fees, so keep a little tTARI in it. */
 let relayWallet: Wallet | null = null;
 
 const TIP_RE = /^@\S+\s+tip\s+@\S+\s+(\d+(?:\.\d{1,6})?)(?:\s+tTARI)?\s*$/i;
@@ -128,7 +121,7 @@ async function handleTip(n: Notif, ref: { uri: string; cid: string }, root: { ur
   if (!amount || !recipientDid) return true;
 
   const me = n.author.handle;
-  const budgets = (await chain.readBudgetsFor(provider, n.author.did)).filter(([, b]) => b.balance >= amount + chain.SPONSOR_FEE && b.maxTip >= amount);
+  const budgets = (await chain.readBudgetsFor(provider, n.author.did)).filter(([, b]) => b.balance >= amount && b.maxTip >= amount);
   if (!budgets.length) {
     await reply(`@${me} I can't tip from your account yet: no tip budget with enough in it (or the tip is over your per-tip limit). Set one up here: ${CLAIM_URL}/#/tips/${me}`);
     return true;
@@ -148,7 +141,8 @@ async function handleTip(n: Notif, ref: { uri: string; cid: string }, root: { ur
   const rkey = n.uri.split("/").pop()!;
   try {
     const proof = await bskyLib.buildClaimProof(n.author.did, rkey);
-    const out = await chain.relayTipSponsored(relayWallet, proof, fromHex(budgets[0]![0]), (s) => log("  ·", s));
+    // TipPolicy has no sponsored path: the relay wallet pays this small network fee itself.
+    const out = await chain.relayTip(relayWallet, proof, fromHex(budgets[0]![0]), (s) => log("  ·", s));
     log(`tipped ${fmt(amount)} from ${me}: ${out.transactionId}`);
     let recipient = recipientDid;
     try {
@@ -240,17 +234,17 @@ interface Paid {
   envelope: string;
 }
 
-/** Payments the contract sent straight to a linked wallet (state index 15). */
+/** Gifts ClaimPolicy delivered straight to a linked wallet (its delivery log). Plain gifts only, so no envelope. */
 async function readReceived(): Promise<Record<string, Paid[]>> {
-  const sub = await provider.getSubstate(COMPONENT);
-  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  const raw = (comp?.body.state[16] ?? {}) as Record<string, unknown[][]>;
+  const { delivered } = await chain.readStack(provider);
   const out: Record<string, Paid[]> = {};
-  for (const [did, list] of Object.entries(raw)) {
+  for (const [did, list] of Object.entries(delivered)) {
+    const seen = new Map<string, number>();
     out[did] = list.map((d) => {
-      const sender = (d[0] as { hex: string }).hex;
-      const fp = `${sender}:${d[1]}:${d[2]}:${d[3]}`;
-      return { key: `${fp}:${d[4]}`, fp, amount: BigInt(d[1] as number), envelope: d[5] ? (d[5] as { hex: string }).hex : "" };
+      const fp = `${d.sender}:${d.amount}:${d.epoch}`;
+      const nth = seen.get(fp) ?? 0;
+      seen.set(fp, nth + 1);
+      return { key: `${fp}:${nth}`, fp, amount: d.amount, envelope: "" };
     });
   }
   return out;
@@ -300,16 +294,12 @@ async function notifyReceived(): Promise<void> {
  */
 async function watchBindings(): Promise<void> {
   if (!LIVE || !relayWallet) return;
-  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(COMPONENT)]);
-  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  const bindings = (comp?.body.state[12] ?? {}) as Record<string, unknown[]>;
-  const proofs = (comp?.body.state[13] ?? {}) as Record<string, unknown[]>;
+  const { epoch, bindings } = await chain.readStack(provider);
   for (const [did, b] of Object.entries(bindings)) {
-    if (Number(epoch) >= Number(b[1])) continue;
-    const pr = proofs[did];
-    if (!pr) continue;
-    const reliedOn = (pr[0] as { hex: string }).hex;
-    const len = Number(pr[1]);
+    if (Number(epoch) >= b.effective) continue;
+    if (!b.tipHex) continue;
+    const reliedOn = b.tipHex;
+    const len = b.len;
     const now = await bskyLib.currentChain(did);
     if (now.ops.length >= len && now.tipHex !== reliedOn) {
       log(`cancelling a link for ${did}: its operation chain has changed`);
@@ -330,17 +320,14 @@ async function watchBindings(): Promise<void> {
  */
 async function watchClaims(): Promise<void> {
   if (!LIVE || !relayWallet) return;
-  const [epoch, sub] = await Promise.all([provider.getCurrentEpoch(), provider.getSubstate(COMPONENT)]);
-  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  const deposits = (comp?.body.state[3] ?? {}) as Record<string, unknown[][]>;
-  const pending = (comp?.body.state[4] ?? {}) as Record<string, unknown[]>;
+  const { epoch, deposits, pending } = await chain.readStack(provider);
   for (const [did, p] of Object.entries(pending)) {
-    const start = Number(p[3]);
-    const longest = Math.max(0, ...(deposits[did] ?? []).map((d) => Number(d[3])));
+    const start = p.start;
+    const longest = Math.max(0, ...(deposits[did] ?? []).map((d) => d.window));
     // a claim can only be challenged while some deposit's window is still open
     if (Number(epoch) >= start + longest) continue;
-    const reliedOn = (p[1] as { hex: string }).hex;
-    const len = Number(p[2]);
+    const reliedOn = p.tipHex;
+    const len = p.len;
     const now = await bskyLib.currentChain(did);
     if (now.ops.length >= len && now.tipHex !== reliedOn) {
       log(`cancelling a claim on ${did}: its operation chain has changed`);
@@ -362,12 +349,12 @@ async function watchClaims(): Promise<void> {
  */
 async function observeChains(): Promise<void> {
   if (!LIVE || !relayWallet) return;
-  const sub = await provider.getSubstate(COMPONENT);
-  const comp = (sub.substate as { Component?: { body: { state: unknown[] } } }).Component;
-  const known = (comp?.body.state[5] ?? {}) as Record<string, number>;
-  const bindings = Object.keys((comp?.body.state[12] ?? {}) as Record<string, unknown>);
-  const budgets = Object.keys((comp?.body.state[8] ?? {}) as Record<string, unknown>).map((k) => k.split(":")[0]!);
-  const waiting = Object.keys((comp?.body.state[3] ?? {}) as Record<string, unknown>);
+  // The registry's chain floor is what every policy checks, so recording a newer chain there protects all of them.
+  const snap = await chain.readStack(provider);
+  const known = snap.chainFloor;
+  const bindings = Object.keys(snap.bindings);
+  const budgets = snap.budgetDids;
+  const waiting = Object.keys(snap.deposits);
   state.observedAt ??= {};
   state.observeTimes = (state.observeTimes ?? []).filter((t) => Date.now() - t < 24 * 3600_000);
   for (const did of new Set([...bindings, ...budgets, ...waiting])) {

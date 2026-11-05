@@ -16,7 +16,7 @@ console.log("balance", formatTari(await w.balance()));
 if (!process.env.REFUND) {
   CONFIG.refundAfterEpochs = 1;
   const esc = await chain.readEscrow(provider, DID);
-  await chain.sendTip(w, { did: DID, amount: 10_000n, window: 0, challenge: process.env.CHALLENGE ?? "" }, esc.epoch, (s) => console.log("  ·", s));
+  await chain.sendTip(w, { did: DID, amount: 10_000n, window: 0, challenge: process.env.CHALLENGE ?? "" }, esc.epoch, !!esc.binding, (s) => console.log("  ·", s));
   console.log("deposited 0.01, epoch", esc.epoch);
   await new Promise((r) => setTimeout(r, 3000));
 }

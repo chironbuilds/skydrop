@@ -19,7 +19,7 @@ const provider = await acct.getProvider();
 let esc = await readEscrow(provider, prof.did);
 console.log("escrow before", esc.deposits.length, "epoch", esc.epoch);
 
-const tip = await sendTip(w, { did: prof.did, amount: 2000n, window: 0 }, esc.epoch, (s) => console.log("  ·", s));
+const tip = await sendTip(w, { did: prof.did, amount: 2000n, window: 0 }, esc.epoch, !!esc.binding, (s) => console.log("  ·", s));
 console.log("tip tx", tip.transactionId);
 await new Promise((r) => setTimeout(r, 3000));
 esc = await readEscrow(provider, prof.did);
@@ -38,5 +38,5 @@ try {
 } catch (e) {
   console.log("claim rejected as expected:", friendly(e));
 }
-const code = await claimCode(CONFIG.component, prof.did, await acct.getPublicKey());
+const code = await claimCode(CONFIG.claim, prof.did, await acct.getPublicKey());
 console.log("code for this wallet:", code);

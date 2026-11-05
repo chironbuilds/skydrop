@@ -1,0 +1,760 @@
+
+// ---- records ---------------------------------------------------------------------------------------
+const NOW: &str = "2026-11-05T00:00:00.000Z";
+const TARGET: &str = "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3jtarget00000";
+const PEER: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
+const R1: &str = "3jaaaaaaaaaaa";
+const R2: &str = "3jbbbbbbbbbbb";
+const R3: &str = "3jccccccccccc";
+const R4: &str = "3jddddddddddd";
+
+impl Account {
+    fn like(&self, target: &str, rkey: &str) -> Post {
+        self.record_at("app.bsky.feed.like", cbor(&V::M(vec![("$type", V::T("app.bsky.feed.like".into())), ("subject", V::M(vec![("uri", V::T(target.into()))])), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn follow(&self, did: &str, rkey: &str) -> Post {
+        self.record_at("app.bsky.graph.follow", cbor(&V::M(vec![("$type", V::T("app.bsky.graph.follow".into())), ("subject", V::T(did.into())), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn reply(&self, parent: &str, rkey: &str) -> Post {
+        let r = |u: &str| V::M(vec![("uri", V::T(u.into())), ("cid", V::T("bafy".into()))]);
+        self.record_at("app.bsky.feed.post", cbor(&V::M(vec![("$type", V::T("app.bsky.feed.post".into())), ("text", V::T("nice".into())), ("reply", V::M(vec![("root", r(parent)), ("parent", r(parent))])), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn quote(&self, target: &str, rkey: &str) -> Post {
+        let embed = V::M(vec![("$type", V::T("app.bsky.embed.record".into())), ("record", V::M(vec![("uri", V::T(target.into())), ("cid", V::T("bafy".into()))]))]);
+        self.record_at("app.bsky.feed.post", cbor(&V::M(vec![("$type", V::T("app.bsky.feed.post".into())), ("text", V::T("look".into())), ("embed", embed), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn quote_with_media(&self, target: &str, rkey: &str) -> Post {
+        let inner = V::M(vec![("uri", V::T(target.into())), ("cid", V::T("bafy".into()))]);
+        let embed = V::M(vec![("$type", V::T("app.bsky.embed.recordWithMedia".into())), ("record", V::M(vec![("record", inner)]))]);
+        self.record_at("app.bsky.feed.post", cbor(&V::M(vec![("$type", V::T("app.bsky.feed.post".into())), ("text", V::T("look".into())), ("embed", embed), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn list_item(&self, member: &str, list: &str, rkey: &str) -> Post {
+        self.record_at("app.bsky.graph.listitem", cbor(&V::M(vec![("$type", V::T("app.bsky.graph.listitem".into())), ("subject", V::T(member.into())), ("list", V::T(list.into())), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+    fn verification(&self, member: &str, rkey: &str) -> Post {
+        self.record_at("app.bsky.graph.verification", cbor(&V::M(vec![("$type", V::T("app.bsky.graph.verification".into())), ("subject", V::T(member.into())), ("handle", V::T("alice.test".into())), ("displayName", V::T("Alice".into())), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+}
+
+// ---- campaign harness ------------------------------------------------------------------------------
+const MILLION: u64 = 1_000_000;
+
+struct Setup { test: TemplateTest, registry: ComponentAddress, funder: U }
+
+fn setup() -> Setup {
+    let mut test = TemplateTest::new(CRATE_PATH, [CAMPAIGN, LINK]);
+    set_epoch(&mut test, 1);
+    let link_t = test.get_template_address("LinkRegistry");
+    let funder = user(&mut test);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&funder.key);
+    test.execute_expect_success(tx, vec![funder.badge.clone()]);
+    let registry = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
+    Setup { test, registry, funder }
+}
+
+#[derive(Clone)]
+struct Terms {
+    rules: Vec<(u8, String, u64)>,
+    reward: u64,
+    root: Vec<u8>,
+    rounds: u16,
+    round_epochs: u64,
+    bonus: u64,
+    max_referrals: u32,
+    open: u64,
+    close: u64,
+    funds: u64,
+    texts: Vec<String>,
+    groups: Vec<u8>,
+}
+
+fn terms(rules: Vec<(u8, String, u64)>) -> Terms {
+    Terms { rules, reward: MILLION, root: vec![], rounds: 1, round_epochs: 0, bonus: 0, max_referrals: 0, open: 0, close: 100, funds: 10 * MILLION, texts: vec![], groups: vec![] }
+}
+
+fn create(s: &mut Setup, t: &Terms) -> ComponentAddress {
+    let tx = create_tx(s, t);
+    let badge = s.funder.badge.clone();
+    s.test.execute_expect_success(tx, vec![badge]);
+    s.test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap()
+}
+
+fn create_tx(s: &Setup, t: &Terms) -> tari_ootle_transaction::Transaction {
+    let kinds: Vec<u8> = t.rules.iter().map(|r| r.0).collect();
+    let targets: Vec<String> = t.rules.iter().map(|r| r.1.clone()).collect();
+    let snaps: Vec<u64> = t.rules.iter().map(|r| r.2).collect();
+    let texts: Vec<String> = (0..t.rules.len()).map(|i| t.texts.get(i).cloned().unwrap_or_default()).collect();
+    let groups: Vec<u8> = (0..t.rules.len()).map(|i| t.groups.get(i).copied().unwrap_or(0)).collect();
+    let tmpl = s.test.get_template_address("Campaign");
+    s.test.transaction()
+        .call_method(s.funder.account, "withdraw", args![TARI_TOKEN, Amount::from(t.funds)])
+        .put_last_instruction_output_on_workspace("funds")
+        .call_function(tmpl, "create", args![
+            "Launch quest".to_string(), "https://example.test/q".to_string(), s.funder.id, s.registry, kinds, targets, snaps, texts, groups,
+            Amount::from(t.reward), Bytes::from_vec(t.root.clone()), t.rounds, t.round_epochs, Amount::from(t.bonus), t.max_referrals, t.open, t.close,
+            Workspace("funds")
+        ])
+        .build_and_seal(&s.funder.key)
+}
+
+fn proofs(posts: &[&Post]) -> (Vec<Bytes>, Vec<Vec<Bytes>>, Vec<Bytes>, Vec<String>) {
+    (
+        posts.iter().map(|p| Bytes::from_vec(p.commit.clone())).collect(),
+        posts.iter().map(|p| bytes_list(&p.nodes)).collect(),
+        posts.iter().map(|p| Bytes::from_vec(p.record.clone())).collect(),
+        posts.iter().map(|p| p.rkey.clone()).collect(),
+    )
+}
+
+struct Claim<'a> { rules: Vec<&'a Post>, vouch: Vec<Vec<Bytes>>, amount: u64, path: Vec<Bytes>, referrer: Option<String> }
+fn simple<'a>(rules: Vec<&'a Post>) -> Claim<'a> { Claim { rules, vouch: vec![], amount: 0, path: vec![], referrer: None } }
+
+fn claim_tx(test: &TemplateTest, camp: ComponentAddress, acct: &Account, u: &U, code: &Post, c: &Claim) -> tari_ootle_transaction::Transaction {
+    let (commits, nodes, records, rkeys) = proofs(&c.rules);
+    test.transaction()
+        .call_method(camp, "claim", args![
+            acct.did.clone(), u.id, u.account, bytes_list(&acct.ops), commits, nodes, records, rkeys, c.vouch.clone(),
+            Bytes::from_vec(code.commit.clone()), bytes_list(&code.nodes), Bytes::from_vec(code.record.clone()), code.rkey.clone(),
+            c.amount, c.path.clone(), c.referrer.clone()
+        ])
+        .build_and_seal(&u.key)
+}
+
+fn claim_ok(s: &mut Setup, camp: ComponentAddress, acct: &Account, u: &U, code: &Post, c: &Claim) {
+    let tx = claim_tx(&s.test, camp, acct, u, code, c);
+    s.test.execute_expect_success(tx, vec![u.badge.clone()]);
+}
+
+/// Asserts failure *for the expected reason*, so a test can't pass because of some unrelated error.
+fn fail_with(test: &mut TemplateTest, tx: tari_ootle_transaction::Transaction, badge: NonFungibleAddress, why: &str) {
+    let reason = format!("{:?}", test.execute_expect_failure(tx, vec![badge]));
+    assert!(reason.contains(why), "expected failure {why:?}, got: {reason}");
+}
+
+fn code_of(test: &mut TemplateTest, camp: ComponentAddress, acct: &Account, u: &U, round: u16) -> String {
+    test.call_method(camp, "expected_post_text", args![acct.did.clone(), u.id, round], vec![])
+}
+
+fn bal(test: &mut TemplateTest, u: &U) -> Amount {
+    test.call_method::<Amount>(u.account, "balance", args![TARI_TOKEN], vec![])
+}
+
+// ---- tests -----------------------------------------------------------------------------------------
+
+#[test]
+fn a_quest_pays_once_per_account_only_when_every_rule_is_proven() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0), (1, TARGET.into(), 0), (2, PEER.into(), 0)]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let cp = acct.post(&code, R1);
+    let (like, repost, follow) = (acct.like(TARGET, R2), acct.repost(TARGET, R3), acct.follow(PEER, R4));
+
+    // a like of the wrong post does not satisfy the rule
+    let wrong = acct.like("at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/3jother0000000", R2);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&wrong, &repost, &follow]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    // a missing rule proof is refused
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&like, &repost]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "one proof per rule");
+    // a proof from someone else's repo is refused
+    let stranger = Account::new();
+    let theirs = stranger.like(TARGET, R2);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&theirs, &repost, &follow]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "invalid repo commit");
+
+    let before = bal(&mut s.test, &u);
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&like, &repost, &follow]));
+    println!("three-rule claim points: {:?}", s.test.last_execution_points());
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
+
+    // the receipt arrived and is the only thing recording the claim
+    let receipts: ResourceAddress = s.test.call_method(camp, "receipt_resource", args![], vec![]);
+    assert_eq!(s.test.call_method::<Amount>(u.account, "balance", args![receipts], vec![]), Amount::from(1u64));
+
+    // a second claim fails even from a different wallet with its own valid code post
+    let u2 = user(&mut s.test);
+    let code2 = code_of(&mut s.test, camp, &acct, &u2, 0);
+    let cp2 = acct.post(&code2, R1);
+    let tx = claim_tx(&s.test, camp, &acct, &u2, &cp2, &simple(vec![&like, &repost, &follow]));
+    s.test.execute_expect_failure(tx, vec![u2.badge.clone()]);
+    let (claimants, payments, paid, _, _, _): (u64, u64, Amount, Amount, u64, u64) = s.test.call_method(camp, "stats", args![], vec![]);
+    assert_eq!((claimants, payments, paid), (1, 1, Amount::from(MILLION)));
+}
+
+#[test]
+fn nobody_can_take_a_claim_with_someone_elses_code_post() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let acct = Account::new();
+    let (victim, thief) = (user(&mut s.test), user(&mut s.test));
+    let code = code_of(&mut s.test, camp, &acct, &victim, 0);
+    let (cp, like) = (acct.post(&code, R1), acct.like(TARGET, R2));
+    // the thief replays the victim's public proofs, signing with their own key
+    let tx = claim_tx(&s.test, camp, &acct, &thief, &cp, &simple(vec![&like]));
+    fail_with(&mut s.test, tx, thief.badge.clone(), "claim code");
+    // naming the victim as claimant without the victim's signature fails too
+    let forged = U { account: thief.account, badge: thief.badge.clone(), key: thief.key.clone(), id: victim.id };
+    let tx = claim_tx(&s.test, camp, &acct, &forged, &cp, &simple(vec![&like]));
+    s.test.execute_expect_failure(tx, vec![thief.badge.clone()]);
+    // the owner of the code can still claim
+    claim_ok(&mut s, camp, &acct, &victim, &cp, &simple(vec![&like]));
+}
+
+#[test]
+fn replies_quotes_and_posts_each_prove_their_rule() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(4, TARGET.into(), 0), (5, TARGET.into(), 0), (3, "#OotleLaunch".into(), 0)]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, reply, quote) = (acct.post(&code, R1), acct.reply(TARGET, R2), acct.quote(TARGET, R3));
+
+    // a post without the required text fails
+    let plain = acct.post("hello", R4);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&reply, &quote, &plain]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    // a reply to something else fails
+    let other_reply = acct.reply("at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/3jother0000000", R2);
+    let hashtag = acct.post("gm #OotleLaunch", R4);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&other_reply, &quote, &hashtag]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&reply, &quote, &hashtag]));
+
+    // a quote with media nests the record one level deeper and counts too
+    let camp2 = create(&mut s, &terms(vec![(5, TARGET.into(), 0)]));
+    let acct2 = Account::new();
+    let u2 = user(&mut s.test);
+    let code2 = code_of(&mut s.test, camp2, &acct2, &u2, 0);
+    let (cp2, q2) = (acct2.post(&code2, R1), acct2.quote_with_media(TARGET, R2));
+    claim_ok(&mut s, camp2, &acct2, &u2, &cp2, &simple(vec![&q2]));
+}
+
+#[test]
+fn vouch_rules_need_the_vouchers_own_signed_record() {
+    let mut s = setup();
+    let org = Account::new();
+    let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
+    let snapshot = T0 - 1;
+    let camp = create(&mut s, &terms(vec![(6, list.clone(), snapshot), (7, org.did.clone(), 0), (8, org.did.clone(), 0)]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let cp = acct.post(&code, R1);
+    let vouch = || vec![bytes_list(&org.ops), bytes_list(&org.ops), bytes_list(&org.ops)];
+    let (item, follow, verified) = (org.list_item(&acct.did, &list, R2), org.follow(&acct.did, R3), org.verification(&acct.did, R4));
+
+    // the claimant cannot vouch for themselves: the same records in their own repo fail
+    let self_item = acct.list_item(&acct.did, &list, R2);
+    let c = Claim { rules: vec![&self_item, &follow, &verified], vouch: vouch(), amount: 0, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "invalid voucher proof");
+    // a vouch for another member fails
+    let other_item = org.list_item(PEER, &list, R2);
+    let c = Claim { rules: vec![&other_item, &follow, &verified], vouch: vouch(), amount: 0, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "vouches for another account");
+    // an item on another of the org's lists fails
+    let wrong_list = org.list_item(&acct.did, &format!("at://{}/app.bsky.graph.list/3jother000000", org.did), R2);
+    let c = Claim { rules: vec![&wrong_list, &follow, &verified], vouch: vouch(), amount: 0, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "another list");
+
+    let c = Claim { rules: vec![&item, &follow, &verified], vouch: vouch(), amount: 0, path: vec![], referrer: None };
+    claim_ok(&mut s, camp, &acct, &u, &cp, &c);
+
+    // a list proof from before the snapshot is refused
+    let late = create(&mut s, &terms(vec![(6, list.clone(), T0 + 1)]));
+    let acct2 = Account::new();
+    let u2 = user(&mut s.test);
+    let code2 = code_of(&mut s.test, late, &acct2, &u2, 0);
+    let cp2 = acct2.post(&code2, R1);
+    let item2 = org.list_item(&acct2.did, &list, R2);
+    let c = Claim { rules: vec![&item2], vouch: vec![bytes_list(&org.ops)], amount: 0, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, late, &acct2, &u2, &cp2, &c);
+    fail_with(&mut s.test, tx, u2.badge.clone(), "predates");
+}
+
+fn leaf(did: &str, amount: u64) -> [u8; 32] {
+    let mut d = vec![0u8];
+    d.extend_from_slice(did.as_bytes());
+    d.push(0);
+    d.extend_from_slice(&amount.to_be_bytes());
+    sha(&d)
+}
+fn inner(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+    let (x, y) = if a <= b { (a, b) } else { (b, a) };
+    let mut d = vec![1u8];
+    d.extend_from_slice(&x);
+    d.extend_from_slice(&y);
+    sha(&d)
+}
+
+#[test]
+fn allocation_lists_pay_each_account_its_own_amount() {
+    let mut s = setup();
+    let (a, b) = (Account::new(), Account::new());
+    let (la, lb) = (leaf(&a.did, 3 * MILLION), leaf(&b.did, 5 * MILLION));
+    let mut t = terms(vec![(0, TARGET.into(), 0)]);
+    t.reward = 0;
+    t.root = inner(la, lb).to_vec();
+    let camp = create(&mut s, &t);
+
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &a, &u, 0);
+    let (cp, like) = (a.post(&code, R1), a.like(TARGET, R2));
+    // claiming more than allocated fails
+    let c = Claim { rules: vec![&like], vouch: vec![], amount: 5 * MILLION, path: vec![Bytes::from_vec(lb.to_vec())], referrer: None };
+    let tx = claim_tx(&s.test, camp, &a, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "not on the allocation list");
+    // an inner node can't stand in as a leaf
+    let c = Claim { rules: vec![&like], vouch: vec![], amount: 3 * MILLION, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, camp, &a, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "not on the allocation list");
+
+    let before = bal(&mut s.test, &u);
+    let c = Claim { rules: vec![&like], vouch: vec![], amount: 3 * MILLION, path: vec![Bytes::from_vec(lb.to_vec())], referrer: None };
+    claim_ok(&mut s, camp, &a, &u, &cp, &c);
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(3 * MILLION));
+}
+
+#[test]
+fn rounds_need_time_a_new_post_and_newer_proofs() {
+    let mut s = setup();
+    let mut t = terms(vec![(0, TARGET.into(), 0)]);
+    t.rounds = 3;
+    t.round_epochs = 10;
+    let camp = create(&mut s, &t);
+    let mut acct = Account::new();
+    let u = user(&mut s.test);
+    let code0 = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp0, like0) = (acct.post(&code0, R1), acct.like(TARGET, R2));
+    claim_ok(&mut s, camp, &acct, &u, &cp0, &simple(vec![&like0]));
+
+    let round = |test: &TemplateTest, acct: &Account, code: &Post, like: &Post| {
+        let (commits, nodes, records, rkeys) = proofs(&[like]);
+        test.transaction()
+            .call_method(camp, "claim_round", args![
+                acct.did.clone(), u.id, bytes_list(&acct.ops), commits, nodes, records, rkeys, Vec::<Vec<Bytes>>::new(),
+                Bytes::from_vec(code.commit.clone()), bytes_list(&code.nodes), Bytes::from_vec(code.record.clone()), code.rkey.clone(),
+                0u64, Vec::<Bytes>::new()
+            ])
+            .build_and_seal(&u.key)
+    };
+
+    let code1 = code_of(&mut s.test, camp, &acct, &u, 1);
+    acct.rev = T0 + 1_000_000;
+    let (cp1, like1) = (acct.post(&code1, R3), acct.like(TARGET, R2));
+    // too soon
+    let tx = round(&s.test, &acct, &cp1, &like1);
+    fail_with(&mut s.test, tx, u.badge.clone(), "not open yet");
+    set_epoch(&mut s.test, 11);
+    // round 0's code does not open round 1
+    let tx = round(&s.test, &acct, &cp0, &like1);
+    fail_with(&mut s.test, tx, u.badge.clone(), "claim code");
+    // round 0's old commit does not re-prove the rule
+    let tx = round(&s.test, &acct, &cp1, &like0);
+    fail_with(&mut s.test, tx, u.badge.clone(), "not newer");
+    let before = bal(&mut s.test, &u);
+    let tx = round(&s.test, &acct, &cp1, &like1);
+    s.test.execute_expect_success(tx, vec![u.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
+
+    // third and last round, then nothing more
+    set_epoch(&mut s.test, 21);
+    let code2 = code_of(&mut s.test, camp, &acct, &u, 2);
+    acct.rev = T0 + 2_000_000;
+    let (cp2, like2) = (acct.post(&code2, R4), acct.like(TARGET, R2));
+    let tx = round(&s.test, &acct, &cp2, &like2);
+    s.test.execute_expect_success(tx, vec![u.badge.clone()]);
+    set_epoch(&mut s.test, 31);
+    acct.rev = T0 + 3_000_000;
+    let (cp3, like3) = (acct.post(&code2, R4), acct.like(TARGET, R2));
+    let tx = round(&s.test, &acct, &cp3, &like3);
+    fail_with(&mut s.test, tx, u.badge.clone(), "every round");
+}
+
+#[test]
+fn referrals_pay_the_referrer_up_to_its_limit() {
+    let mut s = setup();
+    let mut t = terms(vec![(0, TARGET.into(), 0)]);
+    t.bonus = 200_000;
+    t.max_referrals = 1;
+    let camp = create(&mut s, &t);
+    let (a, b, c_acct) = (Account::new(), Account::new(), Account::new());
+    let (ua, ub, uc) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    let make = |test: &mut TemplateTest, acct: &Account, u: &U| {
+        let code = code_of(test, camp, acct, u, 0);
+        (acct.post(&code, R1), acct.like(TARGET, R2))
+    };
+    let (acp, alike) = make(&mut s.test, &a, &ua);
+    // naming a referrer who has not claimed fails
+    let c = Claim { rules: vec![&alike], vouch: vec![], amount: 0, path: vec![], referrer: Some(b.did.clone()) };
+    let tx = claim_tx(&s.test, camp, &a, &ua, &acp, &c);
+    s.test.execute_expect_failure(tx, vec![ua.badge.clone()]);
+    // naming yourself fails
+    let c = Claim { rules: vec![&alike], vouch: vec![], amount: 0, path: vec![], referrer: Some(a.did.clone()) };
+    let tx = claim_tx(&s.test, camp, &a, &ua, &acp, &c);
+    fail_with(&mut s.test, tx, ua.badge.clone(), "refer itself");
+    claim_ok(&mut s, camp, &a, &ua, &acp, &simple(vec![&alike]));
+
+    let before = bal(&mut s.test, &ua);
+    let (bcp, blike) = make(&mut s.test, &b, &ub);
+    let c = Claim { rules: vec![&blike], vouch: vec![], amount: 0, path: vec![], referrer: Some(a.did.clone()) };
+    claim_ok(&mut s, camp, &b, &ub, &bcp, &c);
+    assert_eq!(bal(&mut s.test, &ua), before + Amount::from(200_000u64));
+
+    // the referrer is at its limit, so a further referral is refused
+    let (ccp, clike) = make(&mut s.test, &c_acct, &uc);
+    let c = Claim { rules: vec![&clike], vouch: vec![], amount: 0, path: vec![], referrer: Some(a.did.clone()) };
+    let tx = claim_tx(&s.test, camp, &c_acct, &uc, &ccp, &c);
+    fail_with(&mut s.test, tx, uc.badge.clone(), "all its referrals");
+}
+
+#[test]
+fn a_linked_account_claims_through_a_relayer_and_is_paid_directly() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let acct = Account::new();
+    let (owner, relayer) = (user(&mut s.test), user(&mut s.test));
+    let like = acct.like(TARGET, R2);
+    let relay = |test: &TemplateTest, like: &Post| {
+        let (commits, nodes, records, rkeys) = proofs(&[like]);
+        test.transaction()
+            .call_method(camp, "claim_linked", args![acct.did.clone(), bytes_list(&acct.ops), commits, nodes, records, rkeys, Vec::<Vec<Bytes>>::new(), 0u64, Vec::<Bytes>::new(), Option::<String>::None])
+            .build_and_seal(&relayer.key)
+    };
+    // no link yet: refused
+    let tx = relay(&s.test, &like);
+    fail_with(&mut s.test, tx, relayer.badge.clone(), "has not linked");
+
+    let bind: String = s.test.call_method(s.registry, "expected_bind_text", args![acct.did.clone(), owner.account, owner.id], vec![]);
+    let bp = acct.post(&bind, R1);
+    let tx = s.test.transaction()
+        .call_method(s.registry, "bind", args![acct.did.clone(), owner.account, owner.id, bytes_list(&acct.ops), Bytes::from_vec(bp.commit.clone()), bytes_list(&bp.nodes), Bytes::from_vec(bp.record.clone()), bp.rkey.clone()])
+        .build_and_seal(&owner.key);
+    s.test.execute_expect_success(tx, vec![owner.badge.clone()]);
+
+    let before = bal(&mut s.test, &owner);
+    let relayer_before = bal(&mut s.test, &relayer);
+    let tx = relay(&s.test, &like);
+    s.test.execute_expect_success(tx, vec![relayer.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &owner), before + Amount::from(MILLION));
+    assert_eq!(bal(&mut s.test, &relayer), relayer_before);
+}
+
+#[test]
+fn a_rotated_away_key_proves_nothing() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let mut acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, like, old_ops) = (acct.post(&code, R1), acct.like(TARGET, R2), acct.ops.clone());
+    acct.rotate();
+    let reporter = user(&mut s.test);
+    let tx = s.test.transaction().call_method(s.registry, "observe_chain", args![acct.did.clone(), bytes_list(&acct.ops)]).build_and_seal(&reporter.key);
+    s.test.execute_expect_success(tx, vec![reporter.badge.clone()]);
+    // the stolen key still signs fine, with the old chain: refused
+    let stale = Account { did: acct.did.clone(), ops: old_ops, repo_key: acct.repo_key.clone(), rotation_key: acct.rotation_key.clone(), rev: acct.rev };
+    let tx = claim_tx(&s.test, camp, &stale, &u, &cp, &simple(vec![&like]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "stale operation chain");
+}
+
+#[test]
+fn the_funder_is_held_to_the_window_and_only_the_funder_gets_the_rest() {
+    let mut s = setup();
+    let mut t = terms(vec![(0, TARGET.into(), 0)]);
+    t.open = 5;
+    t.close = 20;
+    t.funds = MILLION + 500_000;
+    let camp = create(&mut s, &t);
+    let (a, b) = (Account::new(), Account::new());
+    let (ua, ub) = (user(&mut s.test), user(&mut s.test));
+    let code = code_of(&mut s.test, camp, &a, &ua, 0);
+    let (cp, like) = (a.post(&code, R1), a.like(TARGET, R2));
+
+    // not open yet
+    let tx = claim_tx(&s.test, camp, &a, &ua, &cp, &simple(vec![&like]));
+    fail_with(&mut s.test, tx, ua.badge.clone(), "not opened");
+    set_epoch(&mut s.test, 5);
+    // the funder cannot pull the pool while it is open
+    let close = |s: &Setup| s.test.transaction().call_method(camp, "close", args![]).put_last_instruction_output_on_workspace("back").call_method(s.funder.account, "deposit", args![Workspace("back")]).build_and_seal(&s.funder.key);
+    let tx = close(&s);
+    let fb = s.funder.badge.clone();
+    fail_with(&mut s.test, tx, fb.clone(), "has not closed");
+    // the close epoch can't move earlier
+    let tx = s.test.transaction().call_method(camp, "extend", args![10u64]).build_and_seal(&s.funder.key);
+    fail_with(&mut s.test, tx, fb.clone(), "only move later");
+    claim_ok(&mut s, camp, &a, &ua, &cp, &simple(vec![&like]));
+
+    // only 0.5 left, so the next full reward is refused rather than underpaid
+    let codeb = code_of(&mut s.test, camp, &b, &ub, 0);
+    let (cpb, likeb) = (b.post(&codeb, R1), b.like(TARGET, R2));
+    let tx = claim_tx(&s.test, camp, &b, &ub, &cpb, &simple(vec![&likeb]));
+    fail_with(&mut s.test, tx, ub.badge.clone(), "exhausted");
+
+    // anyone can top up, then the claim works
+    let tx = s.test.transaction()
+        .call_method(ub.account, "withdraw", args![TARI_TOKEN, Amount::from(MILLION)])
+        .put_last_instruction_output_on_workspace("f")
+        .call_method(camp, "top_up", args![Workspace("f")])
+        .build_and_seal(&ub.key);
+    s.test.execute_expect_success(tx, vec![ub.badge.clone()]);
+    claim_ok(&mut s, camp, &b, &ub, &cpb, &simple(vec![&likeb]));
+    assert_eq!(s.test.call_method::<Amount>(camp, "balance", args![], vec![]), Amount::from(500_000u64));
+
+    // after close: no more claims, a stranger can't take the rest, the funder can
+    set_epoch(&mut s.test, 20);
+    let c = Account::new();
+    let uc = user(&mut s.test);
+    let codec = code_of(&mut s.test, camp, &c, &uc, 0);
+    let (cpc, likec) = (c.post(&codec, R1), c.like(TARGET, R2));
+    let tx = claim_tx(&s.test, camp, &c, &uc, &cpc, &simple(vec![&likec]));
+    fail_with(&mut s.test, tx, uc.badge.clone(), "has closed");
+    let tx = s.test.transaction().call_method(camp, "close", args![]).put_last_instruction_output_on_workspace("back").call_method(uc.account, "deposit", args![Workspace("back")]).build_and_seal(&uc.key);
+    s.test.execute_expect_failure(tx, vec![uc.badge.clone()]);
+    let before = bal(&mut s.test, &U { account: s.funder.account, badge: fb.clone(), key: s.funder.key.clone(), id: s.funder.id });
+    let tx = close(&s);
+    s.test.execute_expect_success(tx, vec![fb.clone()]);
+    let after = bal(&mut s.test, &U { account: s.funder.account, badge: fb, key: s.funder.key.clone(), id: s.funder.id });
+    assert_eq!(after, before + Amount::from(500_000u64));
+}
+
+#[test]
+fn receipts_cannot_be_moved_and_component_state_does_not_grow_with_claims() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let size = |test: &TemplateTest| {
+        let c = test.read_only_state_store().get_component(camp).unwrap();
+        tari_bor::encode(&c).unwrap().len()
+    };
+    let start = size(&s.test);
+    let mut first: Option<U> = None;
+    for _ in 0..5 {
+        let acct = Account::new();
+        let u = user(&mut s.test);
+        let code = code_of(&mut s.test, camp, &acct, &u, 0);
+        let (cp, like) = (acct.post(&code, R1), acct.like(TARGET, R2));
+        claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&like]));
+        println!("one-rule claim points: {:?}", s.test.last_execution_points());
+        first.get_or_insert(u);
+    }
+    let end = size(&s.test);
+    println!("component state bytes: {start} -> {end}");
+    // counters may lengthen by a few bytes of varint; nothing is stored per claimant
+    assert!(end <= start + 16, "component state grew from {start} to {end}");
+
+    // a receipt is soulbound
+    let u = first.unwrap();
+    let receipts: ResourceAddress = s.test.call_method(camp, "receipt_resource", args![], vec![]);
+    let other = user(&mut s.test);
+    let tx = s.test.transaction()
+        .call_method(u.account, "withdraw", args![receipts, Amount::from(1u64)])
+        .put_last_instruction_output_on_workspace("r")
+        .call_method(other.account, "deposit", args![Workspace("r")])
+        .build_and_seal(&u.key);
+    s.test.execute_expect_failure(tx, vec![u.badge.clone()]);
+}
+
+#[test]
+fn eight_rule_quest_fits_the_compute_limit() {
+    // the worst case: every rule from a different commit, plus vouches with their own chains
+    let mut s = setup();
+    let org = Account::new();
+    let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
+    let camp = create(&mut s, &terms(vec![
+        (0, TARGET.into(), 0), (1, TARGET.into(), 0), (2, PEER.into(), 0), (3, "gm".into(), 0),
+        (4, TARGET.into(), 0), (5, TARGET.into(), 0), (6, list.clone(), 0), (8, org.did.clone(), 0),
+    ]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let cp = acct.post(&code, R1);
+    let (l, r, f, p, re, q) = (acct.like(TARGET, R2), acct.repost(TARGET, R2), acct.follow(PEER, R2), acct.post("gm all", R2), acct.reply(TARGET, R3), acct.quote(TARGET, R4));
+    let (i, v) = (org.list_item(&acct.did, &list, R2), org.verification(&acct.did, R2));
+    let c = Claim { rules: vec![&l, &r, &f, &p, &re, &q, &i, &v], vouch: vec![bytes_list(&org.ops), bytes_list(&org.ops)], amount: 0, path: vec![], referrer: None };
+    claim_ok(&mut s, camp, &acct, &u, &cp, &c);
+    println!("eight-rule claim points: {:?}", s.test.last_execution_points());
+}
+
+#[test]
+fn bad_terms_are_refused_at_creation() {
+    let mut s = setup();
+    let fb = s.funder.badge.clone();
+    let cases: Vec<(Terms, &str)> = vec![
+        ({ let mut t = terms(vec![]); t.root = vec![]; t }, "needs a rule"),
+        (terms(vec![(9, "x".into(), 0)]), "unknown rule kind"),
+        (terms(vec![(6, "at://did:web:nope/app.bsky.graph.list/x".into(), 0)]), "did:plc"),
+        (terms(vec![(7, "alice.test".into(), 0)]), "did:plc"),
+        ({ let mut t = terms(vec![(0, TARGET.into(), 0)]); t.rounds = 2; t }, "spacing"),
+        ({ let mut t = terms(vec![(0, TARGET.into(), 0)]); t.reward = 0; t }, "reward must be positive"),
+        ({ let mut t = terms(vec![(0, TARGET.into(), 0)]); t.close = 1; t }, "close epoch"),
+        ({ let mut t = terms(vec![(0, TARGET.into(), 0)]); t.close = 30_000; t }, "too far"),
+        (terms((0..9).map(|_| (0u8, TARGET.to_string(), 0u64)).collect()), "too many rules"),
+    ];
+    for (t, why) in cases {
+        let tx = create_tx(&s, &t);
+        fail_with(&mut s.test, tx, fb.clone(), why);
+    }
+}
+
+/// Prints values the website must reproduce exactly (see web-atproto/scripts/test-lib.ts).
+#[test]
+fn cross_check_vectors_for_the_website() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let u = user(&mut s.test);
+    let did = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+    for round in [0u16, 1, 300] {
+        let code: String = s.test.call_method(camp, "expected_post_text", args![did.to_string(), u.id, round], vec![]);
+        println!("VECTOR code {camp} {did} {} {round} {code}", hex(&u.id));
+    }
+    let (a, b, c) = (leaf(did, 1_000_000), leaf(PEER, 2_500_000), leaf("did:plc:cccccccccccccccccccccccc", 7));
+    let h = |x: [u8; 32]| x.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    println!("VECTOR leaf {did} 1000000 {}", h(a));
+    println!("VECTOR root3 {}", h(inner(inner(a, b), c)));
+}
+
+#[test]
+fn like_repost_and_comment_on_one_post_all_have_to_be_proven() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0), (1, TARGET.into(), 0), (4, TARGET.into(), 0)]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, like, repost, comment) = (acct.post(&code, R1), acct.like(TARGET, R2), acct.repost(TARGET, R3), acct.reply(TARGET, R4));
+    // each proof must match its own step: a like can't stand in for the repost or the comment
+    let fake_repost = acct.like(TARGET, R3);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&like, &fake_repost, &comment]));
+    s.test.execute_expect_failure(tx, vec![u.badge.clone()]);
+    let other = "at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/3jother0000000";
+    let wrong_comment = acct.reply(other, R4);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&like, &repost, &wrong_comment]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    let before = bal(&mut s.test, &u);
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&like, &repost, &comment]));
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
+}
+
+#[test]
+fn liking_three_different_posts_needs_a_like_of_each() {
+    let (x, y, z) = (
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3jpostx000000",
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3jposty000000",
+        "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/3jpostz000000",
+    );
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, x.into(), 0), (0, y.into(), 0), (0, z.into(), 0)]));
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, lx, ly, lz) = (acct.post(&code, R1), acct.like(x, R2), acct.like(y, R3), acct.like(z, R4));
+    // one like can't be reused for another post
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&lx, &lx, &lz]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    // proofs have to line up with the campaign's steps
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&ly, &lx, &lz]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    let before = bal(&mut s.test, &u);
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&lx, &ly, &lz]));
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
+}
+
+impl Account {
+    fn reply_saying(&self, parent: &str, text: &str, rkey: &str) -> Post {
+        let r = |u: &str| V::M(vec![("uri", V::T(u.into())), ("cid", V::T("bafy".into()))]);
+        self.record_at("app.bsky.feed.post", cbor(&V::M(vec![("$type", V::T("app.bsky.feed.post".into())), ("text", V::T(text.into())), ("reply", V::M(vec![("root", r(parent)), ("parent", r(parent))])), ("createdAt", V::T(NOW.into()))])), rkey)
+    }
+}
+fn skipped() -> Post { Post { commit: vec![], nodes: vec![], record: vec![], rkey: String::new() } }
+
+#[test]
+fn either_or_steps_need_one_proof_from_the_group() {
+    let (x, y) = (
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3jpostx000000",
+        "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3jposty000000",
+    );
+    let mut s = setup();
+    // follow PEER, and (like post X or repost post Y)
+    let mut t = terms(vec![(2, PEER.into(), 0), (0, x.into(), 0), (1, y.into(), 0)]);
+    t.groups = vec![0, 1, 1];
+    let camp = create(&mut s, &t);
+    let none = skipped();
+
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, follow, like, repost) = (acct.post(&code, R1), acct.follow(PEER, R2), acct.like(x, R3), acct.repost(y, R4));
+    // nothing from the group: refused
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&follow, &none, &none]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "either/or step has no proof");
+    // the group doesn't excuse a required step
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&none, &like, &none]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "required step has no proof");
+    // a proof offered for a group member still has to be right
+    let wrong = acct.like(y, R3);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&follow, &wrong, &none]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    // either branch pays
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&follow, &like, &none]));
+    let acct2 = Account::new();
+    let u2 = user(&mut s.test);
+    let code2 = code_of(&mut s.test, camp, &acct2, &u2, 0);
+    let (cp2, follow2, repost2) = (acct2.post(&code2, R1), acct2.follow(PEER, R2), acct2.repost(y, R4));
+    claim_ok(&mut s, camp, &acct2, &u2, &cp2, &simple(vec![&follow2, &none, &repost2]));
+    let _ = repost;
+}
+
+#[test]
+fn an_either_or_step_can_be_a_voucher() {
+    // be on the org's list, or like the post: an org member skips the engagement
+    let org = Account::new();
+    let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
+    let mut s = setup();
+    let mut t = terms(vec![(6, list.clone(), 0), (0, TARGET.into(), 0)]);
+    t.groups = vec![1, 1];
+    let camp = create(&mut s, &t);
+    let none = skipped();
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, item) = (acct.post(&code, R1), org.list_item(&acct.did, &list, R2));
+    // a chain for a voucher nobody proved is refused
+    let like = acct.like(TARGET, R2);
+    let c = Claim { rules: vec![&none, &like], vouch: vec![bytes_list(&org.ops)], amount: 0, path: vec![], referrer: None };
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &c);
+    fail_with(&mut s.test, tx, u.badge.clone(), "one operation chain");
+    let c = Claim { rules: vec![&item, &none], vouch: vec![bytes_list(&org.ops)], amount: 0, path: vec![], referrer: None };
+    claim_ok(&mut s, camp, &acct, &u, &cp, &c);
+}
+
+#[test]
+fn a_comment_can_be_required_to_say_something() {
+    let mut s = setup();
+    let mut t = terms(vec![(4, TARGET.into(), 0)]);
+    t.texts = vec!["#OotleLaunch".into()];
+    let camp = create(&mut s, &t);
+    let acct = Account::new();
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let cp = acct.post(&code, R1);
+    // a reply without the words: refused
+    let quiet = acct.reply_saying(TARGET, "nice", R2);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&quiet]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "required text");
+    // the words in a post that isn't a reply to the target: refused
+    let elsewhere = acct.reply_saying("at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/3jother0000000", "#OotleLaunch", R2);
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&elsewhere]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "does not satisfy");
+    let good = acct.reply_saying(TARGET, "gm #OotleLaunch", R2);
+    claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&good]));
+
+    // only replies and quotes can carry required text
+    let mut bad = terms(vec![(0, TARGET.into(), 0)]);
+    bad.texts = vec!["x".into()];
+    let tx = create_tx(&s, &bad);
+    let fb = s.funder.badge.clone();
+    fail_with(&mut s.test, tx, fb, "only replies and quotes");
+}

@@ -1,0 +1,9 @@
+<div class="note"><strong>Two sites, one system.</strong> Create and manage campaigns here on atproto.tari.mw. Participants use <a href="https://skydrop.tari.mw/quests">Skydrop's My quests</a> to see what they're in, what they can claim and what's left. Skydrop also sends gifts to any Bluesky account, described below.</div>
+<h1>Skydrop — send Tari to a Bluesky account</h1>
+    <p class="section-lede">Skydrop is the first contract built on the layer. You send tTARI to someone's <span class="mono">did:plc</span> before they have an Ootle wallet. They collect by posting a one-line claim code and proving, in the contract, that they control the account. No one in the middle can take the money.</p>
+    <div class="grid g3">
+      <div class="card"><span class="tag">deposit</span><h3>Escrow to a DID</h3><p>Funds are escrowed under the recipient's permanent identifier, governed by ClaimPolicy, with a challenge window the sender chooses.</p></div>
+      <div class="card"><span class="tag">claim</span><h3>Prove and collect</h3><p>The recipient posts <span class="mono">tari-claim:…</span>, then submits the identity chain, signed commit and MST path. The contract verifies and records the claim.</p></div>
+      <div class="card"><span class="tag">challenge</span><h3>Rotations win</h3><p>A PLC log can't be proven complete. During the window, anyone can submit a newer chain from a rotated-away key to cancel a stale claim.</p></div>
+    </div>
+    <p class="flow-note">The app is at <a href="https://skydrop.tari.mw">skydrop.tari.mw</a>, but its contracts date from before the network's 0.49 reset, and moving it across is <a href="/status">still to do</a>. In the new design it is exactly one policy on the shared escrow. Tips, wallet linking, bounties, metered service payments and social recovery are each another policy — added without redeploying the vault or moving a single escrowed deposit.</p>

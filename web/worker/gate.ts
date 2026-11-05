@@ -191,16 +191,39 @@ function b64Size(s: unknown, bytes: number, max = false): boolean {
 type Cbor = unknown;
 const hexOf = (v: Cbor): string => (v as { hex?: string })?.hex ?? "";
 
-/** The escrow's deposits for `did`: who sent them, how much, and in which epoch. */
-export async function depositsFor(deps: GateDeps, did: string): Promise<{ sender: string; amount: bigint; created: number }[]> {
-  const sub = (await deps.indexer(`substates/${encodeURIComponent(CONFIG.component)}`)) as {
+async function componentState(deps: GateDeps, address: string): Promise<Cbor[]> {
+  const sub = (await deps.indexer(`substates/${encodeURIComponent(address)}`)) as {
     state?: { up?: { substate?: { Component?: { body?: { state?: Cbor[] } } } } };
   };
   const state = sub.state?.up?.substate?.Component?.body?.state;
-  if (!state) throw new Error("escrow unreadable");
-  const rows = ((state[3] as Record<string, Cbor[][]> | undefined) ?? {})[did] ?? [];
-  return rows.map((d) => ({ sender: hexOf(d[0]).toLowerCase(), amount: BigInt(d[1] as number), created: Number(d[6] ?? 0) }));
+  if (!state) throw new Error("contract unreadable");
+  return state;
 }
+
+const addressOf = (v: Cbor): string => `component_${(v as { value?: { hex?: string } })?.value?.hex ?? hexOf(v)}`;
+
+/**
+ * Every payment to `did` the gate can count: who sent it, how much, and in which epoch — the gifts escrowed
+ * under ClaimPolicy (Escrow deposits: index 7; a deposit is [sender, amount, refund, policy, metadata, created])
+ * and those delivered straight to a linked wallet (ClaimPolicy's delivery log: index 8, [sender, amount, epoch]).
+ * Both epochs are recorded by the contracts, never by the payer.
+ */
+export async function depositsFor(deps: GateDeps, did: string): Promise<{ sender: string; amount: bigint; created: number }[]> {
+  const [escrow, claim] = await Promise.all([componentState(deps, CONFIG.escrow), componentState(deps, CONFIG.claim)]);
+  const rows = ((escrow[7] as Record<string, Cbor[][]> | undefined) ?? {})[did] ?? [];
+  const escrowed = rows
+    .filter((d) => addressOf(d[3]) === CONFIG.claim)
+    .map((d) => ({ sender: hexOf(d[0]).toLowerCase(), amount: BigInt(d[1] as number), created: Number(d[5] ?? 0) }));
+  const delivered = (((claim[8] as Record<string, Cbor[][]> | undefined) ?? {})[did] ?? []).map((d) => ({
+    sender: hexOf(d[0]).toLowerCase(),
+    amount: BigInt(d[1] as number),
+    created: Number(d[2] ?? 0),
+  }));
+  return [...escrowed, ...delivered];
+}
+
+/** A payment's identity for the spent ledger: the same sender can make several equal payments in one epoch. */
+const fingerprint = (d: { amount: bigint; created: number }, nth: number): string => `${d.created}:${d.amount}:${nth}`;
 
 async function currentEpoch(deps: GateDeps): Promise<number> {
   const s = (await deps.indexer("epoch-manager/stats")) as { current_epoch?: number };
@@ -274,10 +297,26 @@ async function unlock(id: string, req: Request, deps: GateDeps): Promise<Respons
       return fail(503, "Couldn't check the payment right now. Try again.");
     }
     const price = BigInt(g.price);
-    // A payment counts if it came from this key, covers the price, and was made after the post was locked.
-    const paid = rows.some((d) => d.sender === key && d.amount >= price && d.created >= g.epoch);
-    if (!paid) return fail(402, "No payment from this wallet was found yet.");
-    await save(deps, paidKey, { at: deps.now() });
+    // A payment counts if it came from this key, covers the price, was made after the post was locked, and
+    // hasn't already unlocked another post — otherwise one tip would open every post the author locked before it.
+    const spentKey = `spent/${g.did}/${key}`;
+    const spent = new Set((await load<string[]>(deps, spentKey)) ?? []);
+    const seen = new Map<string, number>();
+    let use: string | null = null;
+    for (const d of rows.filter((r) => r.sender === key)) {
+      const base = `${d.created}:${d.amount}`;
+      const nth = seen.get(base) ?? 0;
+      seen.set(base, nth + 1);
+      const fp = fingerprint(d, nth);
+      if (d.amount >= price && d.created >= g.epoch && !spent.has(fp)) {
+        use = fp;
+        break;
+      }
+    }
+    if (!use) return fail(402, "No unused payment from this wallet was found yet.");
+    spent.add(use);
+    await save(deps, spentKey, [...spent].slice(-500));
+    await save(deps, paidKey, { at: deps.now(), payment: use });
   }
   return json({ key: g.key });
 }

@@ -1,22 +1,32 @@
 /** Everything deployment-specific lives here. */
+const env = (k: string): string => (typeof process !== "undefined" && process.env?.[k]) || "";
+
 export const CONFIG = {
   network: "esmeralda" as const,
-  /** The BskyClaim escrow component (per-deposit challenge windows and challenge phrases). */
-  component: (typeof process !== "undefined" && process.env?.SKYDROP_COMPONENT) || "component_2e5a47487f53be5ee6d795fc3d4b94b148c583713c3aed693da21eaf4b18b599",
-  template: "template_ebf68e07b3583f61178369e7a4cd73b5c831752f15710f91c4ac143f8a03dee8",
+  /**
+   * The Skydrop contract stack (see docs/REFACTOR-PLAN.md): the permanent Escrow that holds every gift, and
+   * the policies that decide when it pays. Empty until the stack is deployed on the current network.
+   */
+  escrow: env("SKYDROP_ESCROW") || "",
+  /** ClaimPolicy: claim posts, challenge windows, phrases, holds, declines, sweeps, linked delivery. */
+  claim: env("SKYDROP_CLAIM") || "",
+  /** TipPolicy: tip budgets spent by `@bot tip @someone 5` posts. */
+  tip: env("SKYDROP_TIP") || "",
+  /** LinkRegistry: Bluesky account -> linked Ootle wallet. */
+  link: env("SKYDROP_LINK") || "",
   /** µT per tTARI. */
   unit: 1_000_000n,
   symbol: "tTARI",
   /** Refund epoch offset: unclaimed deposits can be taken back by the sender after this many epochs. */
   refundAfterEpochs: 500,
-  /** Smallest deposit the component accepts (µT). */
+  /** Smallest deposit the escrow accepts (µT). */
   minDeposit: 1000n,
-  /** Largest challenge window the component accepts. */
+  /** Largest challenge window, hold and phrase ClaimPolicy treats as valid (its MAX_WINDOW/MAX_HOLD/MAX_PHRASE). */
   maxWindow: 10,
-  /** Epochs a new link waits before it takes effect (set when the component was created). */
-  bindDelayEpochs: 0,
-  /** Longest challenge phrase the component accepts (bytes). */
+  maxHold: 168,
   maxChallenge: 80,
+  /** Epochs a new link waits before it takes effect (set when the LinkRegistry was created). */
+  bindDelayEpochs: 0,
   /** The bot account that relays tip posts. */
   botHandle: "taridrop.bsky.social",
   botDid: "did:plc:lsdjnz7b7du3e3rkawynfsqd",
@@ -25,3 +35,6 @@ export const CONFIG = {
   publicApi: "https://public.api.bsky.app",
   plcDirectory: "https://plc.directory",
 };
+
+/** Whether the contract stack has been deployed and configured. */
+export const deployed = (): boolean => !!(CONFIG.escrow && CONFIG.claim && CONFIG.tip && CONFIG.link);

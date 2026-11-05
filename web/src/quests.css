@@ -1,0 +1,61 @@
+@import "../../web-atproto/src/styles.css";
+
+/* Skydrop's airmail look on the shared components */
+:root {
+  --bg: #f0e6d0; --surface: #fffaf0; --surface-2: #f6ecd6; --fg: #191730; --muted: #5a5470; --line: rgba(25, 23, 48, .2);
+  --accent: #2350d8; --accent-2: #d9362b; --ok: #15714a; --warn: #8f5c0a; --bad: #c22d23; --on-accent: #fffaf0;
+  --display: "Bricolage Grotesque", Georgia, sans-serif; --body: "Bricolage Grotesque", system-ui, sans-serif; --mono: "DM Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15121f; --surface: #1f1b2e; --surface-2: #29243b; --fg: #f3ecdc; --muted: #b0a9c2; --line: rgba(243, 236, 220, .18);
+    --accent: #8eaaff; --accent-2: #ff7a70; --ok: #5bd29c; --warn: #ecbb63; --bad: #ff8d84; --on-accent: #15121f;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15121f; --surface: #1f1b2e; --surface-2: #29243b; --fg: #f3ecdc; --muted: #b0a9c2; --line: rgba(243, 236, 220, .18);
+  --accent: #8eaaff; --accent-2: #ff7a70; --ok: #5bd29c; --warn: #ecbb63; --bad: #ff8d84; --on-accent: #15121f;
+}
+.brand { font-family: var(--display); font-weight: 800; font-size: 18px; letter-spacing: -.02em; }
+.brand .dot { background: var(--accent-2); border-radius: 3px; box-shadow: none; transform: rotate(45deg); }
+.qnav { display: flex !important; position: static; width: auto !important; flex-direction: row !important; margin: 0 0 0 auto !important; order: 0 !important; }
+.qnav a { padding: 7px 9px; font-size: 14px; }
+@media (max-width: 560px) { .qnav a:last-child { display: none; } }
+.qmain { padding-block: 40px 70px; }
+.qmain > h1 { font-size: clamp(30px, 5.6vw, 50px); font-weight: 800; letter-spacing: -.03em; margin-top: 8px; }
+.qform { margin-top: 20px; max-width: 560px; }
+.who { display: flex; align-items: center; gap: 11px; margin-top: 16px; }
+.who:empty { display: none; }
+.who img { border-radius: 50%; }
+.qsummary { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 12px; margin-top: 22px; }
+.qsummary:empty { display: none; }
+@media (max-width: 680px) { .qsummary { grid-template-columns: minmax(0, 1fr); } }
+.qtile { display: grid; gap: 2px; padding: 15px 17px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; min-width: 0; }
+.qtile > span { font: 500 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.qtile strong { font: 800 25px var(--display); letter-spacing: -.02em; }
+.qtile small { color: var(--muted); font-size: 13px; }
+.qtile.big { background: var(--accent-2); border-color: var(--accent-2); color: #fffaf0; }
+.qtile.big > span, .qtile.big small { color: #fffaf0; opacity: .88; }
+:root[data-theme="dark"] .qtile.big, :root[data-theme="dark"] .qtile.big > span, :root[data-theme="dark"] .qtile.big small { color: #15121f; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .qtile.big, :root:not([data-theme="light"]) .qtile.big > span, :root:not([data-theme="light"]) .qtile.big small { color: #15121f; } }
+.qsection { margin-top: 36px; }
+.qsection h2, .qadd h2, .qempty h2 { font: 800 23px var(--display); letter-spacing: -.02em; display: flex; align-items: center; gap: 9px; }
+.qempty h2 { justify-content: center; }
+.qcount { font: 500 12px var(--mono); padding: 1px 8px; border-radius: 20px; background: var(--surface-2); color: var(--muted); }
+.qsection .questgrid { margin-top: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+@media (max-width: 720px) { .qsection .questgrid { grid-template-columns: minmax(0, 1fr); } }
+.qcard.won { box-shadow: 0 0 0 2px var(--ok); }
+.qhead { font-weight: 700; font-size: 14.5px; }
+.qsteps { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; }
+.qstep { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: 14.5px; }
+.qstep:first-child { border-top: none; }
+.qmark { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 500 12px var(--mono); background: var(--surface-2); color: var(--muted); }
+.qstep.ok .qmark { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.qstep.err .qmark { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.qstep.skip { opacity: .65; }
+.qsteptext { display: grid; min-width: 0; }
+.qsteptext small { color: var(--muted); font-size: 12.5px; }
+.qclaim { padding-top: 6px; border-top: 1px solid var(--line); }
+.linkbtn { background: none; border: none; padding: 6px 2px; min-height: 36px; color: var(--muted); font: 500 13px var(--body); cursor: pointer; text-decoration: underline; }
+.qempty { margin-top: 32px; padding: 34px 22px; text-align: center; background: var(--surface); border: 1.5px dashed var(--line); border-radius: 16px; display: grid; gap: 10px; }
+.qadd { margin-top: 42px; max-width: 560px; display: grid; gap: 10px; }

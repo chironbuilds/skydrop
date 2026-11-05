@@ -1,0 +1,73 @@
+<h1>The Campaign contract</h1>
+<p>A campaign is one funded pool with a set of rules, deployed as its own component. Anyone can create one. No governance approves it, and after creation nobody has authority over it except the funder, who can only extend the close date or collect what's left once it has closed.</p>
+
+<h2>Why each campaign is its own component</h2>
+<p>A substate is capped at 1 MiB, and every call that touches a component pays to load it. A set of claimant DIDs held in component state would reach that cap at around 30,000 claimants, and claims would get more expensive all the way there. So Campaign stores nothing per claimant in its own state:</p>
+<ul>
+  <li><b>Double claims are stopped by a receipt NFT.</b> Its id is the hash of the DID, so minting it a second time fails the transaction. In the test suite, five claims changed the component's state by 4 bytes.</li>
+  <li><b>Receipts are soulbound.</b> They can't be withdrawn from the account they arrive in, so they double as a permanent record of taking part.</li>
+  <li><b>Campaigns are isolated.</b> Each has its own vault and can pay in any fungible resource, and a problem with one can't reach another's funds.</li>
+</ul>
+<p>Claims within one campaign still run one at a time, because each one updates the same vault. Expect contention during a rush, not failure.</p>
+
+<h2>Rules</h2>
+<p>A claimant must prove every rule, up to eight. Rule kinds are numbered in the contract.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Kind</th><th>Rule</th><th>Repo</th><th>Collection</th><th>Field checked</th></tr></thead>
+<tbody>
+<tr><td class="m">0</td><td>Like a post</td><td>Claimant</td><td class="m">app.bsky.feed.like</td><td class="m">subject.uri</td></tr>
+<tr><td class="m">1</td><td>Repost a post</td><td>Claimant</td><td class="m">app.bsky.feed.repost</td><td class="m">subject.uri</td></tr>
+<tr><td class="m">2</td><td>Follow an account</td><td>Claimant</td><td class="m">app.bsky.graph.follow</td><td class="m">subject</td></tr>
+<tr><td class="m">3</td><td>Post containing text</td><td>Claimant</td><td class="m">app.bsky.feed.post</td><td class="m">text</td></tr>
+<tr><td class="m">4</td><td>Reply to a post</td><td>Claimant</td><td class="m">app.bsky.feed.post</td><td class="m">reply.parent.uri or reply.root.uri</td></tr>
+<tr><td class="m">5</td><td>Quote a post</td><td>Claimant</td><td class="m">app.bsky.feed.post</td><td class="m">embed.record.uri or embed.record.record.uri</td></tr>
+<tr><td class="m">6</td><td>Be on a list</td><td>List owner</td><td class="m">app.bsky.graph.listitem</td><td class="m">subject, list</td></tr>
+<tr><td class="m">7</td><td>Be followed by</td><td>Voucher</td><td class="m">app.bsky.graph.follow</td><td class="m">subject</td></tr>
+<tr><td class="m">8</td><td>Be verified by</td><td>Voucher</td><td class="m">app.bsky.graph.verification</td><td class="m">subject</td></tr>
+</tbody></table></div>
+<p style="margin-top:12px">Rules can repeat and can each point somewhere different, so "like post X, like post Y, repost post Z" is three rules. The contract requires all of them but can't check their order: accounts sign their own timestamps, so "do this first" isn't enforceable.</p>
+<p style="margin-top:12px"><b>Either/or:</b> rules sharing a non-zero <code>groups</code> value need only one proof; leave the others' commits empty. <b>Required wording:</b> a reply or quote rule can set <code>texts</code>, which that same post must contain. A contract can check that a string is present, not whether the comment is any good.</p>
+<p style="margin-top:12px">Vouch rules (6 to 8) are the ones that limit fake accounts, because someone else's signature decides who qualifies. Each can also set a snapshot: the proof must come from one of the voucher's commits at or after that time.</p>
+
+<h2>Creating a campaign</h2>
+<div class="deflist">
+<div><code>Campaign::create(name, info, funder, link_registry, kinds, targets, snapshots, texts, groups, reward, allocation_root, rounds, round_epochs, referral_bonus, max_referrals, open_epoch, close_epoch, funds)</code><p><code>funder</code> must sign. <code>kinds</code>, <code>targets</code>, <code>snapshots</code>, <code>texts</code> and <code>groups</code> are parallel lists. It emits a <code>campaign.created</code> event naming the funder, so a funder's campaigns can be found later. An empty <code>allocation_root</code> pays everyone <code>reward</code>. The close epoch can be at most 20,000 epochs away.</p></div>
+</div>
+
+<h2>Claiming</h2>
+<div class="deflist">
+<div><code>claim(did, claimant, account, ops, commits, nodes, records, rkeys, vouch_ops, c_commit, c_nodes, c_record, c_rkey, amount, path, referrer)</code><p>The first claim. <code>claimant</code> signs, and a post in the DID's repo must contain the code from <code>expected_post_text</code>, which commits to this campaign, the DID, the wallet key and the round. There is one proof per rule, in rule order, plus the voucher's identity log for each vouch rule. <code>amount</code> and <code>path</code> prove an allocation.</p></div>
+<div><code>claim_linked(did, ops, commits, nodes, records, rkeys, vouch_ops, amount, path, referrer)</code><p>For an account that has already linked a wallet in the LinkRegistry. It needs no code post and no signature, because the registry already binds the DID to its wallet. Anyone may submit it, so a relayer can pay the fee for the user.</p></div>
+<div><code>claim_round(did, claimant, ops, commits, nodes, records, rkeys, vouch_ops, c_commit, c_nodes, c_record, c_rkey, amount, path)</code><p>A later round. It needs <code>round_epochs</code> since the last payment, a new code post for this round, and a re-proof of every rule from a commit newer than the last one proven. It pays the account on the receipt.</p></div>
+</div>
+
+<h2>The funder's limits</h2>
+<div class="deflist">
+<div><code>top_up(funds)</code><p>Anyone can add to the pool.</p></div>
+<div><code>extend(close_epoch)</code><p>Funder only, and later only. Nobody loses a window they were promised.</p></div>
+<div><code>close() &rarr; Bucket</code><p>Funder only, and only from the close epoch onward. Rounds not claimed by then are forfeited.</p></div>
+</div>
+<p style="margin-top:12px">When the pool can't cover a reward, the claim fails instead of paying less. Funding a pool for fewer people than qualify means late claimers get nothing, so size it deliberately.</p>
+
+<h2>Reading a campaign</h2>
+<div class="deflist">
+<div><code>stats() &rarr; (claimants, payments, paid, balance, open_epoch, close_epoch)</code><p>The campaign's public numbers. It also emits a <code>campaign.claim</code> event per payment.</p></div>
+<div><code>expected_post_text(did, claimant, round)</code><p>The exact code a claimant must post.</p></div>
+<div><code>receipt_resource()</code><p>The resource address of this campaign's receipts.</p></div>
+</div>
+
+<h2>Allocation lists</h2>
+<p>A list of any size goes on-chain as one 32-byte root. Leaves and inner nodes use different prefixes, so an inner node can't be passed off as a leaf:</p>
+<pre><code>leaf  = sha256(0x00 || did || 0x00 || amount as 8 bytes, big-endian)
+inner = sha256(0x01 || smaller child || larger child)</code></pre>
+<p>The campaign builder computes the root and each account's proof, and a funder should publish the full list so anyone can recompute it. The funder is trusted to get the list right, and nothing on-chain can tell if it's unfair.</p>
+
+<h2>What it costs to claim</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>Claim</th><th style="text-align:right">WASM points</th><th style="text-align:right">Share of 250M limit</th></tr></thead>
+<tbody>
+<tr><td>One rule</td><td class="num">21.2M</td><td class="num">8%</td></tr>
+<tr><td>Three rules</td><td class="num">34.8M</td><td class="num">14%</td></tr>
+<tr><td>Eight rules, two vouches</td><td class="num">83.6M</td><td class="num">33%</td></tr>
+</tbody></table></div>
+<p style="margin-top:12px">Those are from the engine tests, with k256 keys, a one-operation identity log and a separate commit for each proof. Proofs sharing one commit skip its signature check and cost less. Each extra identity operation costs about one more signature check, and P-256 keys cost roughly five times what k256 keys do.</p>

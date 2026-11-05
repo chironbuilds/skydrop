@@ -25,7 +25,7 @@ console.log("claimant balance", chain.formatTari(await w.balance()));
 const agent = new AtpAgent({ service: "https://bsky.social" });
 await agent.login({ identifier: env.BSKY_HANDLE!, password: env.BSKY_APP_PASSWORD! });
 const did = agent.session!.did;
-const code = await bsky.claimCode(CONFIG.component, did, w.publicKey);
+const code = await bsky.claimCode(CONFIG.claim, did, w.publicKey);
 const created = await agent.post({ text: `claim test ${code}`, createdAt: new Date().toISOString() });
 const rkey = created.uri.split("/").pop()!;
 console.log("posted", rkey);

@@ -16,6 +16,7 @@ extern crate alloc;
 
 pub mod cbor;
 pub mod enc;
+pub mod jwt;
 pub mod tip;
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
@@ -183,6 +184,34 @@ pub fn verify_plc_chain(did: &str, ops: &[&[u8]]) -> Result<ChainInfo, Error> {
     Ok(ChainInfo { signing_key: signing_key(last)?, tip: sha256(last), len: ops.len() as u32 })
 }
 
+/// The handles an account's own signed identity chain asserts, read from an operation's `alsoKnownAs`
+/// (`at://…` URIs, returned as bare handles) or the legacy genesis `handle` field. These are **anchored
+/// by the PLC chain**, so a contract can trust that the DID *claims* them. It must NOT treat this as a
+/// verified handle: that a handle resolves *back* to this DID lives in DNS/HTTPS the chain does not
+/// anchor (see docs/SECURITY.md "handle resolution"). Pass the last operation of a verified chain.
+pub fn also_known_as(op: &[u8]) -> Result<Vec<String>, Error> {
+    let mut out = Vec::new();
+    if cbor::text_field(op, "type")? == "create" {
+        // Legacy genesis carries a single bare `handle`.
+        if let Ok((vs, _)) = cbor::map_get(op, "handle") {
+            out.push(String::from(cbor::text(op, vs)?.0));
+        }
+        return Ok(out);
+    }
+    let (vs, _) = cbor::map_get(op, "alsoKnownAs")?;
+    for item in cbor::array_items(op, vs)? {
+        let s = cbor::text(op, item)?.0;
+        out.push(String::from(s.strip_prefix("at://").unwrap_or(s)));
+    }
+    Ok(out)
+}
+
+/// Whether the account's signed chain asserts `handle` (bare, e.g. `alice.bsky.social`) in the given
+/// operation. See [`also_known_as`] for the trust caveat.
+pub fn chain_asserts_handle(op: &[u8], handle: &str) -> bool {
+    also_known_as(op).map_or(false, |hs| hs.iter().any(|h| h == handle))
+}
+
 /// Finds `target` in the tree rooted at `root`, using only the supplied nodes (each authenticated by its
 /// hash). Returns the digest of the value's CID.
 fn mst_find(nodes: &BTreeMap<[u8; 32], &[u8]>, root: [u8; 32], target: &[u8]) -> Result<[u8; 32], Error> {
@@ -244,6 +273,13 @@ pub fn verify_record(
     collection: &str,
     rkey: &str,
 ) -> Result<(), Error> {
+    let root = verify_commit(did, key, commit)?;
+    verify_in_root(&root, mst_nodes, record, collection, rkey)
+}
+
+/// Checks a repo commit's signature, DID and version, and returns the MST root it commits to. Several record
+/// proofs against one commit need only one signature check: call this once, then `verify_in_root` for each.
+pub fn verify_commit(did: &str, key: &Key, commit: &[u8]) -> Result<[u8; 32], Error> {
     let (unsigned, (sv, _)) = cbor::strip_key(commit, "sig")?;
     let sig = cbor::bytes(commit, sv)?.0;
     if !key.verify(&unsigned, sig) {
@@ -257,14 +293,17 @@ pub fn verify_record(
         return Err(Error::BadCommit);
     }
     let (ds, _) = cbor::map_get(commit, "data")?;
-    let root = cbor::link_digest(commit, ds)?.0;
+    Ok(cbor::link_digest(commit, ds)?.0)
+}
 
+/// Verifies that the MST rooted at `root` (from `verify_commit`) holds `record` at `collection/rkey`.
+pub fn verify_in_root(root: &[u8; 32], mst_nodes: &[&[u8]], record: &[u8], collection: &str, rkey: &str) -> Result<(), Error> {
     let nodes: BTreeMap<[u8; 32], &[u8]> = mst_nodes.iter().map(|n| (sha256(n), *n)).collect();
     let mut path = Vec::with_capacity(collection.len() + 1 + rkey.len());
     path.extend_from_slice(collection.as_bytes());
     path.push(b'/');
     path.extend_from_slice(rkey.as_bytes());
-    let value = mst_find(&nodes, root, &path)?;
+    let value = mst_find(&nodes, *root, &path)?;
     if sha256(record) != value {
         return Err(Error::BadProof);
     }
@@ -294,7 +333,45 @@ pub fn commit_rev_micros(commit: &[u8]) -> Result<u64, Error> {
     Ok(v >> 10)
 }
 
+// ---- generic record / field proofs -----------------------------------------------------------------
+// Once `verify_record` has authenticated a record's bytes against the signed repo, these read fields
+// out of it. They work on any lexicon (post, like, follow, repost, custom), so a contract building on
+// this layer proves "account DID published a record at collection/rkey whose field X = Y" without
+// re-implementing any atproto crypto. `path` descends nested maps, e.g. &["reply", "parent", "uri"].
+
+/// The `$type` (lexicon id) of a record, e.g. `app.bsky.feed.post`.
+pub fn record_type(record: &[u8]) -> Result<&str, Error> {
+    field_str(record, &["$type"])
+}
+
+/// A text field at a nested `path`.
+pub fn field_str<'a>(record: &'a [u8], path: &[&str]) -> Result<&'a str, Error> {
+    let (vs, _) = cbor::path_get(record, path)?;
+    Ok(cbor::text(record, vs)?.0)
+}
+
+/// A non-negative integer field at a nested `path`.
+pub fn field_u64(record: &[u8], path: &[&str]) -> Result<u64, Error> {
+    let (vs, _) = cbor::path_get(record, path)?;
+    Ok(cbor::uint(record, vs)?.0)
+}
+
+/// Whether a field exists at `path`.
+pub fn field_present(record: &[u8], path: &[&str]) -> bool {
+    cbor::path_get(record, path).is_ok()
+}
+
+/// Whether the text field at `path` equals `expected` exactly.
+pub fn field_eq(record: &[u8], path: &[&str], expected: &str) -> bool {
+    field_str(record, path).map_or(false, |s| s == expected)
+}
+
+/// Whether the text field at `path` contains `needle`.
+pub fn field_contains(record: &[u8], path: &[&str], needle: &str) -> bool {
+    field_str(record, path).map_or(false, |s| s.contains(needle))
+}
+
 /// The `text` field of a (verified) record, e.g. a post's text.
 pub fn record_text(record: &[u8]) -> Result<&str, Error> {
-    Ok(cbor::text_field(record, "text")?)
+    field_str(record, &["text"])
 }

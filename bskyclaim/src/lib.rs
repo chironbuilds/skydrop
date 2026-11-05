@@ -252,7 +252,7 @@ mod bskyclaim {
             assert!(challenge.len() <= MAX_CHALLENGE, "challenge phrase too long");
             assert!(!challenge.chars().any(|c| c.is_control()), "challenge phrase has control characters");
             require_signer(sender);
-            assert_eq!(funds.resource_address(), self.vault.resource_address(), "wrong resource");
+            assert_eq!(funds.resource_address(), self.esc_resource(), "wrong resource");
             let amount = funds.amount();
             assert!(amount >= self.min_deposit, "deposit below the minimum");
             assert!(refund_epoch > Consensus::current_epoch(), "refund epoch must be in the future");
@@ -270,7 +270,7 @@ mod bskyclaim {
                 assert!(list.iter().filter(|e| !e.4.is_empty()).count() < MAX_PHRASE_DEPOSITS, "this account already has several gifts waiting on a phrase");
             }
             list.push((sender, amount, refund_epoch, window_epochs, challenge, hold_epochs, Consensus::current_epoch(), envelope));
-            self.vault.deposit(funds);
+            self.esc_take_in(funds);
         }
 
         /// Cancels a binding that has not taken effect yet. Present a valid operation chain for the DID that is at
@@ -283,7 +283,7 @@ mod bskyclaim {
             let chain = self.check_chain(&did, &ops);
             assert!(chain.len >= len, "that chain is shorter than the one the binding relied on");
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the binding already relies on");
-            self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
+            self.id_observe(&did, chain.len);
             if old == CallerContext::current_component_address() {
                 self.bindings.remove(&did);
             } else {
@@ -297,7 +297,7 @@ mod bskyclaim {
         /// are refused from then on.
         pub fn observe_chain(&mut self, did: String, ops: Vec<Bytes>) {
             let chain = self.check_chain(&did, &ops);
-            self.known_len.entry(did).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
+            self.id_observe(&did, chain.len);
         }
 
         /// The account `did`'s owner has bound, if one is in effect.
@@ -329,9 +329,7 @@ mod bskyclaim {
                 assert!(rkey.as_str() > last.as_str(), "this post, or a later one, was already used to bind");
             }
             let chain = self.check_chain(&did, &ops);
-            if let Some(&known) = self.known_len.get(&did) {
-                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
-            }
+            self.id_require_fresh(&did, chain.len);
             let nodes = slices(&mst_nodes, MAX_NODES);
             assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
@@ -353,7 +351,7 @@ mod bskyclaim {
                 Some((c, co)) => (address, now + self.bind_delay, c, owner, co),
                 None => (address, now + self.bind_delay, nothing, owner, owner),
             };
-            self.known_len.insert(did.clone(), chain.len);
+            self.id_set(&did, chain.len);
             self.last_bind.insert(did.clone(), rkey);
             self.bind_proof.insert(did.clone(), (Bytes::from_vec(chain.tip.to_vec()), chain.len));
             self.bindings.insert(did, entry);
@@ -400,7 +398,7 @@ mod bskyclaim {
             self.begin_claim(did.clone(), claimant, ops, commit, mst_nodes, record, rkey);
             self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).0 += 1;
-            self.fee_vault.pay_fee(fee);
+            self.esc_pay_fee(fee);
         }
 
         /// Proves again that the post the pending claim was made with is still up. Once a deposit's hold time has
@@ -435,7 +433,7 @@ mod bskyclaim {
             self.begin_confirm(did.clone(), ops, commit, mst_nodes, record, rkey);
             self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).2 += 1;
-            self.fee_vault.pay_fee(fee);
+            self.esc_pay_fee(fee);
         }
 
         fn begin_confirm(&mut self, did: String, ops: Vec<Bytes>, commit: Bytes, mst_nodes: Vec<Bytes>, record: Bytes, rkey: String) {
@@ -443,9 +441,7 @@ mod bskyclaim {
             let (held_rkey, _, start_rev, last_rev) = self.held.get(&did).cloned().expect("no pending claim");
             assert!(rkey == held_rkey, "that is not the post the claim was made with");
             let chain = self.check_chain(&did, &ops);
-            if let Some(&known) = self.known_len.get(&did) {
-                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
-            }
+            self.id_require_fresh(&did, chain.len);
             let nodes = slices(&mst_nodes, MAX_NODES);
             assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
@@ -456,7 +452,7 @@ mod bskyclaim {
             // it has since been deleted, so a hold time counts the time between the snapshots, not just epochs.
             let rev = commit_rev_micros(commit.as_slice()).expect("bad commit revision");
             assert!(rev >= last_rev, "that snapshot of your account is older than one already proven");
-            self.known_len.insert(did.clone(), chain.len);
+            self.id_set(&did, chain.len);
             self.held.insert(did, (rkey, Consensus::current_epoch(), start_rev, rev));
         }
 
@@ -479,17 +475,17 @@ mod bskyclaim {
             assert!(used < MAX_SPONSORED_FINALS, "this account has used its sponsored payouts");
             self.charge_sponsored(&did, fee);
             self.sponsored.entry(did).or_insert((0, 0, 0)).1 += 1;
-            self.fee_vault.pay_fee(fee);
+            self.esc_pay_fee(fee);
         }
 
         /// Adds TARI to the sponsor vault. Anyone may contribute.
         pub fn fund(&mut self, bucket: Bucket) {
             assert_eq!(bucket.resource_address(), TARI_TOKEN, "fee funding must be TARI");
-            self.fee_vault.deposit(bucket);
+            self.esc_fee_deposit(bucket);
         }
 
         pub fn fee_balance(&self) -> Amount {
-            self.fee_vault.balance()
+            self.esc_fee_balance()
         }
 
         /// Opens or tops up a tip budget for `did`, owned by `owner` (who must sign and is the only one who can
@@ -506,7 +502,7 @@ mod bskyclaim {
         ) {
             assert!(valid_did(&did), "not a did:plc identifier");
             require_signer(owner);
-            assert_eq!(funds.resource_address(), self.vault.resource_address(), "wrong resource");
+            assert_eq!(funds.resource_address(), self.esc_resource(), "wrong resource");
             assert!(window_epochs <= self.max_window_epochs, "challenge window above the maximum");
             assert!(refund_after > 0, "refund period must be positive");
             assert!(max_tip >= self.min_deposit, "max tip below the minimum deposit");
@@ -517,7 +513,7 @@ mod bskyclaim {
             entry.1 = window_epochs;
             entry.2 = refund_after;
             entry.3 = max_tip;
-            self.vault.deposit(funds);
+            self.esc_take_in(funds);
         }
 
         /// Takes `amount` back out of the budget. Only its owner.
@@ -531,7 +527,7 @@ mod bskyclaim {
             if entry.0.is_zero() {
                 self.budgets.remove(&key);
             }
-            self.vault.withdraw(amount)
+            self.esc_withdraw(amount)
         }
 
         /// (balance, window, refund after, max per tip)
@@ -570,8 +566,8 @@ mod bskyclaim {
         ) {
             assert!(fee.is_positive() && fee <= Amount::from(MAX_SPONSORED_FEE), "sponsored fee out of range");
             self.begin_tip(did, owner, ops, commit, mst_nodes, record, rkey, fee);
-            self.fee_vault.deposit(self.vault.withdraw(fee));
-            self.fee_vault.pay_fee(fee);
+            self.esc_move_to_fee(fee);
+            self.esc_pay_fee(fee);
         }
 
         fn begin_tip(
@@ -592,9 +588,7 @@ mod bskyclaim {
                 assert!(rkey.as_str() > last.as_str(), "this post, or a later one, was already spent");
             }
             let chain = self.check_chain(&did, &ops);
-            if let Some(&known) = self.known_len.get(&did) {
-                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
-            }
+            self.id_require_fresh(&did, chain.len);
             let nodes = slices(&mst_nodes, MAX_NODES);
             assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
@@ -612,12 +606,12 @@ mod bskyclaim {
             } else {
                 self.budgets.get_mut(&key).unwrap().0 = left;
             }
-            self.known_len.insert(did.clone(), chain.len);
+            self.id_set(&did, chain.len);
             self.last_tip.insert(did, rkey);
             if window == 0 {
                 if let Some(to) = self.active_binding(&recipient) {
                     self.note_received(&recipient, owner, amount, Consensus::current_epoch() + refund_after, window, Bytes::from_vec(Vec::new()));
-                    let paid = self.vault.withdraw(amount);
+                    let paid = self.esc_withdraw(amount);
                     ComponentManager::get(to).invoke("deposit", args![paid]);
                     return;
                 }
@@ -641,9 +635,7 @@ mod bskyclaim {
             assert!(self.deposits.get(&did).is_some_and(|d| !d.is_empty()), "nothing deposited for this account");
             assert!(rkey.len() <= 32, "rkey too long");
             let chain = self.check_chain(&did, &ops);
-            if let Some(&known) = self.known_len.get(&did) {
-                assert!(chain.len >= known, "stale operation chain: a longer one has been seen");
-            }
+            self.id_require_fresh(&did, chain.len);
             let nodes = slices(&mst_nodes, MAX_NODES);
             assert!(commit.len() <= MAX_BLOCK_LEN && record.len() <= MAX_BLOCK_LEN, "block too large");
             verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
@@ -662,7 +654,7 @@ mod bskyclaim {
             }
 
             assert!(text.len() <= MAX_CLAIM_TEXT, "claim post too long");
-            self.known_len.insert(did.clone(), chain.len);
+            self.id_set(&did, chain.len);
             // The link post (or anything older) can never be the challenge post: linking and the challenge are separate.
             let is_link_post = text.contains("tari-bind:") || self.last_bind.get(&did).is_some_and(|lb| rkey.as_str() <= lb.as_str());
             let stored = if is_link_post { String::new() } else { text.to_string() };
@@ -682,7 +674,7 @@ mod bskyclaim {
             let chain = self.check_chain(&did, &ops);
             assert!(chain.len >= *claim_len, "that chain is shorter than the one the claim relied on");
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the claim already relies on");
-            self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
+            self.id_observe(&did, chain.len);
             self.pending.remove(&did);
             self.claim_text.remove(&did);
             self.held.remove(&did);
@@ -712,11 +704,11 @@ mod bskyclaim {
             } else {
                 self.deposits.insert(did, waiting);
             }
-            let paid = self.vault.withdraw(total - took);
+            let paid = self.esc_withdraw(total - took);
             match bound {
                 Some(to) => {
                     ComponentManager::get(to).invoke("deposit", args![paid]);
-                    self.vault.withdraw(Amount::zero())
+                    self.esc_withdraw(Amount::zero())
                 }
                 None => paid,
             }
@@ -733,7 +725,7 @@ mod bskyclaim {
                 self.deposits.remove(&did);
             }
             let took = self.reimburse(&did, amount);
-            self.vault.withdraw(amount - took)
+            self.esc_withdraw(amount - took)
         }
 
         pub fn deposits_for(&self, did: String) -> Vec<Dep> {
@@ -746,7 +738,56 @@ mod bskyclaim {
         }
 
         pub fn total_escrowed(&self) -> Amount {
+            self.esc_balance()
+        }
+
+        // ---- escrow seam ------------------------------------------------------------------------------
+        // The methods below (plus `reimburse`, `charge_sponsored`, `credit_returned`) are the ONLY code that
+        // touches the custody vaults (`vault`, `fee_vault`) and their ledgers (`owed`, `returned`). Feature
+        // code goes through them and never touches `self.vault`/`self.fee_vault` directly, so this set lifts
+        // out cleanly into a standalone Escrow template in a later phase. The deposit ledger (`self.deposits`)
+        // is still feature-owned here and relocates into escrow at that later phase.
+
+        /// The escrowed resource; deposits and budgets are all held in it.
+        fn esc_resource(&self) -> ResourceAddress {
+            self.vault.resource_address()
+        }
+
+        /// Total currently escrowed.
+        fn esc_balance(&self) -> Amount {
             self.vault.balance()
+        }
+
+        /// Takes a bucket of the escrowed resource into custody.
+        fn esc_take_in(&mut self, funds: Bucket) {
+            self.vault.deposit(funds);
+        }
+
+        /// Withdraws `amount` of the escrowed resource from custody.
+        fn esc_withdraw(&mut self, amount: Amount) -> Bucket {
+            self.vault.withdraw(amount)
+        }
+
+        /// Balance of the fee (sponsor) vault.
+        fn esc_fee_balance(&self) -> Amount {
+            self.fee_vault.balance()
+        }
+
+        /// Adds a bucket to the fee vault.
+        fn esc_fee_deposit(&mut self, bucket: Bucket) {
+            self.fee_vault.deposit(bucket);
+        }
+
+        /// Pays `fee` out of the fee vault for the current transaction.
+        fn esc_pay_fee(&mut self, fee: Amount) {
+            self.fee_vault.pay_fee(fee);
+        }
+
+        /// Moves `fee` of the escrowed resource from custody into the fee vault (used when a tip pays its own
+        /// sponsored fee out of the tipper's budget).
+        fn esc_move_to_fee(&mut self, fee: Amount) {
+            let b = self.vault.withdraw(fee);
+            self.fee_vault.deposit(b);
         }
 
         /// Records a sponsored fee against `did`. The account's escrow has to be able to cover everything it has
@@ -800,14 +841,14 @@ mod bskyclaim {
             self.charge_sponsored(&did, fee);
             self.do_decline(&did, sender, amount, refund_epoch);
             self.sponsored.entry(did).or_insert((0, 0, 0)).1 += 1;
-            self.fee_vault.pay_fee(fee);
+            self.esc_pay_fee(fee);
         }
 
         /// Takes back everything that was returned to `sender`: declined gifts and swept ones.
         pub fn take_returned(&mut self, sender: RistrettoPublicKeyBytes) -> Bucket {
             require_signer(sender);
             let amount = self.returned.remove(&key_hex(&sender)).expect("nothing has been returned to you");
-            self.vault.withdraw(amount)
+            self.esc_withdraw(amount)
         }
 
         pub fn returned_for(&self, sender: RistrettoPublicKeyBytes) -> Amount {
@@ -875,6 +916,28 @@ mod bskyclaim {
             }
             let took = self.reimburse(did, amount);
             self.credit_returned(sender, amount - took);
+        }
+
+        // ---- identity seam ----------------------------------------------------------------------------
+        // The methods below are the ONLY code that reads or writes `known_len` or verifies an operation
+        // chain. Feature code goes through them, so account-identity and anti-replay logic lifts out
+        // cleanly into a standalone IdentityRegistry in a later phase.
+
+        /// Rejects a chain shorter than the longest one already seen for `did` (stale, rotated-away key).
+        fn id_require_fresh(&self, did: &str, len: u32) {
+            if let Some(&known) = self.known_len.get(did) {
+                assert!(len >= known, "stale operation chain: a longer one has been seen");
+            }
+        }
+
+        /// Records `len` as the longest chain seen for `did` if it exceeds the current record.
+        fn id_observe(&mut self, did: &str, len: u32) {
+            self.known_len.entry(did.to_string()).and_modify(|l| *l = (*l).max(len)).or_insert(len);
+        }
+
+        /// Sets the longest chain seen for `did` to `len` (used right after a proof verified against it).
+        fn id_set(&mut self, did: &str, len: u32) {
+            self.known_len.insert(did.to_string(), len);
         }
 
         fn check_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::ChainInfo {

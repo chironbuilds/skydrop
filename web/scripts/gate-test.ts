@@ -25,6 +25,13 @@ let now = 1_700_000_000_000;
 let epoch = 100;
 const kv = new Map<string, ArrayBuffer>();
 let deposits: { sender: string; amount: number; created: number }[] = [];
+let delivered: { sender: string; amount: number; created: number }[] = [];
+
+CONFIG.escrow = "component_" + "e".repeat(64);
+CONFIG.claim = "component_" + "c".repeat(64);
+const OTHER_POLICY = { "@cbor": "tag", tag: 132, value: { "@cbor": "bytes", hex: "f".repeat(64) } };
+const CLAIM_POLICY = { "@cbor": "tag", tag: 132, value: { "@cbor": "bytes", hex: "c".repeat(64) } };
+let otherPolicyDeposits: { sender: string; amount: number; created: number }[] = [];
 
 const deps: GateDeps = {
   store: {
@@ -35,9 +42,17 @@ const deps: GateDeps = {
   random: (n) => new Uint8Array(randomBytes(n)),
   indexer: async (path) => {
     if (path.startsWith("epoch-manager/stats")) return { current_epoch: epoch };
-    if (path.startsWith("substates/")) {
-      const rows = deposits.map((d) => [{ "@cbor": "bytes", hex: d.sender }, d.amount, 9999, 0, "", 0, d.created]);
-      return { state: { up: { substate: { Component: { body: { state: [null, 1000, 10, { [DID]: rows }] } } } } } };
+    const wrap = (state: unknown[]) => ({ state: { up: { substate: { Component: { body: { state } } } } } });
+    if (path === `substates/${CONFIG.escrow}`) {
+      // Escrow state: deposits at index 7, each [sender, amount, refund, policy, metadata, created]
+      const row = (policy: unknown) => (d: { sender: string; amount: number; created: number }) => [{ "@cbor": "bytes", hex: d.sender }, d.amount, 9999, policy, { "@cbor": "bytes", hex: "" }, d.created];
+      const rows = [...deposits.map(row(CLAIM_POLICY)), ...otherPolicyDeposits.map(row(OTHER_POLICY))];
+      return wrap([null, null, null, 1000, null, {}, 1, { [DID]: rows }, null, {}, {}]);
+    }
+    if (path === `substates/${CONFIG.claim}`) {
+      // ClaimPolicy state: delivery log at index 8, each [sender, amount, epoch]
+      const log = delivered.map((d) => [{ "@cbor": "bytes", hex: d.sender }, d.amount, d.created]);
+      return wrap([null, null, {}, {}, {}, {}, null, {}, { [DID]: log }]);
     }
     throw new Error("unexpected " + path);
   },
@@ -160,6 +175,37 @@ const viewerPk = toHex(publicKeyFromSecretKey(viewer));
   deposits = [];
   assert.equal((await call(`/api/unlock/${id}`, "POST", unlockBody(id, other))).status, 402);
   ok("a different wallet still can't");
+}
+{
+  // Two posts locked by the same author; one tip that covers either price may unlock only one of them.
+  const second = (await create({ title: "Second" })).body.id as string;
+  const third = (await create({ title: "Third" })).body.id as string;
+  const payer = secret();
+  const payerPk = toHex(publicKeyFromSecretKey(payer));
+  deposits = [{ sender: payerPk, amount: 5_000_000, created: 120 }];
+  now += 1000;
+  assert.equal((await call(`/api/unlock/${second}`, "POST", unlockBody(second, payer))).status, 200);
+  assert.equal((await call(`/api/unlock/${third}`, "POST", unlockBody(third, payer))).status, 402);
+  ok("one payment unlocks one post, not every post the author locked before it");
+  // a second, equal payment in the same epoch is a separate payment
+  deposits.push({ sender: payerPk, amount: 5_000_000, created: 120 });
+  assert.equal((await call(`/api/unlock/${third}`, "POST", unlockBody(third, payer))).status, 200);
+  ok("a second equal payment unlocks a second post");
+}
+{
+  // A gift delivered straight to the author's linked wallet counts too; one under another policy doesn't.
+  const fourth = (await create({ title: "Fourth" })).body.id as string;
+  const fifth = (await create({ title: "Fifth" })).body.id as string;
+  const payer = secret();
+  const payerPk = toHex(publicKeyFromSecretKey(payer));
+  deposits = [];
+  otherPolicyDeposits = [{ sender: payerPk, amount: 5_000_000, created: 130 }];
+  now += 1000;
+  assert.equal((await call(`/api/unlock/${fourth}`, "POST", unlockBody(fourth, payer))).status, 402);
+  ok("a deposit governed by another policy doesn't count");
+  delivered = [{ sender: payerPk, amount: 5_000_000, created: 130 }];
+  assert.equal((await call(`/api/unlock/${fifth}`, "POST", unlockBody(fifth, payer))).status, 200);
+  ok("a gift delivered straight to the linked wallet counts");
 }
 
 console.log(`\n${passed} checks passed`);

@@ -1,0 +1,240 @@
+<h1>Build on the layer</h1>
+<div class="note"><strong>Just want to pay people for doing things on Bluesky?</strong> You don't need a policy for that: the <a href="/docs/campaign">Campaign contract</a> covers it with no code. Write a policy when you need custom logic. All code below is for Ootle 0.49.</div>
+
+    <p class="section-lede">Two ways in. Link the <span class="mono">atp-verify</span> crate directly for the cheap hot path, or call the shared Verifier component from any contract. Then gate your own logic on the result.</p>
+
+    <div class="step"><span class="no">1</span><div class="body">
+      <h3>Verify a post in your own template (crate)</h3>
+      <p>Depend on <span class="mono">atp-verify</span> and prove a record is in the account's repo. Any failure aborts the transaction; after it returns, the record bytes are authentic.</p>
+    </div></div>
+<pre><code><span class="tok-c">// Cargo.toml: atp-verify = { path = "…" }</span>
+<span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &ops).<span class="tok-f">expect</span>(<span class="tok-s">"invalid chain"</span>);
+atp_verify::<span class="tok-f">verify_record</span>(
+    &did, &chain.signing_key, commit, &mst_nodes, record,
+    <span class="tok-s">"app.bsky.feed.post"</span>, &rkey,
+).<span class="tok-f">expect</span>(<span class="tok-s">"record not in repo"</span>);
+
+<span class="tok-c">// now trust the bytes: read any lexicon field</span>
+<span class="tok-k">let</span> text = atp_verify::<span class="tok-f">record_text</span>(record)?;
+<span class="tok-k">let</span> subject = atp_verify::<span class="tok-f">field_str</span>(record, &[<span class="tok-s">"subject"</span>, <span class="tok-s">"uri"</span>])?;</code></pre>
+
+    <div class="step"><span class="no">2</span><div class="body">
+      <h3>Or call the Verifier component (any contract)</h3>
+      <p>Pin the deployed Verifier's address. <span class="mono">prove_record_field</span> verifies and extracts in one call, so you never read an unverified field.</p>
+    </div></div>
+<pre><code><span class="tok-k">let</span> uri: <span class="tok-t">String</span> = ComponentManager::<span class="tok-f">get</span>(verifier)
+    .<span class="tok-f">call</span>(<span class="tok-s">"prove_record_field"</span>, args![
+        did, ops, commit, mst_nodes, record,
+        <span class="tok-s">"app.bsky.feed.like"</span>, rkey, <span class="tok-n">vec!</span>[<span class="tok-s">"subject"</span>, <span class="tok-s">"uri"</span>],
+    ]);
+<span class="tok-c">// uri is now proven to come from a like in `did`'s repo</span></code></pre>
+
+    <div class="step"><span class="no">3</span><div class="body">
+      <h3>Escrow against a policy, release with a badge</h3>
+      <p>Deposits pin to the policy that governs them. Your policy verifies, then presents a proof of its badge to release — the escrow checks the badge id against the pinned policy.</p>
+    </div></div>
+<pre><code><span class="tok-c">// a new account's ledger is opened first; send both in one transaction</span>
+escrow.<span class="tok-f">open_account</span>(account_id);
+<span class="tok-c">// a sender escrows, pinned to your policy, metadata is yours to define</span>
+escrow.<span class="tok-f">deposit</span>(account_id, sender, refund_epoch, my_policy, metadata, funds);
+
+<span class="tok-c">// inside the policy, after verification succeeds:</span>
+<span class="tok-k">let</span> proof = <span class="tok-k">self</span>.badge_vault.<span class="tok-f">create_proof</span>();
+<span class="tok-k">let</span> paid: <span class="tok-t">Bucket</span> = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow)
+    .<span class="tok-f">call</span>(<span class="tok-s">"release"</span>, args![proof, account_id, index]);
+<span class="tok-c">// since Ootle 0.49 a proof shown to a callee stays yours: drop it or the transaction fails</span>
+proof.<span class="tok-f">drop</span>();</code></pre>
+
+    <p class="subhead">A complete policy, end to end</p>
+    <p class="section-lede">Here is a whole feature in one template: <b>LikeGate</b> pays a deposit to an account once it proves it liked a specific post. It shows every moving part — reading the pinned deposit, checking the shared chain floor, verifying a repo record, checking a field, and releasing with the badge. The target post is carried in the deposit's <span class="mono">metadata</span>, so one policy instance serves every campaign. A like is public, so anyone may submit the proof: the payout goes to the wallet the DID linked in the <span class="mono">LinkRegistry</span>, never to the submitter.</p>
+    <p class="filename">like_gate/src/lib.rs</p>
+<pre><code><span class="tok-c">// Deposit tuple mirrored from the escrow so deposits_for decodes:</span>
+<span class="tok-c">// (sender, amount, refund_epoch, policy, metadata, created_epoch)</span>
+<span class="tok-k">type</span> <span class="tok-t">Deposit</span> = (RistrettoPublicKeyBytes, Amount, <span class="tok-t">u64</span>, ComponentAddress, Bytes, <span class="tok-t">u64</span>);
+
+<span class="tok-n">#[template]</span>
+<span class="tok-k">mod</span> like_gate {
+    <span class="tok-k">use</span> super::*;
+
+    <span class="tok-k">pub struct</span> <span class="tok-t">LikeGate</span> { escrow: <span class="tok-t">ComponentAddress</span>, badge_vault: <span class="tok-t">Vault</span>, link_registry: <span class="tok-t">ComponentAddress</span> }
+
+    <span class="tok-k">impl</span> <span class="tok-t">LikeGate</span> {
+        <span class="tok-k">pub fn</span> <span class="tok-f">new</span>(escrow: <span class="tok-t">ComponentAddress</span>, badge: <span class="tok-t">ResourceAddress</span>, link_registry: <span class="tok-t">ComponentAddress</span>) -> <span class="tok-t">Component</span>&lt;<span class="tok-t">Self</span>&gt; {
+            Component::<span class="tok-f">new</span>(<span class="tok-t">Self</span> { escrow, badge_vault: Vault::<span class="tok-f">new_empty</span>(badge), link_registry })
+                .<span class="tok-f">with_access_rules</span>(AccessRules::<span class="tok-f">allow_all</span>()).<span class="tok-f">create</span>()
+        }
+
+        <span class="tok-k">pub fn</span> <span class="tok-f">receive_badge</span>(&<span class="tok-k">mut self</span>, badge: <span class="tok-t">Bucket</span>) { <span class="tok-k">self</span>.badge_vault.<span class="tok-f">deposit</span>(badge); }
+
+        <span class="tok-c">// Anyone submits a like record in `did`'s repo whose subject is the target post.</span>
+        <span class="tok-k">pub fn</span> <span class="tok-f">claim</span>(&<span class="tok-k">mut self</span>, did: <span class="tok-t">String</span>, index: <span class="tok-t">u32</span>,
+                     ops: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Bytes</span>&gt;, commit: <span class="tok-t">Bytes</span>, mst_nodes: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Bytes</span>&gt;,
+                     record: <span class="tok-t">Bytes</span>, rkey: <span class="tok-t">String</span>) {
+            <span class="tok-c">// 1. the deposit must be ours; its metadata names the post that must be liked</span>
+            <span class="tok-k">let</span> me = CallerContext::<span class="tok-f">current_component_address</span>();
+            <span class="tok-k">let</span> deps: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Deposit</span>&gt; = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow)
+                .<span class="tok-f">call</span>(<span class="tok-s">"deposits_for"</span>, args![did.<span class="tok-f">clone</span>()]);
+            <span class="tok-k">let</span> dep = deps.<span class="tok-f">get</span>(index <span class="tok-k">as</span> <span class="tok-t">usize</span>).<span class="tok-f">expect</span>(<span class="tok-s">"no such deposit"</span>);
+            <span class="tok-f">assert!</span>(dep.<span class="tok-n">3</span> == me, <span class="tok-s">"not a LikeGate deposit"</span>);
+            <span class="tok-k">let</span> target = <span class="tok-t">String</span>::<span class="tok-f">from_utf8</span>(dep.<span class="tok-n">4</span>.<span class="tok-f">to_vec</span>()).<span class="tok-f">expect</span>(<span class="tok-s">"bad target"</span>);
+
+            <span class="tok-c">// 2. the chain must be current: a key the registry has seen rotated away proves nothing</span>
+            <span class="tok-k">let</span> ops_s: <span class="tok-t">Vec</span>&lt;&[<span class="tok-t">u8</span>]&gt; = ops.<span class="tok-f">iter</span>().<span class="tok-f">map</span>(|b| b.<span class="tok-f">as_slice</span>()).<span class="tok-f">collect</span>();
+            <span class="tok-k">let</span> nodes: <span class="tok-t">Vec</span>&lt;&[<span class="tok-t">u8</span>]&gt; = mst_nodes.<span class="tok-f">iter</span>().<span class="tok-f">map</span>(|b| b.<span class="tok-f">as_slice</span>()).<span class="tok-f">collect</span>();
+            <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &ops_s).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
+            <span class="tok-k">let</span> registry = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.link_registry);
+            <span class="tok-k">let</span> floor: <span class="tok-t">u32</span> = registry.<span class="tok-f">call</span>(<span class="tok-s">"chain_floor"</span>, args![did.<span class="tok-f">clone</span>()]);
+            <span class="tok-f">assert!</span>(chain.len >= floor, <span class="tok-s">"stale operation chain"</span>);
+
+            <span class="tok-c">// 3. verify the like record really is in the account's signed repo, and points at the target</span>
+            atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, commit.<span class="tok-f">as_slice</span>(),
+                &nodes, record.<span class="tok-f">as_slice</span>(), <span class="tok-s">"app.bsky.feed.like"</span>, &rkey).<span class="tok-f">expect</span>(<span class="tok-s">"bad proof"</span>);
+            <span class="tok-k">let</span> subject = atp_verify::<span class="tok-f">field_str</span>(record.<span class="tok-f">as_slice</span>(), &[<span class="tok-s">"subject"</span>, <span class="tok-s">"uri"</span>]).<span class="tok-f">expect</span>(<span class="tok-s">"no subject"</span>);
+            <span class="tok-f">assert!</span>(subject == target, <span class="tok-s">"that like is for a different post"</span>);
+
+            <span class="tok-c">// 4. pay the DID's own linked wallet, proving our badge (the submitter gets nothing)</span>
+            <span class="tok-k">let</span> wallet: <span class="tok-t">Option</span>&lt;<span class="tok-t">ComponentAddress</span>&gt; = registry.<span class="tok-f">call</span>(<span class="tok-s">"binding_for"</span>, args![did.<span class="tok-f">clone</span>()]);
+            <span class="tok-k">let</span> wallet = wallet.<span class="tok-f">expect</span>(<span class="tok-s">"link a wallet first"</span>);
+            <span class="tok-k">let</span> proof = <span class="tok-k">self</span>.badge_vault.<span class="tok-f">create_proof</span>();
+            ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow).<span class="tok-f">invoke</span>(<span class="tok-s">"release_to"</span>, args![proof, did, index, wallet]);
+            proof.<span class="tok-f">drop</span>();
+        }
+    }
+}</code></pre>
+
+    <p class="subhead">Bounties: like, repost, follow, post</p>
+    <p class="section-lede">A bounty is the same idea scaled to many claimants: the funder escrows a <b>pool of equal slots</b> under one campaign id, each slot's metadata holding the engagement kind and the target. On atproto a retweet is a <span class="mono">repost</span>; likes, reposts and follows are all signed records with a <span class="mono">subject</span>, and a proof-of-post bounty checks a post's text instead, so one policy covers all four with a kind&rarr;collection map. Three rules make it safe: <b>the campaign id names its funder</b> (<span class="mono">&lt;funder key hex&gt;:&lt;name&gt;</span>) and only that funder's deposits count as slots — otherwise anyone could drop a junk slot at the front of someone else's pool and make every claim fail; <b>one claim per account</b> (dedupe by DID); and a <b>claim-code post that binds the payout to the engager's own wallet</b>, so a bystander can't claim someone else's repost to their address.</p>
+    <p class="filename">engagement_bounty/src/lib.rs (the claim method)</p>
+<pre><code><span class="tok-k">fn</span> <span class="tok-f">collection</span>(kind: <span class="tok-t">u8</span>) -> &<span class="tok-k">'static</span> <span class="tok-t">str</span> {
+    <span class="tok-k">match</span> kind { <span class="tok-n">0</span> => <span class="tok-s">"app.bsky.feed.like"</span>, <span class="tok-n">1</span> => <span class="tok-s">"app.bsky.feed.repost"</span>,
+                 <span class="tok-n">2</span> => <span class="tok-s">"app.bsky.graph.follow"</span>, <span class="tok-n">3</span> => <span class="tok-s">"app.bsky.feed.post"</span>, _ => <span class="tok-f">panic!</span>(<span class="tok-s">"unknown kind"</span>) }
+}
+
+<span class="tok-c">// a slot is a deposit governed by this policy AND made by the campaign's funder</span>
+<span class="tok-k">fn</span> <span class="tok-f">is_slot</span>(d: &<span class="tok-t">Deposit</span>, me: &<span class="tok-t">ComponentAddress</span>, funder: &<span class="tok-t">str</span>) -> <span class="tok-t">bool</span> {
+    d.<span class="tok-n">3</span> == *me && <span class="tok-f">key_hex</span>(&d.<span class="tok-n">0</span>) == funder
+}
+
+<span class="tok-k">pub fn</span> <span class="tok-f">claim</span>(&<span class="tok-k">mut self</span>, campaign: <span class="tok-t">String</span>, did: <span class="tok-t">String</span>, claimant: <span class="tok-t">RistrettoPublicKeyBytes</span>,
+             ops: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Bytes</span>&gt;,
+             e: <span class="tok-t">Proofs</span>,   <span class="tok-c">// the engagement record (like / repost / follow / post)</span>
+             c: <span class="tok-t">Proofs</span>)   <span class="tok-c">// a claim-code post that binds the payout</span>
+             -> <span class="tok-t">Bucket</span> {
+    CallerContext::<span class="tok-f">assert_badge_in_scope</span>(&amp;NonFungibleAddress::<span class="tok-f">from_public_key</span>(claimant));
+
+    <span class="tok-c">// one claim per account per campaign</span>
+    <span class="tok-k">let</span> done = <span class="tok-k">self</span>.claimed.<span class="tok-f">entry</span>(campaign.<span class="tok-f">clone</span>()).<span class="tok-f">or_default</span>();
+    <span class="tok-f">assert!</span>(done.<span class="tok-f">insert</span>(did.<span class="tok-f">clone</span>()), <span class="tok-s">"this account already claimed this bounty"</span>);
+
+    <span class="tok-c">// take the funder's next free slot; its metadata = [kind byte][target]</span>
+    <span class="tok-k">let</span> me = CallerContext::<span class="tok-f">current_component_address</span>();
+    <span class="tok-k">let</span> funder = <span class="tok-f">campaign_funder</span>(&campaign);   <span class="tok-c">// "&lt;funder key hex&gt;:&lt;name&gt;"</span>
+    <span class="tok-k">let</span> deps: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Deposit</span>&gt; = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow).<span class="tok-f">call</span>(<span class="tok-s">"deposits_for"</span>, args![campaign.<span class="tok-f">clone</span>()]);
+    <span class="tok-k">let</span> (idx, meta) = deps.<span class="tok-f">iter</span>().<span class="tok-f">enumerate</span>().<span class="tok-f">find</span>(|(_, d)| <span class="tok-f">is_slot</span>(d, &me, funder))
+        .<span class="tok-f">map</span>(|(i, d)| (i <span class="tok-k">as</span> <span class="tok-t">u32</span>, d.<span class="tok-n">4</span>.<span class="tok-f">clone</span>())).<span class="tok-f">expect</span>(<span class="tok-s">"bounty is exhausted"</span>);
+    <span class="tok-k">let</span> kind = meta.<span class="tok-f">as_slice</span>()[<span class="tok-n">0</span>];
+    <span class="tok-k">let</span> target = <span class="tok-t">String</span>::<span class="tok-f">from_utf8</span>(meta.<span class="tok-f">as_slice</span>()[<span class="tok-n">1</span>..].<span class="tok-f">to_vec</span>()).<span class="tok-f">unwrap</span>();
+
+    <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
+    <span class="tok-k">let</span> floor: <span class="tok-t">u32</span> = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.link_registry).<span class="tok-f">call</span>(<span class="tok-s">"chain_floor"</span>, args![did.<span class="tok-f">clone</span>()]);
+    <span class="tok-f">assert!</span>(chain.len >= floor, <span class="tok-s">"stale operation chain"</span>);
+
+    <span class="tok-c">// 1. claim-code post binds the payout to this claimant's key (no front-running)</span>
+    atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, c.commit, &c.nodes, c.record,
+        <span class="tok-s">"app.bsky.feed.post"</span>, &c.rkey).<span class="tok-f">expect</span>(<span class="tok-s">"bad code proof"</span>);
+    <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">record_text</span>(c.record)?.<span class="tok-f">contains</span>(&<span class="tok-f">claim_code</span>(&me.<span class="tok-f">to_string</span>(), &did, &claimant)),
+        <span class="tok-s">"missing claim code"</span>);
+
+    <span class="tok-c">// 2. the engagement itself matches the campaign target</span>
+    atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, e.commit, &e.nodes, e.record,
+        <span class="tok-f">collection</span>(kind), &e.rkey).<span class="tok-f">expect</span>(<span class="tok-s">"bad engagement proof"</span>);
+    <span class="tok-k">match</span> kind {
+        <span class="tok-n">3</span> => <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_contains</span>(e.record, &[<span class="tok-s">"text"</span>], &target),   <span class="tok-c">// post: text carries the phrase</span>
+                  <span class="tok-s">"the post does not contain the required text"</span>),
+        <span class="tok-n">2</span> => <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_str</span>(e.record, &[<span class="tok-s">"subject"</span>])? == target),          <span class="tok-c">// follow: subject is a DID</span>
+        _ => <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_str</span>(e.record, &[<span class="tok-s">"subject"</span>, <span class="tok-s">"uri"</span>])? == target),   <span class="tok-c">// like / repost: subject.uri</span>
+    }
+
+    <span class="tok-c">// 3. release one slot to the bound claimant</span>
+    <span class="tok-k">let</span> proof = <span class="tok-k">self</span>.badge_vault.<span class="tok-f">create_proof</span>();
+    <span class="tok-k">let</span> paid: <span class="tok-t">Bucket</span> = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow).<span class="tok-f">call</span>(<span class="tok-s">"release"</span>, args![proof, campaign, idx]);
+    proof.<span class="tok-f">drop</span>();
+    paid
+}</code></pre>
+    <p class="flow-note">This slot pool is limited to 64 slots per campaign by the Escrow's per-policy cap. For anything larger, use the <a href="/docs/campaign">Campaign contract</a>, which has no such limit. The funder tops the pool up by escrowing more slots with the same metadata under the same campaign id; when the slots run out, the bounty is closed and any left are refundable after their epoch. A time-boxed campaign just sets that refund epoch to the deadline. <span class="mono">slots_left(campaign)</span> counts only the funder's own slots, so junk deposits never inflate it.</p>
+
+    <p class="subhead">Pay-per-call with service auth</p>
+    <p class="section-lede"><b>ServicePay</b> turns a deposit into a metered credit line for an atproto service. The payer escrows credit for a DID with metadata <span class="mono">price ++ provider DID \n payout account [\n method]</span>. Each call, the user's PDS mints a service-auth JWT; anyone submits it and the policy pays exactly one call's price to the payout the user fixed up front. Whatever can't cover another call is kept as change for the payer.</p>
+    <p class="filename">service_pay/src/lib.rs (the redeem method, abridged)</p>
+<pre><code><span class="tok-k">pub fn</span> <span class="tok-f">redeem</span>(&<span class="tok-k">mut self</span>, did: <span class="tok-t">String</span>, index: <span class="tok-t">u32</span>, ops: <span class="tok-t">Vec</span>&lt;<span class="tok-t">Bytes</span>&gt;, token: <span class="tok-t">String</span>, payout: <span class="tok-t">ComponentAddress</span>) {
+    <span class="tok-k">let</span> dep = <span class="tok-k">self</span>.<span class="tok-f">our_deposit</span>(&did, index);          <span class="tok-c">// dep.3 == this policy</span>
+    <span class="tok-k">let</span> terms = <span class="tok-f">terms_of</span>(&dep.<span class="tok-n">4</span>);
+    <span class="tok-f">assert!</span>(payout.<span class="tok-f">to_string</span>() == terms.payout, <span class="tok-s">"payout is fixed by the credit line"</span>);
+
+    <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
+    <span class="tok-f">assert!</span>(chain.len >= <span class="tok-k">self</span>.<span class="tok-f">chain_floor</span>(&did), <span class="tok-s">"stale operation chain"</span>);
+    <span class="tok-c">// ES256K signature by the account's repo key; then check who issued it, for whom, for what</span>
+    <span class="tok-k">let</span> claims = atp_verify::jwt::<span class="tok-f">verify_service_auth</span>(&token, &chain.signing_key).<span class="tok-f">expect</span>(<span class="tok-s">"bad token"</span>);
+    <span class="tok-f">assert!</span>(claims.iss == did && claims.aud == terms.provider);
+    <span class="tok-k">if</span> !terms.lxm.<span class="tok-f">is_empty</span>() { <span class="tok-f">assert!</span>(claims.lxm.<span class="tok-f">as_deref</span>() == <span class="tok-t">Some</span>(terms.lxm.<span class="tok-f">as_str</span>())); }
+    <span class="tok-f">assert!</span>(<span class="tok-k">self</span>.spent.<span class="tok-f">entry</span>(did.<span class="tok-f">clone</span>()).<span class="tok-f">or_default</span>().<span class="tok-f">insert</span>(<span class="tok-f">hex</span>(&<span class="tok-f">sha256</span>(token.<span class="tok-f">as_bytes</span>()))),
+        <span class="tok-s">"this token was already redeemed"</span>);
+
+    <span class="tok-c">// release the line, pay one call, re-escrow the rest under the same terms (policy_deposit)</span>
+    <span class="tok-c">// or, if it can't cover another call, keep it as change the payer takes back</span>
+    <span class="tok-k">let</span> <span class="tok-k">mut</span> funds: <span class="tok-t">Bucket</span> = <span class="tok-k">self</span>.<span class="tok-f">release</span>(&did, index);
+    ComponentManager::<span class="tok-f">get</span>(payout).<span class="tok-f">invoke</span>(<span class="tok-s">"deposit"</span>, args![funds.<span class="tok-f">take</span>(Amount::<span class="tok-f">from</span>(terms.price))]);
+    <span class="tok-k">self</span>.<span class="tok-f">reescrow_or_keep_change</span>(did, dep, funds);
+}</code></pre>
+    <p class="flow-note">Because the payout is fixed in the deposit, a leaked token can only ever pay the provider the user already chose, and only once. A method-scoped line (<span class="mono">lxm</span>) pays only tokens minted for that one XRPC method. The verifier returns <span class="mono">exp</span> but cannot enforce it — a WASM contract has no wall clock — so single use, not expiry, is what bounds a token on-chain.</p>
+
+    <p class="subhead">List-gated drops: the org vouches</p>
+    <p class="section-lede">It's tempting to airdrop to every account whose chain lists a <span class="mono">*.yourorg.com</span> handle, but that check is worthless: <span class="mono">alsoKnownAs</span> is self-asserted, and anyone can write <span class="mono">ceo.yourorg.com</span> into their own chain. Membership has to be signed by the <b>org</b>. A Bluesky list is exactly that: every <span class="mono">app.bsky.graph.listitem</span> in the org's repo names a member DID and its list. <b>ListDrop</b> pays one slot per member who proves such an item, plus a claim-code post of their own that binds the payout to their wallet.</p>
+    <p class="filename">list_drop/src/lib.rs (the checks in claim)</p>
+<pre><code><span class="tok-c">// slot metadata = snapshot (µs, 8 BE) ++ "at://&lt;org did&gt;/app.bsky.graph.list/&lt;rkey&gt;"</span>
+<span class="tok-k">let</span> terms = <span class="tok-f">terms_of</span>(&meta);
+
+<span class="tok-c">// 1. the org vouches: a listitem in the ORG's repo, for this member, on this list</span>
+<span class="tok-k">let</span> org = atp_verify::<span class="tok-f">verify_plc_chain</span>(&terms.org, &<span class="tok-f">slices</span>(&org_ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad org chain"</span>);
+<span class="tok-f">assert!</span>(org.len >= <span class="tok-f">chain_floor</span>(&terms.org));
+atp_verify::<span class="tok-f">verify_record</span>(&terms.org, &org.signing_key, l_commit, &l_nodes, l_record,
+    <span class="tok-s">"app.bsky.graph.listitem"</span>, &l_rkey).<span class="tok-f">expect</span>(<span class="tok-s">"bad listitem proof"</span>);
+<span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_eq</span>(l_record, &[<span class="tok-s">"subject"</span>], &did));
+<span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_eq</span>(l_record, &[<span class="tok-s">"list"</span>], &terms.list));
+<span class="tok-c">// from a commit made at or after the snapshot: items added and removed before it count for nothing</span>
+<span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">commit_rev_micros</span>(l_commit)? >= terms.snapshot);
+
+<span class="tok-c">// 2. the member binds the payout (code commits to policy, campaign, DID and wallet key)</span>
+<span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
+<span class="tok-f">assert!</span>(chain.len >= <span class="tok-f">chain_floor</span>(&did));
+atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, c_commit, &c_nodes, c_record, <span class="tok-s">"app.bsky.feed.post"</span>, &c_rkey)?;
+<span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">record_text</span>(c_record)?.<span class="tok-f">contains</span>(&<span class="tok-f">claim_code</span>(me, &campaign, &did, &claimant)));</code></pre>
+    <p class="flow-note">A record proof shows the item existed at that commit, not that it still does, so someone removed from the list <em>after</em> the snapshot can still claim with a commit from between. Set the snapshot to the moment the list is final. Funder-namespaced campaigns and one claim per DID work as in the bounty.</p>
+
+    <p class="subhead">Social recovery by guardian posts</p>
+    <p class="section-lede"><b>SocialRecovery</b> lets a vault owner name up to seven guardian DIDs and a threshold in the deposit's metadata (<span class="mono">threshold ++ delay ++ guardian DIDs</span>). If the owner loses their key, guardians each publish a recovery code naming the new owner's account. Once the threshold agrees on the <em>same</em> new owner, a delay starts; the owner can veto it with their key until it ends, and after that anyone can execute and the funds go only to the account the guardians chose.</p>
+    <div class="deflist">
+      <div><code>expected_post_text(vault_id, index, new_owner)</code><p>The code a guardian posts. It commits to this policy, this vault and the new owner, so an approval can't be lifted onto another vault or redirected to another account.</p></div>
+      <div><code>approve(vault_id, index, guardian, new_owner, ops, commit, nodes, record, rkey)</code><p>Anyone relays a guardian's post. Proven against the guardian's current chain (floor-checked). Each approval must use a newer post than that guardian's last, so after a veto an old post can't be replayed; approvals for different new owners never add up.</p></div>
+      <div><code>cancel(vault_id, index)</code><p>The owner, still holding their key, vetoes a pending recovery — the defence against colluding guardians.</p></div>
+      <div><code>execute(vault_id, index, new_owner)</code><p>After the delay, pays the vault into the chosen account with <code>release_to</code>.</p></div>
+    </div>
+
+    <p class="subhead">The claim lifecycle</p>
+    <p class="section-lede">Policies that need a dispute period (like Skydrop's) split the claim in two and add a challenge. A PLC log cannot be proven complete, so a window lets a newer, rotated-away key cancel a stale claim before payout.</p>
+    <div class="deflist">
+      <div><code>start_claim(did, claimant, proof…)</code><p>Verify the coded post and record a pending claim at the current epoch, stamped with the chain's length and tip.</p></div>
+      <div><code>challenge(did, ops)</code><p>Anyone, during the window: present a longer or different valid chain to cancel the pending claim. Guards against a stolen, already-rotated key.</p></div>
+      <div><code>finalize_claim(did) &rarr; Bucket</code><p>Release every deposit whose window has elapsed since the claim started, merged into one bucket. Deposits still inside their window stay escrowed.</p></div>
+    </div>
+<pre><code><span class="tok-c">// finalize: release each payable deposit, newest index first so removals</span>
+<span class="tok-c">// don't shift the ones still waiting, then merge with Bucket::join.</span>
+<span class="tok-k">let</span> <span class="tok-k">mut</span> payout: <span class="tok-t">Option</span>&lt;<span class="tok-t">Bucket</span>&gt; = <span class="tok-t">None</span>;
+<span class="tok-k">for</span> i <span class="tok-k">in</span> payable_indices {        <span class="tok-c">// now &gt;= start + window_of(metadata)</span>
+    <span class="tok-k">let</span> proof = <span class="tok-k">self</span>.badge_vault.<span class="tok-f">create_proof</span>();
+    <span class="tok-k">let</span> b: <span class="tok-t">Bucket</span> = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.escrow).<span class="tok-f">call</span>(<span class="tok-s">"release"</span>, args![proof, did.<span class="tok-f">clone</span>(), i]);
+    proof.<span class="tok-f">drop</span>();
+    payout = <span class="tok-t">Some</span>(<span class="tok-k">match</span> payout { <span class="tok-t">Some</span>(acc) => acc.<span class="tok-f">join</span>(b), <span class="tok-t">None</span> => b });
+}</code></pre>
+
+    <div class="note"><b>Trust boundary to honor.</b> Everything the layer trusts is bound by a signature or a hash. The CBOR reader does not enforce canonical form on purpose — it is safe only because non-canonical bytes let an account mangle <em>its own</em> data, never forge another's. Any new path that reads a field without a covering signature or hash breaks that guarantee.</div>

@@ -121,6 +121,31 @@ async fn sign_dry_run_submit(p: &mut IndexerProvider<OotleWallet>, tx: UnsignedT
     }
 }
 
+/// Submits a transaction and returns the first created (component, resource) addresses from its receipt,
+/// so a deploy can chain one instantiation's output into the next without reading method return values
+/// (the live indexer omits `execution_results`).
+async fn submit_new(p: &mut IndexerProvider<OotleWallet>, tx: UnsignedTransaction) -> (Option<ComponentAddress>, Option<ResourceAddress>) {
+    let dry = p.sign_and_send_dry_run(tx.clone()).await.expect("dry run");
+    if let Some(r) = dry.finalize.result.any_reject() {
+        panic!("dry run rejected: {r:?}");
+    }
+    let req = TransactionRequest::default().with_transaction(tx).build(p.wallet()).await.unwrap();
+    let pending = p.send_transaction(req).await.expect("submit");
+    pending.watch().await.expect("watch");
+    let receipt = pending.get_receipt().await.expect("receipt");
+    let (mut comp, mut res) = (None, None);
+    for up in receipt.diff_summary.upped.iter() {
+        if comp.is_none() {
+            comp = up.substate_id.as_component_address();
+        }
+        if res.is_none() {
+            res = up.substate_id.as_resource_address();
+        }
+    }
+    println!("  submitted {} -> component={comp:?} resource={res:?}", pending.tx_id());
+    (comp, res)
+}
+
 async fn fee_for(p: &IndexerProvider<OotleWallet>, tx: UnsignedTransaction) -> u64 {
     let dry = p.sign_and_send_dry_run(tx).await.expect("dry run");
     let receipt = &dry.finalize.fee_receipt;
@@ -224,6 +249,93 @@ async fn main() {
             let fee = fee_for(&p, call(5_000_000).await.unwrap()).await;
             let tx = call(fee).await.unwrap();
             sign_dry_run_submit(&mut p, tx, submit).await;
+        },
+        // deploy-stack <escrow_t> <claim_t> <tip_t> <eb_t> <link_t> <verifier_t> [min_deposit] [bot_did] [bind_delay] [service_pay_t|-] [social_recovery_t|-] [list_drop_t]
+        "deploy-stack" => {
+            let tmpl = |i: usize| PublishedTemplateAddress::from_str(&args[i]).expect("template address");
+            let (escrow_t, claim_t, tip_t, eb_t, link_t, verifier_t) = (tmpl(1), tmpl(2), tmpl(3), tmpl(4), tmpl(5), tmpl(6));
+            let min: u64 = arg(7, "1000").parse().unwrap();
+            let bot_did = arg(8, "did:plc:lsdjnz7b7du3e3rkawynfsqd");
+            let bind_delay: u64 = arg(9, "0").parse().unwrap();
+            let admin = identity_bytes(&load_named("wallet"));
+            let mut p = connect_as("wallet").await;
+
+            println!("verifier.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(verifier_t.as_template_address(), "new", args![]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (verifier_c, _) = submit_new(&mut p, tx).await;
+
+            println!("escrow.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(escrow_t.as_template_address(), "new", args![TARI_TOKEN, Amount::new(u128::from(min)), admin]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (escrow_c, badge_res) = submit_new(&mut p, tx).await;
+            let escrow_c = escrow_c.expect("escrow component");
+            let badge_res = badge_res.expect("policy badge resource");
+
+            // The registry comes first: every policy takes it in its constructor (no setter, so no window in
+            // which someone else could point a policy at a registry of their own).
+            println!("link_registry.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(link_t.as_template_address(), "new", args![bind_delay]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (link_c, _) = submit_new(&mut p, tx).await;
+            let link_c = link_c.expect("link component");
+
+            println!("claim.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(claim_t.as_template_address(), "new", args![escrow_c, badge_res, link_c]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (claim_c, _) = submit_new(&mut p, tx).await;
+            let claim_c = claim_c.expect("claim component");
+
+            println!("tip.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(tip_t.as_template_address(), "new", args![escrow_c, claim_c, TARI_TOKEN, badge_res, bot_did.clone(), link_c]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (tip_c, _) = submit_new(&mut p, tx).await;
+            let tip_c = tip_c.expect("tip component");
+
+            println!("engagement_bounty.new");
+            let me = max_epoch(&p).await;
+            let tx = IComponent::new(&p, me).call_function(eb_t.as_template_address(), "new", args![escrow_c, badge_res, link_c]).pay_fee(8_000_000u64).prepare().await.unwrap();
+            let (eb_c, _) = submit_new(&mut p, tx).await;
+            let eb_c = eb_c.expect("engagement-bounty component");
+
+            // Optional extra policies after bind_delay: [service_pay_t] [social_recovery_t] [list_drop_t];
+            // pass "-" to skip one.
+            let mut extra: Vec<(&str, ComponentAddress)> = vec![];
+            for (i, name) in [(10, "service_pay"), (11, "social_recovery"), (12, "list_drop")] {
+                let Some(t) = args.get(i).filter(|t| t.as_str() != "-") else { continue };
+                println!("{name}.new");
+                let t = PublishedTemplateAddress::from_str(t).expect("policy template address");
+                let ctor = if name == "service_pay" { args![escrow_c, badge_res, TARI_TOKEN, link_c] } else { args![escrow_c, badge_res, link_c] };
+                let me = max_epoch(&p).await;
+                let tx = IComponent::new(&p, me).call_function(t.as_template_address(), "new", ctor).pay_fee(8_000_000u64).prepare().await.unwrap();
+                extra.push((name, submit_new(&mut p, tx).await.0.expect("policy component")));
+            }
+
+            for (name, pol) in [("claim", claim_c), ("tip", tip_c), ("engagement_bounty", eb_c)].into_iter().chain(extra.iter().copied()) {
+                println!("approve_policy + receive_badge: {name}");
+                let me = max_epoch(&p).await;
+                let tx = IComponent::new(&p, me)
+                    .call_method(escrow_c, "approve_policy", args![pol])
+                    .put_last_instruction_output_on_workspace("badge")
+                    .call_method(pol, "receive_badge", args![Workspace("badge")])
+                    .pay_fee(8_000_000u64)
+                    .prepare()
+                    .await
+                    .unwrap();
+                submit_new(&mut p, tx).await;
+            }
+
+            println!("\n=== DEPLOYED (Esmeralda) ===");
+            println!("verifier  {verifier_c:?}");
+            println!("escrow    {escrow_c}");
+            println!("claim     {claim_c}");
+            println!("tip       {tip_c}");
+            println!("bounty    {eb_c}");
+            println!("link      {link_c}");
+            for (name, c) in &extra {
+                println!("{name} {c}");
+            }
+            println!("badge_res {badge_res}");
         },
         "deposit" => {
             let component = ComponentAddress::from_str(&args[1]).unwrap();

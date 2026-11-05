@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "atp-verify-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+atp-verify = { path = "../atp-verify" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
