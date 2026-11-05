@@ -18,4 +18,8 @@ export const DEPLOYMENT = {
 export const SKYDROP = "https://skydrop.tari.mw";
 export const participantLink = (encoded: string): string => `${SKYDROP}/quests#add=${encoded}`;
 
-export const isPublished = (): boolean => !!DEPLOYMENT.campaignTemplate && !!DEPLOYMENT.linkRegistry;
+/** The contracts are on the network. */
+export const contractsOnNetwork = (): boolean => !!DEPLOYMENT.campaignTemplate && !!DEPLOYMENT.linkRegistry;
+/** Campaigns can actually be funded and claimed from these sites. Only turn on once that's built and tested live. */
+const FUNDING_READY = false;
+export const isPublished = (): boolean => contractsOnNetwork() && FUNDING_READY;

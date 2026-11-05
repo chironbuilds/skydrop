@@ -1,4 +1,4 @@
-import { DEPLOYMENT, isPublished, participantLink } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished, participantLink } from "../data/deployment";
 import { PLAYBOOKS } from "../data/playbooks";
 import { questArt } from "../lib/art";
 import { fetchPost, resolveActor, parseAtUri, targetLink, toTarget, type PostInfo } from "../lib/atproto";
@@ -596,7 +596,7 @@ export function builderPage(): Page {
               ),
               isPublished()
                 ? h("p", { class: "muted small-text" }, "Launch with: node scripts/create-campaign.mjs manifest.json")
-                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), " The contract isn't published on the network, so this stops at the preview and manifest."),
+                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
             ],
       ),
     );

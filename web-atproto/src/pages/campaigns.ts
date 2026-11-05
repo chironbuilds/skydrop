@@ -1,4 +1,4 @@
-import { DEPLOYMENT, isPublished } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { PLAYBOOKS, type Playbook } from "../data/playbooks";
 import { h, pageHead, pill, replace } from "../lib/dom";
 import { exposure, newSpec, QUICK_ACTIONS, QUICK_STARTS, RULES, toMicro, type RuleKind, type Spec } from "../lib/campaign";
@@ -72,7 +72,7 @@ export function campaignsPage(): Page {
         h("h2", { id: "live", class: "big" }, "Live campaigns"),
         DEPLOYMENT.live.length
           ? h("div", { class: "grid g3" }, DEPLOYMENT.live.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("div", { class: "foot-line" }, `${c.component.slice(0, 22)}…`))))
-          : h("div", { class: "note" }, h("strong", null, isPublished() ? "No campaigns are running yet." : "No campaigns can run yet."), " ", isPublished() ? "Be the first: pick a playbook below." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today."),
+          : h("div", { class: "note" }, h("strong", null, isPublished() ? "No campaigns are running yet." : "No campaigns can run yet."), " ", isPublished() ? "Be the first: pick a playbook below." : (contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today.")),
       ),
 
       h("section", { style: "margin-top:44px" },

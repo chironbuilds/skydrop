@@ -1,5 +1,5 @@
 import { TESTS, TESTED_AT } from "../data/tests";
-import { DEPLOYMENT, isPublished } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { h, pageHead, pill, replace } from "../lib/dom";
 import type { Page } from "../main";
 
@@ -12,7 +12,8 @@ const ROADMAP: [string, "done" | "next" | "later", string][] = [
   ["Move Skydrop's app to 0.49", "next", "skydrop.tari.mw still targets contracts from before the network reset."],
   ["Per-account Escrow ledgers", "done", "Nobody can fill the shared Escrow with dust any more. Nothing shared grows with deposits."],
   ["Per-account LinkRegistry records", "done", "Nobody can bloat the registry to raise claim costs or stop key rotations being recorded."],
-  ["Fix older policies' shared state", "next", "ClaimPolicy and others still keep per-account data in one component. See the trust boundaries."],
+  ["Per-account ClaimPolicy records", "done", "Fake accounts can't fill the gift policy, and post text is capped."],
+  ["Review remaining policies' shared state", "next", "TipPolicy, EngagementBounty, ListDrop, ServicePay and SocialRecovery. See the trust boundaries."],
   ["Third-party audit", "later", "Needed before real funds on mainnet."],
   ["Mainnet", "later", "After the audit, on the mainnet's final fee table."],
 ];
@@ -36,7 +37,7 @@ export function statusPage(): Page {
     body: h("div", { class: "wrap narrow" },
       pageHead("Status", "Where things actually stand", "What's built, what's tested, what's deployed and what isn't. Updated by hand with each release."),
       h("div", { class: "grid g3", style: "margin-top:0" },
-        h("div", { class: "card" }, h("span", { class: "tag" }, "contracts"), h("h3", null, isPublished() ? "Published" : "Not published"), h("p", null, isPublished() ? `On the ${DEPLOYMENT.network}.` : `Built and tested against Ootle ${DEPLOYMENT.ootle}. Nothing is on the network since its reset.`)),
+        h("div", { class: "card" }, h("span", { class: "tag" }, "contracts"), h("h3", null, contractsOnNetwork() ? "Published" : "Not published"), h("p", null, contractsOnNetwork() ? (isPublished() ? `Live on the ${DEPLOYMENT.network}.` : `On the ${DEPLOYMENT.network}. Funding and claiming from the site is still being built.`) : `Built and tested against Ootle ${DEPLOYMENT.ootle}. Nothing is on the network since its reset.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, "tests"), h("h3", null, `${total} passing`), h("p", null, `Run on ${TESTED_AT}. Every deliberately broken safety check was caught: 26 in Campaign, 14 in the Escrow and 18 in the LinkRegistry.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, DEPLOYMENT.network.toLowerCase()), live),
       ),
@@ -57,7 +58,7 @@ export function statusPage(): Page {
       )),
 
       h("h2", { class: "big", style: "margin-top:40px" }, "Deployed addresses"),
-      isPublished()
+      contractsOnNetwork()
         ? h("div", { class: "tablewrap" }, h("table", null, h("tbody", null, [["Campaign template", DEPLOYMENT.campaignTemplate], ["LinkRegistry", DEPLOYMENT.linkRegistry], ["Verifier", DEPLOYMENT.verifier]].map(([a, b]) => h("tr", null, h("td", null, a), h("td", { class: "m" }, b))))))
         : h("p", { class: "muted", style: "margin-top:8px" }, "None on the current network. Addresses from before the 0.49 reset no longer exist."),
 

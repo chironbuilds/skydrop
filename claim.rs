@@ -297,7 +297,7 @@ fn setup() -> Setup {
     let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
-    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test
@@ -364,6 +364,7 @@ fn window_zero_deposit_claims_immediately() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 5_000, 100, 0);
     let claimant = user(&mut s.test);
@@ -380,6 +381,7 @@ fn deposit_stays_escrowed_until_its_window_passes() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 7_000, 100, 3); // window of 3 epochs
     let claimant = user(&mut s.test);
@@ -399,6 +401,7 @@ fn finalize_pays_every_elapsed_deposit_in_one_call() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let a = user(&mut s.test);
     let b = user(&mut s.test);
     deposit(&mut s, &a, &acct.did, 2_000, 100, 0);
@@ -452,6 +455,7 @@ fn phrase_deposit_pays_only_when_phrase_posted() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit_phrase(&mut s, &sender, &acct.did, 4_000, 100, 0, "launch");
     let claimant = user(&mut s.test);
@@ -499,6 +503,7 @@ fn hold_deposit_pays_only_after_the_post_is_held() {
     let mut s = setup();            // epoch 1
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit_hold(&mut s, &sender, &acct.did, 6_000, 100, 0, 2); // 2-epoch hold, no window
     let claimant = user(&mut s.test);
@@ -531,6 +536,7 @@ fn sponsored_start_and_finalize_are_paid_by_the_fee_vault() {
     // A 0.5 tTARI deposit for the account, enough to cover the sponsored fees it will draw.
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 500_000, 100, 0);
     let claimant = user(&mut s.test);
@@ -592,6 +598,7 @@ fn a_huge_window_deposit_cannot_block_real_deposits_and_is_swept() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let honest = user(&mut s.test);
     let griefer = user(&mut s.test);
     deposit(&mut s, &honest, &acct.did, 5_000, 100, 0);
@@ -613,6 +620,7 @@ fn an_unanswered_phrase_gift_is_swept_back_only_after_72_epochs() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     deposit_phrase(&mut s, &sender, &acct.did, 4_000, 500, 0, "launch");
     let anyone = user(&mut s.test);
@@ -633,6 +641,7 @@ fn out_of_range_metadata_never_pays() {
     let mut s = setup();
     let acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let sender = user(&mut s.test);
     // window 11 (> MAX_WINDOW 10), and a bad envelope flag: both invalid, so nothing is payable.
     deposit_raw(&mut s, &sender, &acct.did, 3_000, 100, 11u64.to_be_bytes().to_vec());
@@ -651,6 +660,7 @@ fn a_rotated_away_key_cannot_claim_once_the_registry_has_seen_the_rotation() {
     let mut s = setup();
     let mut acct = Account::new();
     ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
     let thief = acct.clone(); // holds the old repo key and the old (shorter) chain
     acct.rotate();
     // the owner rotated; someone (the bot) shows the registry the new chain
@@ -671,4 +681,505 @@ fn a_rotated_away_key_cannot_claim_once_the_registry_has_seen_the_rotation() {
     // the real owner, with the new key and chain, can
     start_claim(&mut s, &claimant, &acct, "3jbbbbbbbbbbb");
     finalize(&mut s, &claimant, &acct.did, true);
+}
+
+fn claim_bytes(s: &Setup) -> usize {
+    tari_bor::encode(&s.test.read_only_state_store().get_component(s.claim).unwrap()).unwrap().len()
+}
+
+fn start_tx(s: &Setup, claimant: &U, acct: &Account, post: &Post) -> tari_ootle_transaction::Transaction {
+    s.test.transaction()
+        .call_method(s.claim, "start_claim", args![acct.did.clone(), claimant.id, bytes_list(&acct.ops), Bytes::from_vec(post.commit.clone()), bytes_list(&post.nodes), Bytes::from_vec(post.record.clone()), post.rkey.clone()])
+        .build_and_seal(&claimant.key)
+}
+
+/// The attack this design stops: self-made accounts, minimum deposits and the longest posts allowed, repeated. It used
+/// to pile post text into one 1 MiB component. Now the component doesn't grow, and an honest claim still goes through.
+#[test]
+fn fake_accounts_with_long_posts_cannot_fill_the_policy() {
+    let mut s = setup();
+    let griefer = user(&mut s.test);
+    let start = claim_bytes(&s);
+    for _ in 0..25 {
+        let acct = Account::new();
+        ensure_open(&mut s.test, s.claim, &acct.did);
+        ensure_open(&mut s.test, s.reg, &acct.did);
+        deposit(&mut s, &griefer, &acct.did, 1_000, 100, 0);
+        let code: String = s.test.call_method(s.claim, "expected_post_text", args![acct.did.clone(), griefer.id], vec![]);
+        let post = acct.post(&format!("{code}{}", "x".repeat(3_000 - code.len())), "3jaaaaaaaaaaa");
+        let tx = start_tx(&s, &griefer, &acct, &post);
+        s.test.execute_expect_success(tx, vec![griefer.badge.clone()]);
+    }
+    let end = claim_bytes(&s);
+    println!("CLAIM component bytes after 25 maximum-length claims: {start} -> {end}");
+    assert!(end <= start + 8, "component grew from {start} to {end}");
+    assert_eq!(s.test.call_method::<u64>(s.claim, "account_count", args![], vec![]), 25);
+
+    let honest = Account::new();
+    ensure_open(&mut s.test, s.claim, &honest.did);
+    ensure_open(&mut s.test, s.reg, &honest.did);
+    let sender = user(&mut s.test);
+    deposit(&mut s, &sender, &honest.did, 5_000, 100, 0);
+    let c = user(&mut s.test);
+    let before = s.test.call_method::<Amount>(c.account, "balance", args![TARI_TOKEN], vec![]);
+    start_claim(&mut s, &c, &honest, "3jaaaaaaaaaaa");
+    let tx = s.test.transaction()
+        .call_method(s.claim, "finalize_claim", args![honest.did.clone()])
+        .put_last_instruction_output_on_workspace("paid")
+        .call_method(c.account, "deposit", args![Workspace("paid")])
+        .build_and_seal(&c.key);
+    s.test.execute_expect_success(tx, vec![c.badge.clone()]);
+    assert_eq!(s.test.call_method::<Amount>(c.account, "balance", args![TARI_TOKEN], vec![]), before + Amount::from(5_000u64));
+}
+
+#[test]
+fn a_post_longer_than_bluesky_allows_is_refused() {
+    let mut s = setup();
+    let acct = Account::new();
+    ensure_open(&mut s.test, s.claim, &acct.did);
+    ensure_open(&mut s.test, s.reg, &acct.did);
+    let c = user(&mut s.test);
+    deposit(&mut s, &c, &acct.did, 1_000, 100, 0);
+    let code: String = s.test.call_method(s.claim, "expected_post_text", args![acct.did.clone(), c.id], vec![]);
+    let long = acct.post(&format!("{code}{}", "x".repeat(3_001 - code.len())), "3jaaaaaaaaaaa");
+    let tx = start_tx(&s, &c, &acct, &long);
+    let why = format!("{:?}", s.test.execute_expect_failure(tx, vec![c.badge.clone()]));
+    assert!(why.contains("longer than Bluesky allows"), "{why}");
+    // exactly at the limit is fine, so no real post is affected
+    let fits = acct.post(&format!("{code}{}", "x".repeat(3_000 - code.len())), "3jaaaaaaaaaaa");
+    let tx = start_tx(&s, &c, &acct, &fits);
+    s.test.execute_expect_success(tx, vec![c.badge.clone()]);
+}
+
+#[test]
+fn a_record_opens_once_and_a_second_open_cannot_wipe_a_claim() {
+    let mut s = setup();
+    let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
+    let c = user(&mut s.test);
+    deposit(&mut s, &c, &acct.did, 1_000, 100, 0);
+    let code: String = s.test.call_method(s.claim, "expected_post_text", args![acct.did.clone(), c.id], vec![]);
+    let post = acct.post(&code, "3jaaaaaaaaaaa");
+    // no record yet: the claim fails
+    let tx = start_tx(&s, &c, &acct, &post);
+    s.test.execute_expect_failure(tx, vec![c.badge.clone()]);
+    // opening and claiming together, which is what a client sends for a new account
+    let tx = s.test.transaction()
+        .call_method(s.claim, "open_account", args![acct.did.clone()])
+        .call_method(s.claim, "start_claim", args![acct.did.clone(), c.id, bytes_list(&acct.ops), Bytes::from_vec(post.commit.clone()), bytes_list(&post.nodes), Bytes::from_vec(post.record.clone()), post.rkey.clone()])
+        .build_and_seal(&c.key);
+    s.test.execute_expect_success(tx, vec![c.badge.clone()]);
+    let pending = |s: &mut Setup| s.test.call_method::<Option<(RistrettoPublicKeyBytes, u64)>>(s.claim, "pending_for", args![acct.did.clone()], vec![]);
+    assert!(pending(&mut s).is_some());
+    // a stranger opening again fails, and the pending claim is untouched
+    let stranger = user(&mut s.test);
+    let tx = s.test.transaction().call_method(s.claim, "open_account", args![acct.did.clone()]).build_and_seal(&stranger.key);
+    s.test.execute_expect_failure(tx, vec![stranger.badge.clone()]);
+    assert!(pending(&mut s).is_some());
+}
+
+#[test]
+fn a_full_record_vault_is_replaced_and_old_records_keep_working() {
+    let mut test = TemplateTest::new(CRATE_PATH, [ESCROW, CLAIM, LINK]);
+    set_epoch(&mut test, 1);
+    let (escrow_t, claim_t, link_t) = (test.get_template_address("Escrow"), test.get_template_address("ClaimPolicy"), test.get_template_address("LinkRegistry"));
+    let admin = user(&mut test);
+    let tx = test.transaction().call_function(escrow_t, "new", args![TARI_TOKEN, Amount::from(1_000u64), admin.id, 20_000u32]).build_and_seal(&admin.key);
+    test.execute_expect_success(tx, vec![admin.badge.clone()]);
+    let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
+    let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
+    test.execute_expect_success(tx, vec![admin.badge.clone()]);
+    let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
+    for bad in [0u32, 20_001] {
+        let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, bad]).build_and_seal(&admin.key);
+        test.execute_expect_failure(tx, vec![admin.badge.clone()]);
+    }
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 2u32]).build_and_seal(&admin.key);
+    test.execute_expect_success(tx, vec![admin.badge.clone()]);
+    let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
+    let tx = test.transaction().call_method(escrow, "approve_policy", args![claim]).put_last_instruction_output_on_workspace("b").call_method(claim, "receive_badge", args![Workspace("b")]).build_and_seal(&admin.key);
+    test.execute_expect_success(tx, vec![admin.badge.clone()]);
+    let mut s = Setup { test, escrow, claim, reg };
+    let first = Account::new();
+    ensure_open(&mut s.test, s.claim, &first.did);
+    ensure_open(&mut s.test, s.reg, &first.did);
+    for i in 0..6 {
+        ensure_open(&mut s.test, s.claim, &format!("did:plc:v{i}"));
+    }
+    let res: ResourceAddress = s.test.call_method(s.claim, "record_resource", args![], vec![]);
+    let vaults = s.test.read_only_state_store().get_vaults_for_component(s.claim).unwrap();
+    let sizes: Vec<usize> = vaults.values().filter(|v| *v.resource_address() == res).map(|v| v.get_non_fungible_ids().len()).collect();
+    assert!(sizes.len() >= 4 && sizes.iter().all(|n| *n <= 2), "vault sizes {sizes:?}");
+    // the first account's record sits in a full vault and still works
+    let c = user(&mut s.test);
+    deposit(&mut s, &c, &first.did, 1_000, 100, 0);
+    start_claim(&mut s, &c, &first, "3jaaaaaaaaaaa");
+}
+
+// ---- the policy's rules, one by one ---------------------------------------------------------------------
+// Each of these covers a rule that could once be removed without any test noticing (scripts/wsl-mutate-claim.sh).
+
+fn fail_with(test: &mut TemplateTest, tx: tari_ootle_transaction::Transaction, badge: NonFungibleAddress, why: &str) {
+    let reason = format!("{:?}", test.execute_expect_failure(tx, vec![badge]));
+    assert!(reason.contains(why), "expected failure {why:?}, got: {reason}");
+}
+
+fn fresh(s: &mut Setup) -> Account {
+    let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
+    ensure_open(&mut s.test, s.claim, &acct.did);
+    acct
+}
+
+fn pending(s: &mut Setup, did: &str) -> Option<(RistrettoPublicKeyBytes, u64)> {
+    s.test.call_method(s.claim, "pending_for", args![did.to_string()], vec![])
+}
+
+fn code_for(s: &mut Setup, acct: &Account, who: &U) -> String {
+    s.test.call_method(s.claim, "expected_post_text", args![acct.did.clone(), who.id], vec![])
+}
+
+fn fund_vault(s: &mut Setup) {
+    let f = user(&mut s.test);
+    let tx = s.test.transaction()
+        .call_method(f.account, "withdraw", args![TARI_TOKEN, Amount::from(5_000_000u64)])
+        .put_last_instruction_output_on_workspace("f")
+        .call_method(s.escrow, "fund", args![Workspace("f")])
+        .build_and_seal(&f.key);
+    s.test.execute_expect_success(tx, vec![f.badge.clone()]);
+}
+
+fn link(s: &mut Setup, acct: &Account, wallet: &U) {
+    let code: String = s.test.call_method(s.reg, "expected_bind_text", args![acct.did.clone(), wallet.account, wallet.id], vec![]);
+    let p = acct.post(&code, "3jbindaaaaaaa");
+    let tx = s.test.transaction()
+        .call_method(s.reg, "bind", args![acct.did.clone(), wallet.account, wallet.id, bytes_list(&acct.ops), Bytes::from_vec(p.commit), bytes_list(&p.nodes), Bytes::from_vec(p.record), p.rkey])
+        .build_and_seal(&wallet.key);
+    s.test.execute_expect_success(tx, vec![wallet.badge.clone()]);
+}
+
+#[test]
+fn nobody_can_start_a_claim_for_someone_else() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, victim, thief) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 0);
+    let vcode = code_for(&mut s, &acct, &victim);
+    let vpost = acct.post(&vcode, "3jaaaaaaaaaaa");
+
+    // a post with no code
+    let plain = acct.post("hello", "3jaaaaaaaaaaa");
+    let tx = start_tx(&s, &victim, &acct, &plain);
+    fail_with(&mut s.test, tx, victim.badge.clone(), "claim code");
+    // the victim's public post, claimed by the thief under their own key
+    let tx = start_tx(&s, &thief, &acct, &vpost);
+    fail_with(&mut s.test, tx, thief.badge.clone(), "claim code");
+    // naming the victim as claimant without the victim's signature
+    let forged = U { account: thief.account, badge: thief.badge.clone(), key: thief.key.clone(), id: victim.id };
+    let tx = start_tx(&s, &forged, &acct, &vpost);
+    s.test.execute_expect_failure(tx, vec![thief.badge.clone()]);
+    assert!(pending(&mut s, &acct.did).is_none());
+    // the rightful claimant gets through
+    let tx = start_tx(&s, &victim, &acct, &vpost);
+    s.test.execute_expect_success(tx, vec![victim.badge.clone()]);
+    assert_eq!(pending(&mut s, &acct.did).unwrap().0, victim.id);
+}
+
+#[test]
+fn a_claim_needs_a_deposit_and_only_its_claimant_can_finalize() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, claimant, thief) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    // an empty ledger has nothing to claim
+    ensure_open(&mut s.test, s.escrow, &acct.did);
+    let code = code_for(&mut s, &acct, &claimant);
+    let post = acct.post(&code, "3jaaaaaaaaaaa");
+    let tx = start_tx(&s, &claimant, &acct, &post);
+    fail_with(&mut s.test, tx, claimant.badge.clone(), "no deposits");
+
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 0);
+    let tx = start_tx(&s, &claimant, &acct, &post);
+    s.test.execute_expect_success(tx, vec![claimant.badge.clone()]);
+    // the payout can't be taken by someone else
+    let tx = s.test.transaction()
+        .call_method(s.claim, "finalize_claim", args![acct.did.clone()])
+        .put_last_instruction_output_on_workspace("paid")
+        .call_method(thief.account, "deposit", args![Workspace("paid")])
+        .build_and_seal(&thief.key);
+    s.test.execute_expect_failure(tx, vec![thief.badge.clone()]);
+    assert_eq!(escrowed(&mut s), Amount::from(5_000u64));
+    finalize(&mut s, &claimant, &acct.did, true);
+}
+
+#[test]
+fn a_hold_needs_both_the_epochs_and_the_snapshot_time() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit_hold(&mut s, &sender, &acct.did, 6_000, 100, 0, 2);
+    let code = code_for(&mut s, &acct, &c);
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    // a much later snapshot, but proven too early: replaying it later must not count as the post being up
+    confirm(&mut s, &c, &acct, &code, "3jaaaaaaaaaaa", T0 + 5 * HOUR);
+    set_epoch(&mut s.test, 3);
+    finalize(&mut s, &c, &acct.did, false);
+
+    // the other way round: late enough in epochs, but the snapshots are too close together
+    let acct2 = fresh(&mut s);
+    deposit_hold(&mut s, &sender, &acct2.did, 6_000, 100, 0, 2);
+    let code2 = code_for(&mut s, &acct2, &c);
+    start_claim(&mut s, &c, &acct2, "3jaaaaaaaaaaa");
+    set_epoch(&mut s.test, 5);
+    confirm(&mut s, &c, &acct2, &code2, "3jaaaaaaaaaaa", T0 + HOUR);
+    finalize(&mut s, &c, &acct2.did, false);
+    // both together pay
+    confirm(&mut s, &c, &acct2, &code2, "3jaaaaaaaaaaa", T0 + 2 * HOUR);
+    finalize(&mut s, &c, &acct2.did, true);
+}
+
+fn confirm_tx(s: &Setup, who: &U, acct: &Account, post: &Post) -> tari_ootle_transaction::Transaction {
+    s.test.transaction()
+        .call_method(s.claim, "confirm_claim", args![acct.did.clone(), bytes_list(&acct.ops), Bytes::from_vec(post.commit.clone()), bytes_list(&post.nodes), Bytes::from_vec(post.record.clone()), post.rkey.clone()])
+        .build_and_seal(&who.key)
+}
+
+#[test]
+fn a_confirmation_must_be_the_same_post_and_a_newer_snapshot() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit_hold(&mut s, &sender, &acct.did, 6_000, 100, 0, 2);
+    let code = code_for(&mut s, &acct, &c);
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    let other = acct.post_at(&code, "3jbbbbbbbbbbb", T0 + HOUR);
+    let tx = confirm_tx(&s, &c, &acct, &other);
+    fail_with(&mut s.test, tx, c.badge.clone(), "not the post");
+    let edited = acct.post_at(&format!("{code} edited"), "3jaaaaaaaaaaa", T0 + HOUR);
+    let tx = confirm_tx(&s, &c, &acct, &edited);
+    fail_with(&mut s.test, tx, c.badge.clone(), "has changed");
+    confirm(&mut s, &c, &acct, &code, "3jaaaaaaaaaaa", T0 + 2 * HOUR);
+    let older = acct.post_at(&code, "3jaaaaaaaaaaa", T0 + HOUR);
+    let tx = confirm_tx(&s, &c, &acct, &older);
+    fail_with(&mut s.test, tx, c.badge.clone(), "older than one already proven");
+}
+
+fn challenge_tx(s: &Setup, who: &U, did: &str, ops: &[Vec<u8>]) -> tari_ootle_transaction::Transaction {
+    s.test.transaction().call_method(s.claim, "challenge", args![did.to_string(), bytes_list(ops)]).build_and_seal(&who.key)
+}
+
+#[test]
+fn a_challenge_needs_a_longer_or_different_chain_inside_the_window_and_it_sticks() {
+    let mut s = setup();
+    let mut acct = fresh(&mut s);
+    let (sender, c, anyone) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 5);
+    let genesis = acct.ops.clone();
+    acct.rotate();
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+
+    // the chain the claim relied on is no challenge, and neither is a shorter one
+    let tx = challenge_tx(&s, &anyone, &acct.did, &acct.ops);
+    fail_with(&mut s.test, tx, anyone.badge.clone(), "already relies");
+    let tx = challenge_tx(&s, &anyone, &acct.did, &genesis);
+    fail_with(&mut s.test, tx, anyone.badge.clone(), "shorter");
+
+    // a key rotation the claimant left out, but too late
+    let before = acct.ops.clone();
+    let before_key = acct.repo_key.clone();
+    acct.rotate();
+    set_epoch(&mut s.test, 6);
+    let tx = challenge_tx(&s, &anyone, &acct.did, &acct.ops);
+    fail_with(&mut s.test, tx, anyone.badge.clone(), "window has closed");
+
+    // in time, it cancels the claim
+    set_epoch(&mut s.test, 3);
+    let tx = challenge_tx(&s, &anyone, &acct.did, &acct.ops);
+    s.test.execute_expect_success(tx, vec![anyone.badge.clone()]);
+    assert!(pending(&mut s, &acct.did).is_none());
+    finalize(&mut s, &c, &acct.did, false);
+
+    // and the old key can't simply start again: the policy remembers the longer chain
+    let stale = Account { did: acct.did.clone(), ops: before, repo_key: before_key, rotation_key: acct.rotation_key.clone() };
+    let code = code_for(&mut s, &stale, &c);
+    let p = stale.post(&code, "3jbbbbbbbbbbb");
+    let tx = start_tx(&s, &c, &stale, &p);
+    fail_with(&mut s.test, tx, c.badge.clone(), "stale operation chain");
+}
+
+#[test]
+fn the_policy_remembers_the_longest_chain_it_has_seen() {
+    // the registry hasn't been shown this rotation, so only the policy's own memory can refuse the old key
+    let mut s = setup();
+    let mut acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 5);
+    let (old_ops, old_key) = (acct.ops.clone(), acct.repo_key.clone());
+    acct.rotate();
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    let stale = Account { did: acct.did.clone(), ops: old_ops, repo_key: old_key, rotation_key: acct.rotation_key.clone() };
+    let thief = user(&mut s.test);
+    let code = code_for(&mut s, &stale, &thief);
+    let p = stale.post(&code, "3jbbbbbbbbbbb");
+    let tx = start_tx(&s, &thief, &stale, &p);
+    fail_with(&mut s.test, tx, thief.badge.clone(), "stale operation chain");
+}
+
+#[test]
+fn a_linked_claims_old_post_cannot_be_replayed() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, wallet) = (user(&mut s.test), user(&mut s.test));
+    link(&mut s, &acct, &wallet);
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 5);
+    let start = |s: &Setup, p: &Post, who: &U| s.test.transaction()
+        .call_method(s.claim, "start_linked_claim", args![acct.did.clone(), bytes_list(&acct.ops), Bytes::from_vec(p.commit.clone()), bytes_list(&p.nodes), Bytes::from_vec(p.record.clone()), p.rkey.clone()])
+        .build_and_seal(&who.key);
+    let p = acct.post("gm", "3jbbbbbbbbbbb");
+    let tx = start(&s, &p, &sender);
+    s.test.execute_expect_success(tx, vec![sender.badge.clone()]);
+    let started = pending(&mut s, &acct.did).unwrap().1;
+    // someone resubmits the same post later, which would restart the window
+    set_epoch(&mut s.test, 4);
+    let tx = start(&s, &p, &sender);
+    fail_with(&mut s.test, tx, sender.badge.clone(), "newer post");
+    assert_eq!(pending(&mut s, &acct.did).unwrap().1, started);
+}
+
+#[test]
+fn sweeping_waits_for_a_pending_claim() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, c, anyone) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    deposit_phrase(&mut s, &sender, &acct.did, 4_000, 500, 0, "launch");
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    set_epoch(&mut s.test, 100);
+    // the claim could still answer the phrase, so the gift can't be swept out from under it
+    sweep(&mut s, &anyone, &acct.did, false);
+    assert_eq!(returned_for(&mut s, &acct.did, &sender), Amount::zero());
+}
+
+#[test]
+fn only_the_sender_can_pay_linked_and_only_the_owner_can_decline() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, wallet, thief) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
+    link(&mut s, &acct, &wallet);
+    // a delivery can't be logged in someone else's name
+    let tx = s.test.transaction()
+        .call_method(thief.account, "withdraw", args![TARI_TOKEN, Amount::from(1_000u64)])
+        .put_last_instruction_output_on_workspace("f")
+        .call_method(s.claim, "pay_linked", args![acct.did.clone(), sender.id, Workspace("f")])
+        .build_and_seal(&thief.key);
+    s.test.execute_expect_failure(tx, vec![thief.badge.clone()]);
+    // a stranger can't send a gift back
+    deposit(&mut s, &sender, &acct.did, 5_000, 100, 0);
+    let decline = |s: &Setup, who: &U| s.test.transaction()
+        .call_method(s.claim, "decline", args![acct.did.clone(), sender.id, Amount::from(5_000u64), 100u64])
+        .build_and_seal(&who.key);
+    let tx = decline(&s, &thief);
+    s.test.execute_expect_failure(tx, vec![thief.badge.clone()]);
+    assert_eq!(returned_for(&mut s, &acct.did, &sender), Amount::zero());
+    let tx = decline(&s, &wallet);
+    s.test.execute_expect_success(tx, vec![wallet.badge.clone()]);
+    assert_eq!(returned_for(&mut s, &acct.did, &sender), Amount::from(5_000u64));
+}
+
+#[test]
+fn the_delivery_log_keeps_only_the_newest() {
+    let mut s = setup();
+    let acct = fresh(&mut s);
+    let (sender, wallet) = (user(&mut s.test), user(&mut s.test));
+    link(&mut s, &acct, &wallet);
+    for i in 0..33u64 {
+        let tx = s.test.transaction()
+            .call_method(sender.account, "withdraw", args![TARI_TOKEN, Amount::from(1_000 + i)])
+            .put_last_instruction_output_on_workspace("f")
+            .call_method(s.claim, "pay_linked", args![acct.did.clone(), sender.id, Workspace("f")])
+            .build_and_seal(&sender.key);
+        s.test.execute_expect_success(tx, vec![sender.badge.clone()]);
+    }
+    let log: Vec<(RistrettoPublicKeyBytes, Amount, u64)> = s.test.call_method(s.claim, "delivered_for", args![acct.did.clone()], vec![]);
+    assert_eq!(log.len(), 32);
+    assert_eq!(log[0].1, Amount::from(1_001u64));
+    assert_eq!(log[31].1, Amount::from(1_032u64));
+}
+
+const FEE: u64 = 60_000;
+
+#[test]
+fn sponsored_starts_are_capped_per_account() {
+    let mut s = setup();
+    fund_vault(&mut s);
+    let acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 500_000, 100, 0);
+    let code = code_for(&mut s, &acct, &c);
+    let p = acct.post(&code, "3jaaaaaaaaaaa");
+    s.test.enable_fees();
+    for i in 0..4 {
+        let tx = s.test.transaction()
+            .with_fee_instructions_builder(|b| b.call_method(s.claim, "start_claim_sponsored", args![acct.did.clone(), c.id, bytes_list(&acct.ops), Bytes::from_vec(p.commit.clone()), bytes_list(&p.nodes), Bytes::from_vec(p.record.clone()), p.rkey.clone(), Amount::from(FEE)]))
+            .build_and_seal(&c.key);
+        if i < 3 { s.test.execute_expect_success(tx, vec![c.badge.clone()]); } else { fail_with(&mut s.test, tx, c.badge.clone(), "used its sponsored claims"); }
+    }
+    s.test.disable_fees();
+}
+
+#[test]
+fn sponsored_payouts_are_capped_per_account() {
+    let mut s = setup();
+    fund_vault(&mut s);
+    let acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 500_000, 100, 0);
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    s.test.enable_fees();
+    for i in 0..4 {
+        let tx = s.test.transaction()
+            .with_fee_instructions_builder(|b| b.call_method(s.claim, "sponsor_finalize", args![acct.did.clone(), Amount::from(FEE)]))
+            .build_and_seal(&c.key);
+        if i < 3 { s.test.execute_expect_success(tx, vec![c.badge.clone()]); } else { fail_with(&mut s.test, tx, c.badge.clone(), "used its sponsored payouts"); }
+    }
+    s.test.disable_fees();
+}
+
+#[test]
+fn sponsored_confirmations_are_capped_per_account() {
+    let mut s = setup();
+    fund_vault(&mut s);
+    let acct = fresh(&mut s);
+    let (sender, c) = (user(&mut s.test), user(&mut s.test));
+    deposit(&mut s, &sender, &acct.did, 500_000, 100, 0);
+    let code = code_for(&mut s, &acct, &c);
+    start_claim(&mut s, &c, &acct, "3jaaaaaaaaaaa");
+    let p = acct.post(&code, "3jaaaaaaaaaaa");
+    s.test.enable_fees();
+    for i in 0..4 {
+        let tx = s.test.transaction()
+            .with_fee_instructions_builder(|b| b.call_method(s.claim, "confirm_claim_sponsored", args![acct.did.clone(), bytes_list(&acct.ops), Bytes::from_vec(p.commit.clone()), bytes_list(&p.nodes), Bytes::from_vec(p.record.clone()), p.rkey.clone(), Amount::from(FEE)]))
+            .build_and_seal(&c.key);
+        if i < 3 { s.test.execute_expect_success(tx, vec![c.badge.clone()]); } else { fail_with(&mut s.test, tx, c.badge.clone(), "used its sponsored confirmations"); }
+    }
+    s.test.disable_fees();
+}
+
+#[test]
+fn sponsored_declines_are_capped_per_account() {
+    let mut s = setup();
+    fund_vault(&mut s);
+    let acct = fresh(&mut s);
+    let (sender, wallet) = (user(&mut s.test), user(&mut s.test));
+    link(&mut s, &acct, &wallet);
+    for i in 0..4u64 {
+        deposit(&mut s, &sender, &acct.did, 200_000 + i, 100, 0);
+    }
+    s.test.enable_fees();
+    for i in 0..4u64 {
+        let tx = s.test.transaction()
+            .with_fee_instructions_builder(|b| b.call_method(s.claim, "decline_sponsored", args![acct.did.clone(), sender.id, Amount::from(200_000 + i), 100u64, Amount::from(FEE)]))
+            .build_and_seal(&wallet.key);
+        if i < 3 { s.test.execute_expect_success(tx, vec![wallet.badge.clone()]); } else { fail_with(&mut s.test, tx, wallet.badge.clone(), "used its sponsored declines"); }
+    }
+    s.test.disable_fees();
 }

@@ -1,5 +1,5 @@
 import { PLAYBOOKS } from "../data/playbooks";
-import { isPublished } from "../data/deployment";
+import { contractsOnNetwork, isPublished } from "../data/deployment";
 import { encodeOps, fetchProof, latestPost, parseAtUri, pdsOf, plcLog } from "../lib/atproto";
 import { h, replace } from "../lib/dom";
 import { fieldStr, verifyChain, verifyRecord } from "../lib/verify";
@@ -99,7 +99,7 @@ export function homePage(): Page {
           h("a", { class: "btn primary", href: "/campaigns/new" }, "Build a campaign"),
           h("a", { class: "btn ghost", href: "/verify" }, "Run a live proof"),
         ),
-        h("p", { class: "statusline" }, isPublished() ? "Live on the Esmeralda testnet." : "Contracts pass their tests on Ootle 0.49.2 and aren't published on the network yet, so campaigns can be designed and checked but not funded.", " ", h("a", { href: "/status" }, "See status")),
+        h("p", { class: "statusline" }, isPublished() ? "Live on the Esmeralda testnet." : (contractsOnNetwork() ? "The contracts are on the Esmeralda testnet. Funding and claiming from the site is still being built, so for now campaigns can be designed and checked." : "Contracts pass their tests on Ootle 0.49.2 and aren't published on the network yet, so campaigns can be designed and checked but not funded."), " ", h("a", { href: "/status" }, "See status")),
       ), liveProof())),
 
       h("section", { class: "sec" }, h("div", { class: "wrap" },

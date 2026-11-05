@@ -159,7 +159,7 @@ export function campaignPage(id: string): Page {
         keyInput,
         codeOut,
       ),
-      !isPublished() ? h("div", { class: "note warn" }, h("strong", null, "This is a preview."), " No funds exist behind it and nothing can be claimed: the contract isn't published on the network yet.") : null,
+      !isPublished() ? h("div", { class: "note warn" }, h("strong", null, "This is a preview."), " No funds exist behind it, so nothing can be claimed.") : null,
     );
   }
 

@@ -167,7 +167,7 @@ fn linked_account_is_paid_to_its_wallet_without_a_code() {
     let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
-    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
 
@@ -182,6 +182,7 @@ fn linked_account_is_paid_to_its_wallet_without_a_code() {
 
     let acct = Account::new();
     ensure_open(&mut test, reg, &acct.did);
+    ensure_open(&mut test, claim, &acct.did);
     let wallet = user(&mut test); // the account's linked Ootle wallet
 
     // bind did -> wallet
@@ -239,7 +240,7 @@ fn linked_owner_declines_a_gift_and_sender_takes_it_back() {
     let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
-    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction()
@@ -251,6 +252,7 @@ fn linked_owner_declines_a_gift_and_sender_takes_it_back() {
 
     let acct = Account::new();
     ensure_open(&mut test, reg, &acct.did);
+    ensure_open(&mut test, claim, &acct.did);
     let wallet = user(&mut test); // linked wallet + its owner key
     let code: String = test.call_method(reg, "expected_bind_text", args![acct.did.clone(), wallet.account, wallet.id], vec![]);
     let bind_post = acct.post(&code, "3jbindaaaaaaa");
@@ -303,7 +305,7 @@ fn pay_linked_delivers_straight_to_the_wallet_and_is_logged() {
     let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
-    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction()
@@ -315,6 +317,7 @@ fn pay_linked_delivers_straight_to_the_wallet_and_is_logged() {
 
     let acct = Account::new();
     ensure_open(&mut test, reg, &acct.did);
+    ensure_open(&mut test, claim, &acct.did);
     let wallet = user(&mut test);
     let sender = user(&mut test);
     let pay = |test: &mut TemplateTest, expect_ok: bool| {

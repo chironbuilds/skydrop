@@ -7,7 +7,7 @@ export const TESTS: { name: string; covers: string; passed: number }[] = [
   { name: "verifier", covers: "The shared Verifier component's public methods", passed: 3 },
   { name: "escrow", covers: "Custody, refunds, per-account ledgers, vault rotation, deposit lanes, policy approval", passed: 8 },
   { name: "escrowprobe", covers: "The Escrow's rules against approved policies that misbehave", passed: 5 },
-  { name: "claim", covers: "Gifts: windows, phrases, holds, sponsored fees, rotated keys", passed: 10 },
+  { name: "claim", covers: "Gifts: code binding, signatures, windows, phrases, holds, challenges, sponsored caps, records", passed: 28 },
   { name: "linkclaim", covers: "Linked wallets: delivery, code-free claims, declines", passed: 3 },
   { name: "linkreg", covers: "Per-DID records, vault rotation, links, floors, challenges, delays", passed: 7 },
   { name: "tippolicy", covers: "Tips authorized by a signed post", passed: 1 },

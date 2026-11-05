@@ -30,8 +30,8 @@
   <li><b>Consider the rules where you are.</b> Offering rewards can carry legal and tax obligations, which this software knows nothing about.</li>
 </ul>
 
-<h2>Known open issue: older policies' shared state</h2>
-<div class="note warn"><strong>The older policies still keep per-account data in one 1 MiB component, and need the same treatment before mainnet.</strong> That covers ClaimPolicy, TipPolicy, EngagementBounty, ListDrop, ServicePay and SocialRecovery. The most concerning is ClaimPolicy, which stores each pending claim's post text, and an account can sign text far longer than Bluesky allows. From reading the code, a small number of self-made accounts with minimum deposits may be enough to fill it and block new gift claims, though that hasn't been demonstrated yet. Refunds wouldn't be affected. Campaign, the Escrow and the LinkRegistry don't have this problem.</div>
+<h2>Known open issue: other policies' shared state</h2>
+<div class="note warn"><strong>TipPolicy, EngagementBounty, ListDrop, ServicePay and SocialRecovery still keep per-account data in one 1 MiB component, and need reviewing before mainnet.</strong> Campaign, the Escrow, the LinkRegistry and ClaimPolicy have been moved off that design.</div>
 
 <h2>Bugs found so far</h2>
 <p>Internal review of the policy stack found and fixed these before any real funds were at risk. Listed because more of the same kind may remain.</p>
@@ -43,6 +43,7 @@
   <li>A junk slot at the front of a bounty pool could block every claim. Campaign ids now name their funder.</li>
   <li>Every deposit lived in one 1 MiB component, so anyone could fill the shared Escrow with dust and block new deposits for everyone. Each account now has its own ledger, and nothing shared grows with deposits.</li>
   <li>The LinkRegistry had the same shape, so bloating it would have raised the cost of every Campaign claim and then stopped key rotations being recorded. Each DID now has its own record.</li>
+  <li>ClaimPolicy stored each pending claim's whole post text in shared state, and an account can sign text far longer than Bluesky allows, so a few self-made accounts might have filled it and blocked new claims. Each DID now has its own record and post text is capped at 3,000 bytes. The attack was never demonstrated against the old code; the regression test shows it can't work now.</li>
 </ul>
 
 <h2>Reporting a problem</h2>

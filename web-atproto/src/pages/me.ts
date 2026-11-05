@@ -1,4 +1,4 @@
-import { DEPLOYMENT, isPublished } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { questArt } from "../lib/art";
 import { encodeSpec, fromMicro, summarize } from "../lib/campaign";
 import { h, pageHead, replace } from "../lib/dom";
@@ -93,7 +93,7 @@ export function mePage(): Page {
 
   replace(liveBox, isPublished()
     ? h("p", { class: "muted" }, "Campaigns you've funded will be listed here from the network.")
-    : h("div", { class: "note" }, h("strong", null, "Nothing can be launched yet."), " The contract isn't published on the network. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool."));
+    : h("div", { class: "note" }, h("strong", null, "Nothing can be launched yet."), (contractsOnNetwork() ? " Funding from this site is still being built. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool." : " The contract isn't published on the network. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool.")));
 
   const stop = onWallet(drawWallet);
   // stop listening once this page is replaced

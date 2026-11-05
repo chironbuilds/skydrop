@@ -10,7 +10,7 @@ import { checkRule, identity } from "../../web-atproto/src/lib/check";
 import { append, copyButton, h, replace } from "../../web-atproto/src/lib/dom";
 import { assess, totals, type Assessment, type StepView } from "../../web-atproto/src/lib/quests";
 import { connectWallet, friendly, onWallet, shortAddress, silentConnect } from "../../web-atproto/src/lib/wallet";
-import { DEPLOYMENT, isPublished } from "../../web-atproto/src/data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../../web-atproto/src/data/deployment";
 
 const unit = "tTARI";
 const CREATOR = "https://atproto.tari.mw";
@@ -97,7 +97,7 @@ function stepLine(s: StepView): HTMLElement {
 function claimPanel(t: Tracked): HTMLElement {
   // Collecting is added with the first published deployment, so it can be tested against the real contract.
   return h("div", { class: "qclaim" }, h("p", { class: "muted small-text" }, h("strong", null, "Nothing to collect yet. "),
-    t.example ? "This is an example, with no money behind it." : "This is a preview: no funds exist behind it until the contract is published. Your progress here is real."));
+    t.example ? "This is an example, with no money behind it." : "This is a preview, with no funds behind it. Your progress here is real."));
 }
 
 function questCard(t: Tracked, a?: Assessment): HTMLElement {
@@ -265,7 +265,7 @@ append(document.getElementById("app")!, [
     summary,
     board,
     h("section", { class: "qadd" }, h("h2", null, "Add a campaign"), addForm, addMsg),
-    !isPublished() ? h("div", { class: "note warn" }, h("strong", null, "Testnet preview. "), `The campaign contract isn't published on ${DEPLOYMENT.network} yet. Campaigns here are previews with no funds behind them, so nothing can be collected. Once it's live, this page will also show what you've already claimed and when your next round opens.`) : null,
+    !isPublished() ? h("div", { class: "note warn" }, h("strong", null, "Testnet preview. "), `${contractsOnNetwork() ? `The campaign contract is on ${DEPLOYMENT.network}, but funding and claiming from these sites is still being built.` : `The campaign contract isn't published on ${DEPLOYMENT.network} yet.`} Campaigns here are previews with no funds behind them, so nothing can be collected. Once it's live, this page will also show what you've already claimed and when your next round opens.`) : null,
   ),
 ]);
 

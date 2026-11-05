@@ -192,7 +192,7 @@ fn tip_by_post_becomes_a_claim_deposit_for_the_recipient() {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
 
-    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let claim = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
 
@@ -213,9 +213,11 @@ fn tip_by_post_becomes_a_claim_deposit_for_the_recipient() {
     // The tipper (a Bluesky account) and the budget owner (an Ootle wallet) are the same person here.
     let tipper = Account::new();
     ensure_open(&mut test, reg, &tipper.did);
+    ensure_open(&mut test, claim, &tipper.did);
     let owner = user(&mut test);
     let recipient = Account::new(); // just need a valid did:plc for the recipient
     ensure_open(&mut test, reg, &recipient.did);
+    ensure_open(&mut test, claim, &recipient.did);
 
     // Owner funds a budget: 10 tTARI, window 0, refundable after 100, max 6 tTARI per tip.
     let tx = test.transaction()
