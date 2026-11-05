@@ -36,6 +36,7 @@ export function statusPage(): Page {
     title: "Status",
     body: h("div", { class: "wrap narrow" },
       pageHead("Status", "Where things actually stand", "What's built, what's tested, what's deployed and what isn't. Updated by hand with each release."),
+      h("h2", { class: "vh" }, "At a glance"),
       h("div", { class: "grid g3", style: "margin-top:0" },
         h("div", { class: "card" }, h("span", { class: "tag" }, "contracts"), h("h3", null, contractsOnNetwork() ? "Published" : "Not published"), h("p", null, contractsOnNetwork() ? (isPublished() ? `Live on the ${DEPLOYMENT.network}.` : `On the ${DEPLOYMENT.network}. Funding and claiming from the site is still being built.`) : `Built and tested against Ootle ${DEPLOYMENT.ootle}. Nothing is on the network since its reset.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, "tests"), h("h3", null, `${total} passing`), h("p", null, `Run on ${TESTED_AT}. Every deliberately broken safety check was caught: 26 in Campaign, 14 in the Escrow, 18 in the LinkRegistry and 33 in ClaimPolicy.`)),

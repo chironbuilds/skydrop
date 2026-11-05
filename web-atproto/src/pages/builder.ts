@@ -77,6 +77,7 @@ export function builderPage(): Page {
   const errors = new WeakMap<Rule, string>();
 
   const preview = h("div", { class: "side" });
+  const launchBar = h("div", { class: "launchbar" });
   const palette = h("div", { class: "palette", role: "group", "aria-label": "Step types. Drag onto the board, or press to add." });
   const board = h("div", { class: "board" });
   const sentence = h("p", { class: "sentence", "aria-live": "polite" });
@@ -525,6 +526,10 @@ export function builderPage(): Page {
     } catch {
       proj = null;
     }
+    replace(launchBar,
+      h("span", null, blocking.length ? `${blocking.length} thing${blocking.length === 1 ? "" : "s"} to finish` : `Ready: ${fromMicro(spec.budget || "0")} ${unit} pool`),
+      h("button", { class: `btn small ${blocking.length ? "ghost" : "primary"}`, type: "button", onclick: () => document.getElementById("launchpanel")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, blocking.length ? "See what's left" : "Review and launch"),
+    );
     const link = `${location.origin}/c/preview#${encodeSpec(spec)}`;
     const overBudget = proj && spec.root && proj.allocated > BigInt(spec.budget || "0");
 
@@ -554,6 +559,24 @@ export function builderPage(): Page {
           h("p", { class: "muted small-text" }, spec.rules.length ? `${summarize(spec.rules)[0]!.toUpperCase()}${summarize(spec.rules).slice(1)}.` : "Add steps to see them here."),
         ),
       ),
+      problems.length ? h("div", { class: "panel" }, h("h2", null, blocking.length ? "Before this can launch" : "Worth a look"), h("ul", { class: "problems" }, problems.map((p) => h("li", { class: p.level }, p.text)))) : null,
+      h("div", { class: "panel", id: "launchpanel" },
+        h("h2", null, blocking.length ? "Take it further" : "Launch it"),
+        blocking.length
+          ? h("p", { class: "muted small-text" }, "Fix the items above to unlock the preview and the launch files.")
+          : [
+              h("a", { class: "btn primary", href: `/c/preview#${encodeSpec(spec)}` }, "Preview the claim page"),
+              h("p", { class: "muted small-text" }, "Test the rules against any real account. No funds involved. Participants follow their progress and claim on Skydrop."),
+              h("div", { class: "row" },
+                copyButton(() => participantLink(encodeSpec(spec)), "Copy link for participants"),
+                copyButton(() => link, "Copy preview link"),
+                h("button", { class: "btn small ghost", type: "button", onclick: () => download(`${slug(spec.name)}.campaign.json`, JSON.stringify({ spec, create: createArgs(spec, 0, "<your key>", DEPLOYMENT.linkRegistry || "<link registry>"), proofs }, null, 2)) }, "Download manifest"),
+              ),
+              isPublished()
+                ? [h("h3", { style: "margin-top:14px" }, "Launch it"), launchBox(spec)]
+                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
+            ],
+      ),
       cap > 0 ? h("div", { class: "panel" },
         h("h2", null, "What if…"),
         h("input", { type: "range", min: "0", max: String(cap), value: whatIf, "aria-label": "How many people claim", oninput: (e: Event) => { whatIf = Number((e.target as HTMLInputElement).value); drawWhatIf(); } }),
@@ -581,24 +604,6 @@ export function builderPage(): Page {
         h("h2", null, "Fits in a transaction?"),
         h("div", { class: "meter", role: "img", "aria-label": `${Math.round(proj.computeShare * 100)} percent of the compute limit` }, h("i", { style: `width:${Math.min(100, proj.computeShare * 100).toFixed(1)}%` })),
         h("p", { class: "muted small-text" }, `A claim takes about ${Math.round(proj.computeM)}M of the ${POINTS_LIMIT}M compute limit, measured with common keys and a one-operation identity log. Accounts with long logs or P-256 keys cost more.`),
-      ),
-      problems.length ? h("div", { class: "panel" }, h("h2", null, blocking.length ? "Before this can launch" : "Worth a look"), h("ul", { class: "problems" }, problems.map((p) => h("li", { class: p.level }, p.text)))) : null,
-      h("div", { class: "panel" },
-        h("h2", null, "Take it further"),
-        blocking.length
-          ? h("p", { class: "muted small-text" }, "Fix the items above to unlock the preview and the launch files.")
-          : [
-              h("a", { class: "btn primary", href: `/c/preview#${encodeSpec(spec)}` }, "Preview the claim page"),
-              h("p", { class: "muted small-text" }, "Test the rules against any real account. No funds involved. Participants follow their progress and claim on Skydrop."),
-              h("div", { class: "row" },
-                copyButton(() => participantLink(encodeSpec(spec)), "Copy link for participants"),
-                copyButton(() => link, "Copy preview link"),
-                h("button", { class: "btn small ghost", type: "button", onclick: () => download(`${slug(spec.name)}.campaign.json`, JSON.stringify({ spec, create: createArgs(spec, 0, "<your key>", DEPLOYMENT.linkRegistry || "<link registry>"), proofs }, null, 2)) }, "Download manifest"),
-              ),
-              isPublished()
-                ? [h("h3", { style: "margin-top:14px" }, "Launch it"), launchBox(spec)]
-                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
-            ],
       ),
     );
   }
@@ -635,6 +640,7 @@ export function builderPage(): Page {
         ),
         magicOut,
       ),
+      launchBar,
       h("div", { class: "builder", onpointerdown: markEdited, oninput: markEdited, onchange: markEdited, onkeydown: markEdited },
         h("div", null,
           h("div", { class: "panel" },

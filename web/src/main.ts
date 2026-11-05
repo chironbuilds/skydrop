@@ -190,14 +190,12 @@ function eta(epochs: number): string {
 
 type Tab = "home" | "send" | "claim" | "tips" | "link" | "how";
 
-/** The pages that need the gift contracts, which aren't on the current network yet. */
-const GIFT_TABS: Tab[] = ["send", "claim", "tips", "link"];
-
 function layout(active: Tab, ...content: (Node | null)[]): void {
   const link = (href: string, label: string, tab: Tab, cls = "") =>
     h("a", { href, class: cls, "aria-current": active === tab ? "page" : null }, label);
   mount(
     root,
+    h("a", { class: "skip", href: "#main", onclick: (e: Event) => { e.preventDefault(); document.getElementById("main")?.focus(); } }, "Skip to content"),
     h(
       "header",
       { class: "top" },
@@ -225,10 +223,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
         settingsMenu(),
       ),
     ),
-    !deployed() && GIFT_TABS.includes(active)
-      ? h("div", { class: "note warn", style: "margin-bottom:18px" }, h("b", null, "Gifts aren't running right now. "), "They're being moved to the new network, so nothing can be sent or collected here yet. ", h("a", { href: "/quests" }, "See your campaign rewards"), " instead.")
-      : null,
-    ...content,
+    h("main", { id: "main", tabindex: "-1" }, ...content),
     h(
       "footer",
       null,
@@ -508,6 +503,16 @@ function fundsNote(): HTMLElement {
 // ---------------------------------------------------------------------------------------------------------
 // home
 // ---------------------------------------------------------------------------------------------------------
+
+/** Where gift links land while the gift contracts aren't on the network: no form that can only fail at the end. */
+function renderGiftsPaused(): void {
+  layout(
+    "home",
+    h("h1", { class: "page" }, "Gifts aren't running right now"),
+    h("p", { class: "sub" }, "They're being moved to the new network, so nothing can be sent or collected here yet. Any gift from before the network reset no longer exists."),
+    h("div", { class: "row" }, h("a", { class: "btn primary", href: "/quests" }, "See your campaign rewards"), h("a", { class: "btn ghost", href: "#/" }, "Back to home")),
+  );
+}
 
 /** The home page while only campaign rewards are running. It offers nothing that would fail at the last step. */
 function renderRewardsHome(): void {
@@ -839,7 +844,7 @@ function renderSend(prefill?: string): void {
   drawChoices();
   drawEnvelope();
   update();
-  layout("send", h("h2", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account. ", h("a", { href: "#/sent" }, "Your sends")), card);
+  layout("send", h("h1", { class: "page" }, "Send Tari to a Bluesky handle"), h("p", { class: "sub" }, "Held on-chain until they prove they own the account. ", h("a", { href: "#/sent" }, "Your sends")), card);
   if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
 }
 
@@ -978,7 +983,7 @@ function renderTips(prefill?: string): void {
   );
   drawChoices();
   update();
-  layout("tips", h("h2", { class: "page" }, "Tip by posting"), h("p", { class: "sub" }, `Fund a budget once. Then tip anyone by posting "@${CONFIG.botHandle} tip @them 5".`), card);
+  layout("tips", h("h1", { class: "page" }, "Tip by posting"), h("p", { class: "sub" }, `Fund a budget once. Then tip anyone by posting "@${CONFIG.botHandle} tip @them 5".`), card);
   if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
 }
 
@@ -1148,7 +1153,7 @@ function renderLink(prefill?: string, flow = false): void {
   };
 
   mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
-  layout("link", h("h2", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
+  layout("link", h("h1", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
   if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
   void load();
 }
@@ -1566,7 +1571,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
 
   layout(
     "claim",
-    h("h2", { class: "page" }, "Collect your tTARI"),
+    h("h1", { class: "page" }, "Collect your tTARI"),
     gift && (gift.note || gift.cover || gift.style.id !== "air") ? giftEl(gift) : null,
     h("p", { class: "sub" }, "Enter your Bluesky handle. You'll post one line to prove it's you."),
     h("div", { class: "card" }, h("label", { class: "f" }, "Your Bluesky handle"), field.el),
@@ -1707,7 +1712,7 @@ function renderSent(): void {
 
   const poll = window.setInterval(() => { if (!busy) void load(); }, 60_000);
   cleanups.push(() => clearInterval(poll));
-  layout("send", h("h2", { class: "page" }, "Your sends"), h("p", { class: "sub" }, "What this wallet has sent: gifts still waiting to be collected, and ones that were delivered instantly."), listEl);
+  layout("send", h("h1", { class: "page" }, "Your sends"), h("p", { class: "sub" }, "What this wallet has sent: gifts still waiting to be collected, and ones that were delivered instantly."), listEl);
   void load();
 }
 
@@ -1718,13 +1723,13 @@ function renderSent(): void {
 function renderHow(): void {
   layout(
     "how",
-    h("h2", { class: "page" }, "How it works"),
+    h("h1", { class: "page" }, "How it works"),
     h("p", { class: "sub" }, "Short version: the money sits in a smart contract that can check Bluesky's own signatures."),
     !deployed()
       ? h(
           "div",
           { class: "card", style: "margin-bottom:18px" },
-          h("h3", { style: "margin-top:0" }, "Campaign rewards"),
+          h("h2", { style: "margin:0 0 10px;font-size:24px" }, "Campaign rewards"),
           h(
             "ol",
             { class: "how", style: "padding-left:20px;margin:0" },
@@ -1736,7 +1741,7 @@ function renderHow(): void {
           h("p", { style: "margin-bottom:0" }, "It can't tell when you did a step or whether you undo it later, and anyone can make new accounts, so open campaigns can be farmed. Creators can limit that with lists and vouches. ", h("a", { href: "/quests" }, "See your rewards")),
         )
       : null,
-    !deployed() ? h("h3", null, "Gifts, once they're back") : null,
+    !deployed() ? h("h2", { style: "margin:0 0 10px;font-size:24px" }, "Gifts, once they're back") : null,
     h(
       "div",
       { class: "card" },
@@ -1773,9 +1778,10 @@ function route(): void {
   const [arg = "", query = ""] = rawArg.split("?");
   const param = decodeURIComponent(arg);
   // the tab and history show where you are
-  document.title = TITLES[kind] ? `${TITLES[kind]} · Skydrop` : "Skydrop: send Tari to anyone on Bluesky";
+  document.title = TITLES[kind] ? `${TITLES[kind]} · Skydrop` : deployed() ? "Skydrop: send Tari to anyone on Bluesky" : "Skydrop: get rewarded for what you do on Bluesky";
   const q = new URLSearchParams(query);
-  if (kind === "send") renderSend(param || undefined);
+  if (!deployed() && ["send", "claim", "tips", "link", "sent"].includes(kind)) renderGiftsPaused();
+  else if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
   else if (kind === "tips") renderTips(param || undefined);
   else if (kind === "link") renderLink(param || undefined, q.get("flow") === "1");

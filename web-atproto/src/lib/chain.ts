@@ -413,19 +413,26 @@ async function readEvents(query: string): Promise<ChainEvent[]> {
 
 const fromCampaignTemplate = (e: ChainEvent): boolean => e.template === hexOf(DEPLOYMENT.campaignTemplate);
 
-export interface Created { tx: string; funder: string; name: string }
-
-/** Campaigns made with this contract, from their creation events. Names and funders here are claims until read back. */
-export async function listCreated(limit = 300): Promise<Created[]> {
-  const events = await readEvents(`topic=${encodeURIComponent("Campaign.campaign.created")}&limit=${limit}`);
-  return events.filter(fromCampaignTemplate).map((e) => ({ tx: e.tx, funder: e.fields.get("funder") ?? "", name: e.fields.get("name") ?? "" }));
+/**
+ * Live campaigns, newest first, each read back from its contract. They're found from the creation events the engine
+ * emits, which name the component and its template. Transaction results can't be used: the indexer stops serving them
+ * within hours. The search looks through recent events only, so a very old campaign can drop out of it.
+ */
+export async function listCampaigns(limit = 1000, max = 30): Promise<ChainCampaign[]> {
+  const events = await readEvents(`topic=${encodeURIComponent("std.component.created")}&limit=${limit}`);
+  const found = [...new Set(events.filter(fromCampaignTemplate).flatMap((e) => e.components))].slice(0, max);
+  const read = await Promise.all(found.map((c) => readCampaign(c).catch(() => null)));
+  return read.filter((c): c is ChainCampaign => !!c);
 }
 
 /** The campaign a creating transaction made, read back from the chain. Null if it can't be found. */
 export async function campaignFromTx(tx: string): Promise<ChainCampaign | null> {
   const o = await readOutcome(tx);
-  if (o.state !== "accepted") return null;
-  for (const c of o.components) {
+  if (o.state === "rejected") return null;
+  const candidates = o.state === "accepted"
+    ? o.components
+    : (await readEvents(`topic=${encodeURIComponent("std.component.created")}&limit=200`)).filter((e) => e.tx === tx.replace(/^0x/, "") && fromCampaignTemplate(e)).flatMap((e) => e.components);
+  for (const c of candidates) {
     const read = await readCampaign(c).catch(() => null);
     if (read) return read;
   }

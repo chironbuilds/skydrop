@@ -24,7 +24,9 @@ export function cleanActor(input: string): string {
 const cache = new Map<string, Promise<Actor>>();
 
 export function resolveActor(input: string): Promise<Actor> {
-  const actor = cleanActor(input);
+  let actor = cleanActor(input);
+  // Most people mean their bsky.social name when they type just "alice".
+  if (/^[a-z0-9][a-z0-9-]*$/.test(actor)) actor = `${actor}.bsky.social`;
   if (!actor || !/^[a-zA-Z0-9.:_-]+$/.test(actor) || (!actor.includes(".") && !actor.startsWith("did:"))) {
     return Promise.reject(new Error("That doesn't look like a Bluesky handle. Try name.bsky.social"));
   }

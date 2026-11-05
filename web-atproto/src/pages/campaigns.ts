@@ -1,7 +1,7 @@
 import { fromMicro } from "../lib/campaign";
 import { contractsOnNetwork, isPublished } from "../data/deployment";
 import { PLAYBOOKS, type Playbook } from "../data/playbooks";
-import { campaignFromTx, listCreated, phaseOf, type ChainCampaign } from "../lib/chain";
+import { listCampaigns, phaseOf } from "../lib/chain";
 import { h, pageHead, pill, replace } from "../lib/dom";
 import { exposure, newSpec, QUICK_ACTIONS, QUICK_STARTS, RULES, toMicro, type RuleKind, type Spec } from "../lib/campaign";
 import type { Page } from "../main";
@@ -36,9 +36,7 @@ function liveCampaigns(): HTMLElement {
     return box;
   }
   void (async () => {
-    const created = (await listCreated()).slice(0, 30);
-    const read = await Promise.all(created.map((e) => campaignFromTx(e.tx).catch(() => null)));
-    const open = read.filter((c): c is ChainCampaign => !!c && phaseOf(c) !== "closed" && c.balance > 0n);
+    const open = (await listCampaigns()).filter((c) => phaseOf(c) !== "closed" && c.balance > 0n);
     replace(box, open.length
       ? [
           h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("p", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`)))),

@@ -7,8 +7,9 @@ import { questArt } from "../../web-atproto/src/lib/art";
 import { composeUrl, fetchPost, latestPost, resolveActor, targetLink, type Actor } from "../../web-atproto/src/lib/atproto";
 import { approxTime, CLAIM_FEE_MICRO, decodeSpec, encodeLive, encodeSpec, fromMicro, LIVE_PLACEHOLDER, RULES, summarize, type Rule, type Spec } from "../../web-atproto/src/lib/campaign";
 import { checkRule, identity } from "../../web-atproto/src/lib/check";
-import { campaignFromTx, explainChainError, listCreated, listParticipated, phaseOf, readCampaign, readReceipt, specOf, waitForOutcome, type ChainCampaign, type Receipt } from "../../web-atproto/src/lib/chain";
+import { explainChainError, listCampaigns, listParticipated, phaseOf, readCampaign, readReceipt, specOf, waitForOutcome, type ChainCampaign, type Receipt } from "../../web-atproto/src/lib/chain";
 import { icons } from "./dom";
+import { currentLang, startChinese } from "./i18n";
 import { CLAIM_MAX_FEE, planClaim } from "../../web-atproto/src/lib/claim";
 import { append, copyButton, h, replace } from "../../web-atproto/src/lib/dom";
 import { assess, settle, totals, type Assessment, type StepView } from "../../web-atproto/src/lib/quests";
@@ -79,9 +80,14 @@ const targetInfo = new Map<string, string>();
 let openCampaigns: ChainCampaign[] | null = null;
 let lastCheck = 0;
 let checking = false;
+/** A check was asked for during another, which may have been for a different account. */
+let checkAgain = false;
+let handleSearch = 0;
 
 const handleInput = h("input", { placeholder: "yourname.bsky.social", "aria-label": "Your Bluesky handle", autocomplete: "off", autocapitalize: "off", spellcheck: "false", value: store.get(HKEY, "") });
 const go = h("button", { class: "btn primary", type: "submit" }, "Show my quests");
+const LEDE = "Enter your handle to see every campaign you're tracking. Each step is checked against your own signed Bluesky data, right here in your browser.";
+const lede = h("p", { class: "lede" }, LEDE);
 const who = h("div", { class: "who" });
 const summary = h("div", { class: "qsummary" });
 const board = h("div");
@@ -90,11 +96,18 @@ const openBox = h("div");
 const toastBox = h("div", { class: "qtoast", role: "status", "aria-live": "polite" });
 let toastTimer = 0;
 
-function toast(text: string): void {
-  toastBox.textContent = text;
+function toast(text: string, action?: { label: string; run: () => void }): void {
+  replace(toastBox, text, action ? h("button", { class: "qtoastbtn", type: "button", onclick: () => { toastBox.classList.remove("on"); action.run(); } }, action.label) : null);
   toastBox.classList.add("on");
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => toastBox.classList.remove("on"), 5000);
+  toastTimer = window.setTimeout(() => toastBox.classList.remove("on"), action ? 8000 : 5000);
+}
+
+/** The phone's own share sheet where there is one; otherwise a copied link. */
+function shareButton(url: () => string, title: string): HTMLElement {
+  const nav = navigator as Navigator & { share?: (d: { title: string; url: string }) => Promise<void> };
+  if (!nav.share || !matchMedia("(pointer: coarse)").matches) return copyButton(url, "Share");
+  return h("button", { class: "btn small ghost", type: "button", onclick: () => void nav.share!({ title, url: url() }).catch(() => {}) }, "Share");
 }
 
 const addedText = (r: { name: string; isNew: boolean }): string => {
@@ -276,12 +289,20 @@ function questCard(t: Tracked, a?: Assessment): HTMLElement {
   const lit = a ? a.steps.map((x) => x.status === "met") : [];
   const remove = h("button", { class: "linkbtn", type: "button" }, "Remove");
   remove.addEventListener("click", () => {
-    store.set(QKEY, loadTracked().filter((x) => x.id !== t.id));
+    const before = loadTracked();
+    store.set(QKEY, before.filter((x) => x.id !== t.id));
     store.set(HIDDEN, [...store.get<string[]>(HIDDEN, []), t.id]);
+    const was = assessments.get(t.id);
     assessments.delete(t.id);
     panels.delete(t.id);
     rechecks.delete(t.id);
     draw();
+    toast(`Removed “${s.name}”.`, { label: "Undo", run: () => {
+      store.set(QKEY, before);
+      store.set(HIDDEN, store.get<string[]>(HIDDEN, []).filter((x) => x !== t.id));
+      if (was) assessments.set(t.id, was);
+      draw();
+    } });
   });
   return h("article", { class: `questcard qcard${a?.state === "ready" ? " won" : ""}` },
     h("div", { class: "qart" }, questArt(s.name, s.rules, lit), a?.state === "claimed" ? h("span", { class: "qstamp" }, "Collected") : null),
@@ -304,7 +325,7 @@ function questCard(t: Tracked, a?: Assessment): HTMLElement {
         : unread
           ? liveErrors.has(t.id) ? null : h("p", { class: "muted small-text" }, "Reading the contract…")
           : h("p", { class: "muted small-text" }, s.rules.length ? `${summarize(s.rules)[0]!.toUpperCase()}${summarize(s.rules).slice(1)}.` : "On an allocation list."),
-      h("div", { class: "row", style: "justify-content:space-between;margin-top:4px" }, copyButton(() => `${location.origin}/quests#add=${s.component ? encodeLive(s.component, s.allocations) : encodeSpec(s)}`, "Share"), remove),
+      h("div", { class: "row", style: "justify-content:space-between;margin-top:4px" }, shareButton(() => `${location.origin}/quests#add=${s.component ? encodeLive(s.component, s.allocations) : encodeSpec(s)}`, s.name), remove),
     ));
 }
 
@@ -327,6 +348,8 @@ function draw(): void {
   }
   const seen = list.map((t) => assessments.get(t.id));
   const known = seen.filter((a): a is Assessment => !!a);
+  const readySum = actor ? totals(known) : null;
+  document.title = readySum?.readyCount ? `${fromMicro(readySum.readyNow)} ${unit} ready · Skydrop` : "My quests · Skydrop";
   if (known.length && actor) {
     const t = totals(known);
     replace(summary,
@@ -358,9 +381,7 @@ function draw(): void {
 /** Open campaigns made with this contract, read back from the chain. Those with a private list can't be joined from here. */
 async function loadOpen(): Promise<void> {
   try {
-    const created = (await listCreated()).slice(0, 24);
-    const read = await Promise.all(created.map((e) => campaignFromTx(e.tx).catch(() => null)));
-    openCampaigns = read.filter((c): c is ChainCampaign => !!c && !c.root && phaseOf(c) !== "closed" && c.balance >= c.reward && c.reward > 0n);
+    openCampaigns = (await listCampaigns()).filter((c) => !c.root && phaseOf(c) !== "closed" && c.balance >= c.reward && c.reward > 0n);
   } catch {
     openCampaigns = [];
   }
@@ -457,15 +478,23 @@ async function refreshLive(t: Tracked, did: string | null): Promise<{ c: ChainCa
 }
 
 async function checkAll(): Promise<void> {
-  if (!actor || checking) return;
+  if (!actor) return;
+  if (checking) {
+    checkAgain = true;
+    return;
+  }
   checking = true;
-  go.disabled = true;
   go.textContent = "Checking…";
   try {
-    await findMine(actor.did);
-    const me = await identity(actor.did);
+    const checkingFor = actor;
+    await findMine(checkingFor.did);
+    const me = await identity(checkingFor.did);
     for (const t of loadTracked()) {
-      const live = t.spec.component ? await refreshLive(t, actor.did) : null;
+      if (actor !== checkingFor) {
+        checkAgain = !!actor;
+        break;
+      }
+      const live = t.spec.component ? await refreshLive(t, checkingFor.did) : null;
       // Without the contract there are no trustworthy terms to check against.
       if (t.spec.component && !live) {
         assessments.delete(t.id);
@@ -474,7 +503,11 @@ async function checkAll(): Promise<void> {
       }
       const spec = t.spec;
       const results = await Promise.all(spec.rules.map((r) => checkRule(r, me)));
-      let a = assess(spec, actor.did, results.map((r) => ({ status: r.status, detail: r.detail })));
+      if (actor !== checkingFor) {
+        checkAgain = !!actor;
+        break;
+      }
+      let a = assess(spec, checkingFor.did, results.map((r) => ({ status: r.status, detail: r.detail })));
       if (live) {
         const { c, receipt } = live;
         const phase = phaseOf(c);
@@ -491,10 +524,29 @@ async function checkAll(): Promise<void> {
     replace(who, h("p", { class: "fielderr" }, (e as Error).message));
   } finally {
     checking = false;
-    go.disabled = false;
     go.textContent = "Refresh";
     draw();
+    if (checkAgain) {
+      checkAgain = false;
+      void checkAll();
+    }
   }
+}
+
+function forgetHandle(): void {
+  handleSearch++;
+  actor = null;
+  store.set(HKEY, "");
+  handleInput.value = "";
+  go.textContent = "Show my quests";
+  lede.textContent = LEDE;
+  assessments.clear();
+  panels.clear();
+  panelStage.clear();
+  rechecks.clear();
+  replace(who);
+  draw();
+  handleInput.focus();
 }
 
 async function useHandle(text: string): Promise<void> {
@@ -503,9 +555,13 @@ async function useHandle(text: string): Promise<void> {
     return;
   }
   replace(who);
+  const mine = ++handleSearch;
   try {
-    actor = await resolveActor(text);
+    const found = await resolveActor(text);
+    if (mine !== handleSearch) return;
+    actor = found;
   } catch (e) {
+    if (mine !== handleSearch) return;
     actor = null;
     assessments.clear();
     panels.clear();
@@ -521,7 +577,8 @@ async function useHandle(text: string): Promise<void> {
   panels.clear();
   panelStage.clear();
   rechecks.clear();
-  replace(who, actor.avatar ? h("img", { src: actor.avatar, alt: "", width: "40", height: "40", referrerpolicy: "no-referrer" }) : null, h("div", null, h("strong", null, actor.displayName), h("div", { class: "muted small-text" }, `@${actor.handle}`)));
+  lede.textContent = "Here's where you stand. Each step is checked against your own signed Bluesky data, right here in your browser.";
+  replace(who, actor.avatar ? h("img", { src: actor.avatar, alt: "", width: "40", height: "40", referrerpolicy: "no-referrer" }) : null, h("div", null, h("strong", null, actor.displayName), h("div", { class: "muted small-text" }, `@${actor.handle}`)), h("button", { class: "linkbtn", type: "button", onclick: forgetHandle }, "Not you?"));
   draw();
   await checkAll();
 }
@@ -560,15 +617,16 @@ addForm.addEventListener("submit", (e) => {
 
 append(document.getElementById("app")!, [
   h("div", { class: "airmail", "aria-hidden": "true" }),
+  h("a", { class: "skip", href: "#qmain" }, "Skip to content"),
   h("header", { class: "top" }, h("div", { class: "wrap bar" },
     h("a", { class: "brand", href: "/" }, h("span", { class: "logo" }, icons.drop(20)), h("span", { class: "brand-name" }, "Skydrop")),
     h("nav", { class: "links qnav", "aria-label": "Main" }, h("a", { href: "/quests", "aria-current": "page" }, "My quests"), h("a", { href: "/#/how" }, "How it works"), h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign")),
     chip,
   )),
-  h("main", { class: "wrap qmain" },
+  h("main", { class: "wrap qmain", id: "qmain", tabindex: "-1" },
     h("span", { class: "kicker" }, "My quests"),
     h("h1", null, "What you've earned, and what's left"),
-    h("p", { class: "lede" }, "Enter your handle to see every campaign you're tracking. Each step is checked against your own signed Bluesky data, right here in your browser."),
+    lede,
     form,
     who,
     summary,
@@ -579,8 +637,10 @@ append(document.getElementById("app")!, [
       ? h("div", { class: "note warn" }, h("strong", null, "Testnet preview. "), `${contractsOnNetwork() ? `The campaign contract is on ${DEPLOYMENT.network}, but funding and claiming from these sites is still being built.` : `The campaign contract isn't published on ${DEPLOYMENT.network} yet.`} Campaigns here are previews with no funds behind them, so nothing can be collected.`)
       : h("div", { class: "note warn" }, h("strong", null, "Testnet only. "), `Rewards here are ${unit} on the ${DEPLOYMENT.network}, with no real value. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.`),
   ),
+  h("footer", { class: "qfoot wrap" }, h("a", { href: "/#/how" }, "How it works"), h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign"), h("span", null, "Tari testnet: tTARI has no monetary value.")),
   toastBox,
 ]);
+if (currentLang() === "zh") startChinese();
 
 // A link like /quests#add=<campaign> adds it, then leaves the hash clean. It can also arrive while the page is open.
 function addFromHash(): boolean {
@@ -589,6 +649,7 @@ function addFromHash(): boolean {
   if (r.ok) toast(addedText(r));
   else addMsg.textContent = r.error;
   history.replaceState(null, "", location.pathname);
+  if (r.ok && !handleInput.value) handleInput.focus();
   if (r.ok && !actor) void readLiveTerms();
   return r.ok;
 }

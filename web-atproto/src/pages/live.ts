@@ -187,6 +187,7 @@ export function livePage(component: string): Page {
       replace(body, pageHead("Live campaign", "This campaign can't be shown", (e as Error).message), h("a", { class: "btn primary", href: "/campaigns" }, "Browse campaigns"), h("div", { class: "spacer" }));
       return;
     }
+    document.title = `${c.name} · ATProto for Ootle`;
     const allocations = allocationsFor(component);
         const phase = phaseOf(c);
     const people = c.reward > 0n ? c.balance / c.reward : 0n;
@@ -225,6 +226,7 @@ export function livePage(component: string): Page {
         h("button", { class: "btn ghost small", type: "button", onclick: () => void load() }, "Refresh"),
       ),
 
+      h("h2", { class: "vh" }, "At a glance"),
       h("div", { class: "grid g3", style: "margin-top:0" },
         h("div", { class: "card" }, h("span", { class: "tag" }, "reward"), h("h3", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${unit}`), h("p", null, c.rounds > 1 ? `Per round, ${c.rounds} rounds.` : "Paid once per account.")),
         h("div", { class: "card" }, h("span", { class: "tag" }, "pool left"), h("h3", null, `${fromMicro(c.balance)} ${unit}`), h("p", null, c.root ? "Held by the contract." : `Enough for ${people.toLocaleString("en-US")} more ${people === 1n ? "payment" : "payments"}.`)),

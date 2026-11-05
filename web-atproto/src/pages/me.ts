@@ -2,7 +2,7 @@ import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment"
 import { questArt } from "../lib/art";
 import { encodeSpec, fromMicro, summarize } from "../lib/campaign";
 import { h, pageHead, pill, replace } from "../lib/dom";
-import { campaignFromTx, listCreated, phaseOf, type ChainCampaign } from "../lib/chain";
+import { listCampaigns, phaseOf, type ChainCampaign } from "../lib/chain";
 import { allDrafts, deleteDraft, timeAgo, type Draft } from "../lib/library";
 import { connectWallet, disconnectWallet, friendly, onWallet, shortAddress, walletBalance, type WalletState } from "../lib/wallet";
 import type { Page } from "../main";
@@ -81,9 +81,7 @@ export function mePage(): Page {
     }
     replace(liveBox, h("p", { class: "muted" }, "Reading the network…"));
     try {
-      const mine = (await listCreated()).filter((e) => e.funder === key).slice(0, 24);
-      // the event only claims a funder, so the contract's own state decides
-      const read = (await Promise.all(mine.map((e) => campaignFromTx(e.tx).catch(() => null)))).filter((c): c is ChainCampaign => !!c && c.funder === key);
+      const read = (await listCampaigns()).filter((c) => c.funder === key);
       if (liveFor !== key) return;
       replace(liveBox, read.length
         ? h("div", { class: "grid g3", style: "margin-top:12px" }, read.map(liveCard))
@@ -136,6 +134,7 @@ export function mePage(): Page {
     title: "My campaigns",
     body: h("div", { class: "wrap" },
       pageHead("My campaigns", "Everything you've created", "Your drafts, and your live campaigns once they're funded. Drafts are private: they stay in this browser until you share a link."),
+      h("h2", { class: "vh" }, "Your wallet"),
       walletBox,
       h("h2", { class: "big", style: "margin-top:40px" }, "Live"),
       liveBox,
