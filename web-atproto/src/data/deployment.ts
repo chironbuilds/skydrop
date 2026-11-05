@@ -9,7 +9,7 @@ export const DEPLOYMENT = {
   ootle: "0.49.2",
   indexer: "https://ootle-indexer-a.tari.com",
   campaignTemplate: "template_40d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b72",
-  linkRegistry: "component_bce8ed6d3479b8d84fb947c6dd634d4c192d899176ba64dea6e8dd7010c62da1",
+  linkRegistry: "component_aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371",
   verifier: "template_1c0d23cd6b40ca2feaa098991f0746c3f88040c8b2d0bade227ee429168b923a",
   live: [] as LiveCampaign[],
 };

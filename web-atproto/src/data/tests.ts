@@ -9,7 +9,7 @@ export const TESTS: { name: string; covers: string; passed: number }[] = [
   { name: "escrowprobe", covers: "The Escrow's rules against approved policies that misbehave", passed: 5 },
   { name: "claim", covers: "Gifts: code binding, signatures, windows, phrases, holds, challenges, sponsored caps, records", passed: 28 },
   { name: "linkclaim", covers: "Linked wallets: delivery, code-free claims, declines", passed: 3 },
-  { name: "linkreg", covers: "Per-DID records, vault rotation, links, floors, challenges, delays", passed: 7 },
+  { name: "linkreg", covers: "Per-DID records, vault rotation, links, floors, challenges, delays, no owner", passed: 8 },
   { name: "tippolicy", covers: "Tips authorized by a signed post", passed: 1 },
   { name: "engbounty", covers: "Slot-based like, repost, follow and post bounties", passed: 2 },
   { name: "listdrop", covers: "Slot-based drops to an org's list", passed: 2 },
