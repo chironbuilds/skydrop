@@ -175,10 +175,15 @@ export interface Spec {
   days: number;
   root?: string;
   allocations?: Allocation[];
+  /** Set once funded: the live contract. Its terms are read from the chain, so a link can't misstate them. */
+  component?: string;
 }
 
 export const UNIT = 1_000_000n;
 export const EPOCHS_PER_DAY = 24; // about one epoch an hour was observed on Esmeralda; an assumption, not a guarantee
+
+/** What a real one-step first claim's transaction cost on Esmeralda: 0.04 tTARI. More steps cost more. */
+export const CLAIM_FEE_MICRO = 40_000n;
 
 export const MAX_RULES = 8;
 export const MAX_ROUNDS = 52;
@@ -190,6 +195,14 @@ export function toMicro(tari: string): bigint {
   const m = tari.trim().match(/^(\d+)(?:\.(\d{1,6}))?$/);
   if (!m) throw new Error("Use a plain number with at most 6 decimals");
   return BigInt(m[1]!) * UNIT + BigInt((m[2] ?? "").padEnd(6, "0") || "0");
+}
+
+/** A rough duration for a number of epochs, using the same one-an-hour assumption as the builder. */
+export function approxTime(epochs: number): string {
+  const hours = Math.max(0, Math.round(epochs * (24 / EPOCHS_PER_DAY)));
+  if (hours < 1) return "under an hour";
+  if (hours < 48) return `about ${hours} hour${hours === 1 ? "" : "s"}`;
+  return `about ${Math.round(hours / 24)} days`;
 }
 
 export function fromMicro(v: bigint | string): string {
@@ -206,10 +219,24 @@ const unb64url = (s: string): string => new TextDecoder().decode(Uint8Array.from
 
 export const encodeSpec = (s: Spec): string => b64url(JSON.stringify(s));
 
+/** The name a live campaign shows until its contract has been read. */
+export const LIVE_PLACEHOLDER = "Live campaign";
+
+/** The link for a live campaign: only what the chain can't supply. */
+export const encodeLive = (component: string, allocations?: Allocation[]): string => b64url(JSON.stringify({ v: 1, name: "", rules: [], component, ...(allocations ? { allocations } : {}) }));
+
 /** Parses a shared spec. Treats it as untrusted: everything it holds is shown as text and re-validated. */
 export function decodeSpec(s: string): Spec {
   const j = JSON.parse(unb64url(s)) as Spec;
   if (j.v !== 1 || typeof j.name !== "string" || !Array.isArray(j.rules)) throw new Error("Not a campaign");
+  if (j.component !== undefined) {
+    // A live campaign's terms come from its contract. The link names the address and carries any allocation list, and
+    // whatever else it says is dropped, so it can't misstate a reward or be refused over terms the chain overrules.
+    if (!/^component_[0-9a-f]{64}$/.test(j.component)) throw new Error("That link names an invalid campaign address");
+    const list = j.allocations;
+    const allocations = Array.isArray(list) && list.every((a) => typeof a?.did === "string" && /^\d+$/.test(String(a?.amount))) ? list : undefined;
+    return { ...newSpec(), name: LIVE_PLACEHOLDER, component: j.component, ...(allocations ? { allocations } : {}) };
+  }
   const problems = validate(j).filter((p) => p.level === "error");
   if (problems.length) throw new Error(problems[0]!.text);
   return j;
@@ -251,6 +278,7 @@ export function validate(s: Spec): Problem[] {
   if (bonus > 0n && s.maxReferrals === 0) warn("A bonus with a referral limit of 0 can never pay.");
   if (bonus > 0n && exposure(s).level !== "Low") warn("Paid referrals on an open campaign reward making fake accounts. Add a vouch rule or keep the bonus tiny.");
   if (reward > 0n && budget > 0n && !s.root && budget < reward) err("The pool can't cover even one reward.");
+  if (reward > 0n && !s.root && reward <= CLAIM_FEE_MICRO * BigInt(Math.max(1, s.rules.length))) warn(`Claimers pay the network fee themselves, about ${fromMicro(CLAIM_FEE_MICRO)} tTARI or more for a claim, so a reward this small may not be worth claiming.`);
   return out;
 }
 
@@ -379,12 +407,24 @@ export async function checkAllocation(root: string, did: string, amount: bigint,
   return toHex(node) === root;
 }
 
+/** Cuts text to a byte limit without splitting a character: the contract counts bytes. */
+function clipBytes(text: string, max: number): string {
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    used += utf8(ch).length;
+    if (used > max) break;
+    out += ch;
+  }
+  return out;
+}
+
 /** Exactly the arguments Campaign::create takes, in order, relative to the current epoch. */
 export function createArgs(s: Spec, now: number, funder: string, registry: string): Record<string, unknown> {
   const open = now + Math.round(s.startsInDays * EPOCHS_PER_DAY);
   return {
     name: s.name,
-    info: s.about.slice(0, 256),
+    info: clipBytes(s.about, 256),
     funder,
     link_registry: registry,
     kinds: s.rules.map((r) => r.kind),

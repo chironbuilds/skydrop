@@ -1,7 +1,8 @@
 import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { questArt } from "../lib/art";
 import { encodeSpec, fromMicro, summarize } from "../lib/campaign";
-import { h, pageHead, replace } from "../lib/dom";
+import { h, pageHead, pill, replace } from "../lib/dom";
+import { campaignFromTx, listCreated, phaseOf, type ChainCampaign } from "../lib/chain";
 import { allDrafts, deleteDraft, timeAgo, type Draft } from "../lib/library";
 import { connectWallet, disconnectWallet, friendly, onWallet, shortAddress, walletBalance, type WalletState } from "../lib/wallet";
 import type { Page } from "../main";
@@ -36,6 +37,16 @@ function draftCard(d: Draft, redraw: () => void): HTMLElement {
     ));
 }
 
+function liveCard(c: ChainCampaign): HTMLElement {
+  const phase = phaseOf(c);
+  return h("a", { class: "card", href: `/c/${c.component}` },
+    pill(phase === "open" ? "ok" : phase === "upcoming" ? "info" : "plain", phase === "open" ? "Open" : phase === "upcoming" ? "Not open yet" : "Closed"),
+    h("h3", null, c.name),
+    h("p", null, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.paid)} paid · ${fromMicro(c.balance)} left in the pool`),
+    phase === "closed" && c.balance > 0n ? h("p", { class: "muted small-text" }, "It has closed. Open it to take back what's left.") : null,
+  );
+}
+
 export function mePage(): Page {
   const walletBox = h("div");
   const mine = h("div");
@@ -60,8 +71,31 @@ export function mePage(): Page {
     );
   }
 
+  let liveFor: string | null | undefined;
+  async function drawLive(key: string | null): Promise<void> {
+    if (!isPublished() || key === liveFor) return;
+    liveFor = key;
+    if (!key) {
+      replace(liveBox, h("p", { class: "muted" }, "Connect your wallet to see the campaigns it has funded."));
+      return;
+    }
+    replace(liveBox, h("p", { class: "muted" }, "Reading the network…"));
+    try {
+      const mine = (await listCreated()).filter((e) => e.funder === key).slice(0, 24);
+      // the event only claims a funder, so the contract's own state decides
+      const read = (await Promise.all(mine.map((e) => campaignFromTx(e.tx).catch(() => null)))).filter((c): c is ChainCampaign => !!c && c.funder === key);
+      if (liveFor !== key) return;
+      replace(liveBox, read.length
+        ? h("div", { class: "grid g3", style: "margin-top:12px" }, read.map(liveCard))
+        : h("p", { class: "muted" }, "This wallet hasn't funded a campaign yet. Finish a draft below and launch it."));
+    } catch {
+      if (liveFor === key) replace(liveBox, h("p", { class: "muted" }, "The network couldn't be read just now. Refresh to try again."));
+    }
+  }
+
   function drawWallet(s: WalletState): void {
     current = s;
+    void drawLive(s.connected ? s.key : null);
     const err = h("p", { class: "fielderr" });
     if (!s.available) {
       replace(walletBox, h("div", { class: "card" },
@@ -91,9 +125,7 @@ export function mePage(): Page {
     drawDrafts();
   }
 
-  replace(liveBox, isPublished()
-    ? h("p", { class: "muted" }, "Campaigns you've funded will be listed here from the network.")
-    : h("div", { class: "note" }, h("strong", null, "Nothing can be launched yet."), (contractsOnNetwork() ? " Funding from this site is still being built. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool." : " The contract isn't published on the network. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool.")));
+  if (!isPublished()) replace(liveBox, h("div", { class: "note" }, h("strong", null, "Nothing can be launched yet."), (contractsOnNetwork() ? " Funding from this site is still being built. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool." : " The contract isn't published on the network. Once it is, campaigns you fund will be listed here from on-chain records, with claims and what's left in the pool.")));
 
   const stop = onWallet(drawWallet);
   // stop listening once this page is replaced

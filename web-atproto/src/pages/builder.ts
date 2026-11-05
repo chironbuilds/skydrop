@@ -8,6 +8,7 @@ import { copyButton, download, h, pageHead, replace } from "../lib/dom";
 import { allDrafts, getDraft, newDraftId, saveDraft, timeAgo } from "../lib/library";
 import { walletState } from "../lib/wallet";
 import type { Page } from "../main";
+import { launchBox } from "./live";
 import { exposurePill, specFromPlaybook } from "./campaigns";
 
 /** Parses "handle-or-did, amount" lines. */
@@ -595,7 +596,7 @@ export function builderPage(): Page {
                 h("button", { class: "btn small ghost", type: "button", onclick: () => download(`${slug(spec.name)}.campaign.json`, JSON.stringify({ spec, create: createArgs(spec, 0, "<your key>", DEPLOYMENT.linkRegistry || "<link registry>"), proofs }, null, 2)) }, "Download manifest"),
               ),
               isPublished()
-                ? h("p", { class: "muted small-text" }, "Launch with: node scripts/create-campaign.mjs manifest.json")
+                ? [h("h3", { style: "margin-top:14px" }, "Launch it"), launchBox(spec)]
                 : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
             ],
       ),

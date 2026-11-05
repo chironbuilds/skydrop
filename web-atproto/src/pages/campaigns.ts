@@ -1,5 +1,7 @@
-import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
+import { fromMicro } from "../lib/campaign";
+import { contractsOnNetwork, isPublished } from "../data/deployment";
 import { PLAYBOOKS, type Playbook } from "../data/playbooks";
+import { campaignFromTx, listCreated, phaseOf, type ChainCampaign } from "../lib/chain";
 import { h, pageHead, pill, replace } from "../lib/dom";
 import { exposure, newSpec, QUICK_ACTIONS, QUICK_STARTS, RULES, toMicro, type RuleKind, type Spec } from "../lib/campaign";
 import type { Page } from "../main";
@@ -26,6 +28,27 @@ function exposureOf(p: Playbook): "Low" | "Medium" | "High" {
   return exposure(specFromPlaybook(p)).level;
 }
 
+/** Open campaigns made with this contract. Each is read back from the chain, which decides what's real. */
+function liveCampaigns(): HTMLElement {
+  const box = h("div", { style: "margin-top:12px" }, h("p", { class: "muted" }, "Reading the network…"));
+  if (!isPublished()) {
+    replace(box, h("div", { class: "note" }, h("strong", null, "No campaigns can run yet."), " ", contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today."));
+    return box;
+  }
+  void (async () => {
+    const created = (await listCreated()).slice(0, 30);
+    const read = await Promise.all(created.map((e) => campaignFromTx(e.tx).catch(() => null)));
+    const open = read.filter((c): c is ChainCampaign => !!c && phaseOf(c) !== "closed" && c.balance > 0n);
+    replace(box, open.length
+      ? [
+          h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("p", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`)))),
+          h("p", { class: "muted small-text" }, "Anyone can create a campaign, so nobody here has vetted these. Their funds and rules are real; their names and links are whatever the creator chose."),
+        ]
+      : h("div", { class: "note" }, h("strong", null, "No campaigns are open right now."), " Be the first: pick a playbook below."));
+  })().catch(() => replace(box, h("p", { class: "muted" }, "The network couldn't be read just now. Refresh to try again.")));
+  return box;
+}
+
 export const exposurePill = (level: "Low" | "Medium" | "High"): HTMLElement => pill(level === "Low" ? "ok" : level === "Medium" ? "warn" : "bad", `Farming risk: ${level}`);
 
 export function playbookCard(p: Playbook): HTMLElement {
@@ -44,6 +67,7 @@ export function playbookCard(p: Playbook): HTMLElement {
 const TAGS = ["All", "Growth", "Community", "Retention", "Allocation", "Events"] as const;
 
 export function campaignsPage(): Page {
+  const liveList = liveCampaigns();
   const grid = h("div", { class: "grid g3" });
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Filter playbooks" });
   let tag: (typeof TAGS)[number] = "All";
@@ -70,9 +94,7 @@ export function campaignsPage(): Page {
 
       h("section", { "aria-labelledby": "live", style: "margin-top:44px" },
         h("h2", { id: "live", class: "big" }, "Live campaigns"),
-        DEPLOYMENT.live.length
-          ? h("div", { class: "grid g3" }, DEPLOYMENT.live.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("div", { class: "foot-line" }, `${c.component.slice(0, 22)}…`))))
-          : h("div", { class: "note" }, h("strong", null, isPublished() ? "No campaigns are running yet." : "No campaigns can run yet."), " ", isPublished() ? "Be the first: pick a playbook below." : (contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today.")),
+        liveList,
       ),
 
       h("section", { style: "margin-top:44px" },

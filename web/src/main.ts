@@ -1,7 +1,7 @@
 import "./style.css";
 import { IndexerProvider } from "@tari-project/ootle-indexer";
 import { Network, defaultIndexerUrl } from "@tari-project/ootle";
-import { CONFIG } from "./config";
+import { CONFIG, deployed } from "./config";
 import * as bsky from "./bsky";
 import * as chain from "./chain";
 import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } from "./dom";
@@ -95,8 +95,7 @@ function settingsMenu(): HTMLElement {
     h(
       "div",
       { class: "menu-panel", role: "menu" },
-      item("#/tips", "Tip by post", "only-xs"),
-      item("#/link", "Link wallet", "only-sm"),
+      ...(deployed() ? [item("#/tips", "Tip by post", "only-xs"), item("#/link", "Link wallet", "only-sm")] : []),
       item("#/how", "How it works", "only-sm"),
       h("div", { class: "menu-sep only-sm" }),
       h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Language"), seg([["en", "English"], ["zh", "中文"]], currentLang(), (v) => setLang(v as Lang))),
@@ -191,6 +190,9 @@ function eta(epochs: number): string {
 
 type Tab = "home" | "send" | "claim" | "tips" | "link" | "how";
 
+/** The pages that need the gift contracts, which aren't on the current network yet. */
+const GIFT_TABS: Tab[] = ["send", "claim", "tips", "link"];
+
 function layout(active: Tab, ...content: (Node | null)[]): void {
   const link = (href: string, label: string, tab: Tab, cls = "") =>
     h("a", { href, class: cls, "aria-current": active === tab ? "page" : null }, label);
@@ -203,26 +205,37 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
       h(
         "nav",
         { class: "nav" },
-        link("#/send", "Send", "send"),
-        link("#/claim", "Collect", "claim"),
-        link("#/tips", "Tip by post", "tips"),
-        h("a", { href: "/quests" }, "My quests"),
-        link("#/link", "Link wallet", "link", "hide-sm"),
-        link("#/how", "How it works", "how", "hide-sm"),
-        h("span", { class: "net hide-sm" }, "Testnet"),
-        h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
+        ...(deployed()
+          ? [
+              link("#/send", "Send", "send"),
+              link("#/claim", "Collect", "claim"),
+              link("#/tips", "Tip by post", "tips"),
+              h("a", { href: "/quests" }, "My quests"),
+              link("#/link", "Link wallet", "link", "hide-sm"),
+              link("#/how", "How it works", "how", "hide-sm"),
+              h("span", { class: "net hide-sm" }, "Testnet"),
+              h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
+            ]
+          : [
+              h("a", { href: "/quests" }, "My quests"),
+              link("#/how", "How it works", "how"),
+              h("a", { href: "https://atproto.tari.mw", target: "_blank", rel: "noopener", class: "hide-sm" }, "Create a campaign"),
+              h("span", { class: "net hide-sm" }, "Testnet"),
+            ]),
         settingsMenu(),
       ),
     ),
+    !deployed() && GIFT_TABS.includes(active)
+      ? h("div", { class: "note warn", style: "margin-bottom:18px" }, h("b", null, "Gifts aren't running right now. "), "They're being moved to the new network, so nothing can be sent or collected here yet. ", h("a", { href: "/quests" }, "See your campaign rewards"), " instead.")
+      : null,
     ...content,
     h(
       "footer",
       null,
       "Tari testnet: tTARI has no monetary value.",
-      h("br"),
-      "Escrow contract ",
-      h("code", null, CONFIG.escrow ? short(CONFIG.escrow, 18, 6) : "not deployed yet"),
-      " · verified on-chain, no oracle, no middleman",
+      ...(deployed()
+        ? [h("br"), "Escrow contract ", h("code", null, short(CONFIG.escrow, 18, 6)), " · verified on-chain, no oracle, no middleman"]
+        : []),
     ),
   );
   window.scrollTo({ top: 0 });
@@ -496,7 +509,64 @@ function fundsNote(): HTMLElement {
 // home
 // ---------------------------------------------------------------------------------------------------------
 
+/** The home page while only campaign rewards are running. It offers nothing that would fail at the last step. */
+function renderRewardsHome(): void {
+  const input = h("input", { class: "input", placeholder: "yourname.bsky.social", "aria-label": "Your Bluesky handle", autocomplete: "off", autocapitalize: "off", spellcheck: "false" }) as HTMLInputElement;
+  const form = h("form", { class: "homeform" }, h("div", { class: "field" }, input), h("button", { class: "btn primary", type: "submit" }, "Show my rewards"));
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const handle = input.value.trim();
+    location.href = handle ? `/quests?handle=${encodeURIComponent(handle)}` : "/quests";
+  });
+  layout(
+    "home",
+    h(
+      "section",
+      { class: "hero" },
+      h(
+        "div",
+        null,
+        h("span", { class: "pill" }, icons.shield(14), "Testnet · checked against signed data"),
+        h("h1", null, "Get rewarded for what you ", h("em", null, "do"), " on Bluesky."),
+        h("p", { class: "lead" }, "Campaigns pay Tari for likes, reposts, replies and follows. Enter your handle to see what you can collect and what's left to do."),
+        form,
+        h("p", { class: "homelink" }, h("a", { href: "/quests" }, "Browse open campaigns"), " · no wallet needed to look."),
+      ),
+      stamp(),
+    ),
+    h(
+      "section",
+      { class: "how3", "aria-label": "How it works" },
+      h("h2", { class: "how3-title" }, "Three steps to your first reward"),
+      h(
+        "ol",
+        null,
+        h("li", null, h("span", { class: "n" }, "1"), h("div", null, h("b", null, "Pick a campaign"), h("p", null, "Browse what's open, or open a link someone shared. You'll see exactly what it asks for and what it pays."))),
+        h("li", null, h("span", { class: "n" }, "2"), h("div", null, h("b", null, "Do the steps"), h("p", null, "Like, repost, reply or follow on Bluesky as you normally would. Your progress updates when you come back."))),
+        h("li", null, h("span", { class: "n" }, "3"), h("div", null, h("b", null, "Post once and collect"), h("p", null, "One short post ties the reward to your wallet. Approve it in Sapient and it's yours."))),
+      ),
+    ),
+    h(
+      "div",
+      { class: "trust" },
+      h("div", null, h("b", null, "No middleman"), h("span", null, "The contract checks your account's signatures itself, then pays you directly.")),
+      h("div", null, h("b", null, "Only you choose the wallet"), h("span", null, "Your one post names your wallet, so nobody can redirect your reward.")),
+      h("div", null, h("b", null, "Free to check"), h("span", null, "You only need a wallet to collect, and it pays a small network fee.")),
+    ),
+    h(
+      "div",
+      { class: "grid2 homemore" },
+      h("a", { class: "card action", href: "https://atproto.tari.mw", target: "_blank", rel: "noopener" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Run a campaign"), h("p", null, "Reward people for engaging with your posts. Build one in minutes on atproto.tari.mw.")),
+      h("div", { class: "card action soon" }, h("span", { class: "icon alt" }, icons.gift(24)), h("h2", null, "Gifts and tips"), h("p", null, "Sending Tari to any handle is coming back once its contracts are on the new network.")),
+    ),
+  );
+}
+
 function renderHome(): void {
+  if (!deployed()) {
+    renderRewardsHome();
+    return;
+  }
   layout(
     "home",
     h(
@@ -1650,6 +1720,23 @@ function renderHow(): void {
     "how",
     h("h2", { class: "page" }, "How it works"),
     h("p", { class: "sub" }, "Short version: the money sits in a smart contract that can check Bluesky's own signatures."),
+    !deployed()
+      ? h(
+          "div",
+          { class: "card", style: "margin-bottom:18px" },
+          h("h3", { style: "margin-top:0" }, "Campaign rewards"),
+          h(
+            "ol",
+            { class: "how", style: "padding-left:20px;margin:0" },
+            h("li", null, h("b", null, "A creator funds a campaign."), " The reward pool is locked in a contract with fixed rules. They can't change the rules or take the money back before it closes."),
+            h("li", null, h("b", null, "You do the steps."), " Your likes, reposts, replies and follows are signed records in your own Bluesky account."),
+            h("li", null, h("b", null, "You post one line."), " It names your wallet, so the reward can only go there."),
+            h("li", null, h("b", null, "The contract checks it and pays."), " Your wallet sends the proofs and pays a small network fee. Each account can only collect once per round."),
+          ),
+          h("p", { style: "margin-bottom:0" }, "It can't tell when you did a step or whether you undo it later, and anyone can make new accounts, so open campaigns can be farmed. Creators can limit that with lists and vouches. ", h("a", { href: "/quests" }, "See your rewards")),
+        )
+      : null,
+    !deployed() ? h("h3", null, "Gifts, once they're back") : null,
     h(
       "div",
       { class: "card" },

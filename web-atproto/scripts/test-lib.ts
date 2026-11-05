@@ -4,12 +4,17 @@
  *    (cross_check_vectors_for_the_website in campaigns.rs), or real claims would silently fail.
  *  - The compiled verifier must accept real public Bluesky data and reject tampered data. Needs network.
  */
+import type { Spec } from "../src/lib/campaign";
+import { DEPLOYMENT } from "../src/data/deployment";
+import { createInstruction, lit, phaseOf, readCampaign, readOutcome, specOf } from "../src/lib/chain";
+import { settle } from "../src/lib/quests";
 import { readFileSync } from "node:fs";
 import { encodeOps, fetchProof, latestPost, parseAtUri, pdsOf, plcLog, toTarget } from "../src/lib/atproto";
 import { compose } from "../src/lib/compose";
 import { assess, totals } from "../src/lib/quests";
 import { keyFromAddress } from "../src/lib/wallet";
 import { groupsOf, requirementCount, requirementsMet } from "../src/lib/campaign";
+import { LIVE_PLACEHOLDER, encodeLive } from "../src/lib/campaign";
 import { allocationLeaf, buildAllocationTree, checkAllocation, claimCode, decodeSpec, encodeSpec, exposure, fromHex, fromMicro, newSpec, project, questName, summarize, toHex, toMicro, validate } from "../src/lib/campaign";
 import { satisfies } from "../src/lib/check";
 import { fieldStr, useWasmBytes, verifyChain, verifyRecord } from "../src/lib/verify";
@@ -141,7 +146,7 @@ ok(assess(allocQ, "did:plc:zzzzzzzzzzzzzzzzzzzzzzzz", []).state === "blocked", "
 const roundQ = { ...quest, rounds: 4 };
 ok(assess(roundQ, DID, [yes, yes]).fullAmount === 8000000n, "rounds multiply the full amount");
 const tt = totals([assess(quest, DID, [yes, yes]), assess(roundQ, DID, [yes, yes]), assess(quest, DID, [yes, no]), assess(listQ, DID, [no])]);
-ok(tt.readyNow === 4000000n && tt.toEarn === 8000000n && tt.readyCount === 2 && tt.progressCount === 1 && tt.blockedCount === 1, "totals add up", JSON.stringify({ ...tt, readyNow: String(tt.readyNow), toEarn: String(tt.toEarn) }));
+ok(tt.readyNow === 4000000n && tt.toEarn === 8000000n && tt.readyCount === 2 && tt.progressCount === 1 && tt.blockedCount === 1, "totals add up", JSON.stringify({ ...tt, readyNow: String(tt.readyNow), toEarn: String(tt.toEarn), collected: String(tt.collected) }));
 
 console.log("Wallet addresses");
 ok(keyFromAddress(ADDRESS) === ADDRESS_KEY, "address decodes to the SDK's public key");
@@ -176,6 +181,81 @@ ok(!(await verifyChain("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", ops)).ok, "chain unde
 ok(await satisfies({ kind: 3, target: post.text.slice(0, 5) || " " }, proof.record, at.did) || !post.text, "post-contains rule reads signed text");
 ok(!(await satisfies({ kind: 3, target: "\u0000never in any post" }, proof.record, at.did)), "post-contains rule refuses absent text");
 ok((await toTarget(`https://bsky.app/profile/bsky.app/post/${at.rkey}`, "post")) === post.uri, "a bsky.app link resolves to the exact at:// target");
+
+console.log("Talking to the contract");
+{
+  const COMPONENT_ADDR = "component_91ee41196af2f9598f29a102f34c3467d7dc04d6e425ab2ec4d1b314563f94f9";
+  // Real bytes recorded from Esmeralda on 2026-11-06.
+  const SUBSTATE = "8200818285582040d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b7282008082a08200804191820080819771536b7964726f70206c697665207465737478204120636f6e747261637420746573742e204e6f7468696e6720746f207365652e5820f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19d88458209105ef345b1d8150f4640222f0fef12dfff24a7327882c47be60be57cdb05006d883582091fdb97ba4f9dff26404eadc3edd7f2076dc25f09ef7ddec8553a04609f1e48dd884582091f4585a5cfadf26b83de60cc5cac57e01b60a73092c24dd1462f0d133ea386dd8805820aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371810081784661743a2f2f6469643a706c633a6161616161616161616161616161616161616161616161612f6170702e62736b792e666565642e706f73742f336b616161616161616161616181008160810019c3504001000000193251193254000000";
+  const VAULT = "82028182820383d883582001010101010101010101010101010101010101010101010101010101010101011a00030d400000";
+  const b64 = (hex: string) => Buffer.from(hex, "hex").toString("base64");
+  const realFetch = globalThis.fetch;
+  const routes: Record<string, unknown> = {
+    [`/substates/${COMPONENT_ADDR}`]: { state: { up: { substate: b64(SUBSTATE) } } },
+    "/substates/vault_9105ef345b1d8150f4640222f0fef12dfff24a7327882c47be60be57cdb05006": { state: { up: { substate: b64(VAULT) } } },
+    "/health": { current_epoch: 12881 },
+    "/transactions/rejected/result": { result: { Finalized: { final_decision: "Commit", abort_details: "Execution failure: the campaign has closed", execution_result: "" } } },
+    "/transactions/waiting/result": { result: "Pending" },
+    "/transactions/accepted/result": { result: { Finalized: { final_decision: "Commit", abort_details: null, execution_result: Buffer.from(Uint8Array.of(0x81, 0xd8, 0x80, 0x58, 0x20, ...new Uint8Array(32).fill(7))).toString("base64") } } },
+  };
+  globalThis.fetch = (async (url: string) => {
+    const path = String(url).replace(DEPLOYMENT.indexer, "");
+    return path in routes ? new Response(JSON.stringify(routes[path]), { status: 200 }) : new Response("{}", { status: 404 });
+  }) as typeof fetch;
+
+  ok(lit(5n).Literal === "05" && lit(1099511627776n).Literal === "1b0000010000000000", "amounts encode like the SDK's");
+  const made = createInstruction({ ...newSpec(), name: "A", rules: [{ kind: 0, target: "at://did:plc:a/app.bsky.feed.post/3k" }, { kind: 1, target: "at://did:plc:a/app.bsky.feed.post/3k", or: true }] }, 100, "f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19") as { CallFunction: { address: string; function: string; args: { Literal?: string; Workspace?: { id: number } }[] } };
+  const argv = made.CallFunction.args;
+  ok(made.CallFunction.function === "create" && argv.length === 18, "create takes all 18 arguments", String(argv.length));
+  ok(!made.CallFunction.address.startsWith("template_"), "the template address has no prefix");
+  ok(argv[3]!.Literal === `d8805820${DEPLOYMENT.linkRegistry.slice(10)}`, "the registry is a tagged component address");
+  ok(argv[8]!.Literal === "820101", "either/or steps share a group");
+  ok(argv[17]!.Workspace?.id === 1, "funds come from the slot the wallet leaves them in");
+  ok(argv[15]!.Literal === lit(100).Literal, "it opens now");
+
+  const live = await readCampaign(COMPONENT_ADDR);
+  ok(live.name === "Skydrop live test" && live.info === "A contract test. Nothing to see.", "reads the name and description");
+  ok(live.funder === "f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19", "reads the funder");
+  ok(live.rules.length === 1 && live.rules[0]!.kind === 0 && live.rules[0]!.target.endsWith("/3kaaaaaaaaaaa"), "reads the rules");
+  ok(live.reward === 50000n && live.balance === 200000n && live.rounds === 1, "reads the reward and pool");
+  ok(live.openEpoch === 12881 && live.closeEpoch === 12884 && phaseOf(live) === "open", "reads the window");
+  ok(live.linkRegistry === DEPLOYMENT.linkRegistry, "reads the registry");
+  ok(specOf(live).reward === "50000" && specOf(live).name === "Skydrop live test", "turns chain state into terms");
+  const link = decodeSpec(encodeLive(COMPONENT_ADDR, [{ did: "did:plc:a", amount: "5" }]));
+  ok(link.component === COMPONENT_ADDR && link.allocations?.length === 1, "a live link carries the address and allocation list");
+  const lying = decodeSpec(encodeSpec({ ...newSpec(), name: "A lie", reward: "999000000", budget: "1", component: COMPONENT_ADDR }));
+  ok(lying.name === LIVE_PLACEHOLDER && lying.reward !== "999000000", "terms in a live link are ignored, and can't make it fail");
+  ok(((): boolean => { try { decodeSpec(encodeSpec({ ...newSpec(), name: "x", component: "component_nope" })); return false; } catch { return true; } })(), "a live link with a bad address is refused");
+
+  routes[`/substates/${COMPONENT_ADDR}`] = { state: { up: { substate: b64(SUBSTATE.replace("40d3f8b2", "deadbeef")) } } };
+  ok(await readCampaign(COMPONENT_ADDR).then(() => false, (e: Error) => /isn't a campaign/.test(e.message)), "refuses a component from another template");
+  ok(await readCampaign("component_nope").then(() => false, () => true), "refuses a malformed address");
+
+  const rejected = await readOutcome("rejected");
+  ok(rejected.state === "rejected" && rejected.reason === "This campaign has closed.", "a final transaction that failed counts as failed", JSON.stringify(rejected));
+  ok((await readOutcome("waiting")).state === "pending", "an unfinished transaction is pending");
+  const accepted = await readOutcome("accepted");
+  ok(accepted.state === "accepted" && accepted.components[0] === `component_${"07".repeat(32)}`, "a good transaction names its components", JSON.stringify(accepted));
+
+  globalThis.fetch = realFetch;
+}
+
+console.log("What's left to collect");
+{
+  const spec: Spec = { ...newSpec(), name: "R", rules: [{ kind: 2, target: "did:plc:x" }], reward: "1000000", rounds: 3 };
+  const a = assess(spec, "did:plc:me", [{ status: "met", detail: "" }]);
+  const facts = { roundsPaid: 0, rounds: 3, phase: "open" as const, waitEpochs: 0, waitText: "soon", funded: true };
+  ok(settle(a, facts).state === "ready", "unclaimed and open: ready");
+  const one = settle(a, { ...facts, roundsPaid: 1, waitEpochs: 5 });
+  ok(one.state === "waiting" && one.paid === 1000000n, "paid once, next round not open: waiting");
+  ok(settle(a, { ...facts, roundsPaid: 1 }).state === "ready", "next round open: ready again");
+  ok(settle(a, { ...facts, roundsPaid: 3 }).state === "claimed", "every round paid: finished");
+  ok(settle(a, { ...facts, phase: "closed" }).state === "over", "closed: over");
+  ok(settle(a, { ...facts, funded: false }).state === "over", "pool empty: over");
+  ok(settle(a, { ...facts, phase: "upcoming", waitEpochs: 3 }).state === "waiting", "not open yet: waiting");
+  const t = totals([one, settle(a, { ...facts, roundsPaid: 1 })]);
+  ok(t.collected === 2000000n && t.readyNow === 1000000n && t.toEarn === 3000000n, "totals: collected, ready and still possible", String(t.toEarn));
+}
 
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);

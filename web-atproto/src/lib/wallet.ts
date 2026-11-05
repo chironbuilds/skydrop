@@ -114,6 +114,7 @@ export function friendly(err: unknown): string {
   if (/not connected|requestAccounts first/i.test(msg)) return "This site isn't connected to your wallet yet.";
   if (/reject|denied|declined|cancel/i.test(msg)) return "You declined the request in your wallet.";
   if (/No wallet set up/i.test(msg)) return "Set up your wallet first, then come back.";
+  if (/timed out/i.test(msg)) return "The wallet didn't respond in time. Open it and check for a pending request.";
   return msg || "Something went wrong in the wallet.";
 }
 
@@ -181,4 +182,51 @@ export async function walletBalance(): Promise<bigint | null> {
   } catch {
     return null;
   }
+}
+
+export type Stage = "approve" | "send";
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Asks the wallet to approve a transaction in its own window, then submits it. Returns the transaction id. */
+async function submitRequest(params: Record<string, unknown>, onStage?: (s: Stage) => void): Promise<string> {
+  await detect();
+  if (!provider) throw new Error("NO_WALLET");
+  const wallet = provider;
+  let requestId: string;
+  try {
+    ({ requestId } = await wallet.request({ method: "tari_createTransactionRequest", params }));
+  } catch (e) {
+    throw new Error(friendly(e));
+  }
+  onStage?.("approve");
+  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
+  let record: { status: string; error?: string; result?: unknown };
+  for (;;) {
+    record = await wallet.request({ method: "tari_getTransactionRequest", params: { requestId } });
+    if (record.status !== "pending") break;
+    if (Date.now() > deadline) throw new Error(friendly("timed out"));
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  if (record.status === "rejected") throw new Error(friendly("rejected"));
+  if (record.status === "failed") throw new Error(friendly(record.error ?? "The wallet reported an error."));
+  onStage?.("send");
+  const result = (record.status === "submitted" ? record.result : await wallet.request({ method: "tari_submitTransactionRequest", params: { requestId } })) as { transactionId?: string; transaction_id?: string };
+  const id = result?.transactionId ?? result?.transaction_id;
+  if (!id) throw new Error("The wallet didn't report a transaction id. Check its activity list before trying again.");
+  return String(id);
+}
+
+/** A transaction paid for only by its fee. */
+export const sendInstructions = (instructions: unknown[], maxFee: bigint, onStage?: (s: Stage) => void, inputs?: unknown[]): Promise<string> =>
+  submitRequest({ kind: "instructions", instructions, maxFee: maxFee.toString(), ...(inputs ? { inputs } : {}) }, onStage);
+
+/** A transaction that also moves `amount` of tTARI out of the wallet into its follow-up instructions. */
+export const sendFunded = (amount: bigint, resource: string, workspace: string, followUp: unknown[], related: string[], maxFee: bigint, onStage?: (s: Stage) => void): Promise<string> =>
+  submitRequest({ kind: "withdrawStealthAndExecute", resourceAddress: resource, amount: amount.toString(), workspaceVarName: workspace, followUpInstructions: followUp, relatedComponents: related, maxFee: maxFee.toString() }, onStage);
+
+/** Simulates a transaction without spending anything or asking for approval. Throws if it would fail. */
+export async function dryRunInstructions(instructions: unknown[], maxFee: bigint, inputs?: unknown[]): Promise<void> {
+  await detect();
+  if (!provider) throw new Error("NO_WALLET");
+  await provider.request({ method: "tari_signAndSubmitTransaction", params: { instructions, maxFee: maxFee.toString(), dryRun: true, ...(inputs ? { inputs } : {}) } });
 }

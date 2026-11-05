@@ -7,6 +7,7 @@ import { copyButton, h, pageHead, replace } from "../lib/dom";
 import { connectWallet, friendly, onWallet } from "../lib/wallet";
 import type { Page } from "../main";
 import { postCard } from "./builder";
+import { livePage } from "./live";
 import { exposurePill } from "./campaigns";
 
 const unit = "tTARI";
@@ -20,14 +21,7 @@ function ruleLine(rule: Spec["rules"][number]): HTMLElement {
 const shortTarget = (t: string): string => (t.length > 44 ? `${t.slice(0, 26)}…${t.slice(-12)}` : t);
 
 export function campaignPage(id: string): Page {
-  if (id !== "preview") {
-    return {
-      title: "Campaign",
-      body: h("div", { class: "wrap narrow" },
-        pageHead("Campaign", "This campaign can't be loaded yet", "Live campaign pages read from the network once the contract is published. Previews from the builder work today."),
-        h("a", { class: "btn primary", href: "/campaigns" }, "Browse playbooks"), h("div", { class: "spacer" })),
-    };
-  }
+  if (id !== "preview") return livePage(id);
 
   let spec: Spec;
   try {

@@ -41,6 +41,28 @@ export function deleteDraft(id: string): void {
   write(read().filter((d) => d.id !== id));
 }
 
+/** A launched campaign's allocation list. The chain holds only its root, so claimers need the list from the share link. */
+const LIVE = "atp-live-allocations";
+
+export function rememberAllocations(component: string, allocations: Spec["allocations"]): void {
+  if (!allocations) return;
+  try {
+    const all = JSON.parse(localStorage.getItem(LIVE) ?? "{}") as Record<string, Spec["allocations"]>;
+    all[component] = allocations;
+    localStorage.setItem(LIVE, JSON.stringify(all));
+  } catch {
+    /* private window: the creator can rebuild the list from their file */
+  }
+}
+
+export function allocationsFor(component: string): Spec["allocations"] {
+  try {
+    return (JSON.parse(localStorage.getItem(LIVE) ?? "{}") as Record<string, Spec["allocations"]>)[component];
+  } catch {
+    return undefined;
+  }
+}
+
 export function timeAgo(ms: number): string {
   const s = Math.max(0, (Date.now() - ms) / 1000);
   if (s < 60) return "just now";

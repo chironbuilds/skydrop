@@ -2,7 +2,7 @@
 import { groupsOf, requirementCount, requirementsMet, RULES, type Rule, type Spec } from "./campaign";
 
 export type StepStatus = "met" | "unmet" | "error";
-export type QuestState = "ready" | "progress" | "blocked" | "unknown";
+export type QuestState = "ready" | "progress" | "blocked" | "unknown" | "waiting" | "claimed" | "over";
 
 export interface StepView {
   rule: Rule;
@@ -23,6 +23,8 @@ export interface Assessment {
   perRound: bigint;
   /** What the whole campaign could pay this account, across rounds. */
   fullAmount: bigint;
+  /** What it has already paid this account. */
+  paid: bigint;
   headline: string;
 }
 
@@ -70,22 +72,49 @@ export function assess(spec: Spec, did: string, results: { status: StepStatus; d
     const left = total - done;
     headline = `${left} step${left === 1 ? "" : "s"} left.`;
   }
-  return { state, steps, done, total, perRound, fullAmount: perRound * rounds, headline };
+  return { state, steps, done, total, perRound, fullAmount: perRound * rounds, paid: 0n, headline };
 }
 
-export interface Totals { readyNow: bigint; readyCount: number; toEarn: bigint; progressCount: number; blockedCount: number }
+export interface LiveFacts {
+  roundsPaid: number;
+  rounds: number;
+  phase: "upcoming" | "open" | "closed";
+  /** Epochs until the next round or the opening, if it has to wait. */
+  waitEpochs: number;
+  /** Whether the pool can still cover this account's next payment. */
+  funded: boolean;
+  waitText: string;
+}
+
+/** Applies what the chain says to an assessment made from Bluesky data alone. */
+export function settle(a: Assessment, f: LiveFacts): Assessment {
+  const paid = a.perRound * BigInt(f.roundsPaid);
+  const out: Assessment = { ...a, paid };
+  const collected = paid > 0n ? "You've collected what you earned before it ended." : "You didn't collect from it.";
+  if (a.state === "blocked" && !paid) return f.phase === "closed" ? { ...out, state: "over", headline: "This campaign has closed." } : out;
+  if (f.rounds > 0 && f.roundsPaid >= f.rounds) return { ...out, state: "claimed", headline: "You've collected everything from this campaign." };
+  if (f.phase === "closed") return { ...out, state: "over", headline: `This campaign has closed. ${collected}` };
+  if (!f.funded) return { ...out, state: "over", headline: `This campaign's pool has run out. ${collected}` };
+  if (f.phase === "upcoming") return { ...out, state: "waiting", headline: `It opens in ${f.waitText}. You can get your steps done now.` };
+  if (f.roundsPaid > 0 && f.waitEpochs > 0) return { ...out, state: "waiting", headline: `Round ${f.roundsPaid + 1} of ${f.rounds} opens in ${f.waitText}.` };
+  return out;
+}
+
+export interface Totals { readyNow: bigint; readyCount: number; toEarn: bigint; progressCount: number; blockedCount: number; collected: bigint }
 
 export function totals(list: Assessment[]): Totals {
-  const t: Totals = { readyNow: 0n, readyCount: 0, toEarn: 0n, progressCount: 0, blockedCount: 0 };
+  const t: Totals = { readyNow: 0n, readyCount: 0, toEarn: 0n, progressCount: 0, blockedCount: 0, collected: 0n };
   for (const a of list) {
+    t.collected += a.paid;
+    const left = a.fullAmount - a.paid;
     if (a.state === "ready") {
       t.readyNow += a.perRound;
       t.readyCount++;
-      t.toEarn += a.fullAmount - a.perRound;
-    } else if (a.state === "progress" || a.state === "unknown") {
-      t.toEarn += a.fullAmount;
+      t.toEarn += left - a.perRound;
+    } else if (a.state === "progress" || a.state === "unknown" || a.state === "waiting") {
+      t.toEarn += left;
       t.progressCount++;
-    } else {
+    } else if (a.state === "blocked") {
       t.blockedCount++;
     }
   }

@@ -20,6 +20,6 @@ export const participantLink = (encoded: string): string => `${SKYDROP}/quests#a
 
 /** The contracts are on the network. */
 export const contractsOnNetwork = (): boolean => !!DEPLOYMENT.campaignTemplate && !!DEPLOYMENT.linkRegistry;
-/** Campaigns can actually be funded and claimed from these sites. Only turn on once that's built and tested live. */
-const FUNDING_READY = false;
+/** Campaigns can be funded and claimed from these sites. Run live on 2026-11-06 with scripts/live-campaign.ts. */
+const FUNDING_READY = true;
 export const isPublished = (): boolean => contractsOnNetwork() && FUNDING_READY;
