@@ -1,14 +1,19 @@
-import { contractsOnNetwork, DEPLOYMENT, isPublished, participantLink } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { PLAYBOOKS } from "../data/playbooks";
 import { questArt } from "../lib/art";
 import { fetchPost, resolveActor, parseAtUri, targetLink, toTarget, type PostInfo } from "../lib/atproto";
-import { buildAllocationTree, createArgs, decodeSpec, encodeSpec, EPOCHS_PER_DAY, exposure, fromMicro, MAX_RULES, newSpec, PALETTE, POINTS_LIMIT, project, questName, ruleDef, summarize, toMicro, validate, type Allocation, type Rule, type RuleKind, type Spec } from "../lib/campaign";
+import { buildAllocationTree, createArgs, decodeSpec, encodeSpec, EPOCHS_PER_DAY, exposure, fromMicro, MAX_RULES, newSpec, PALETTE, POINTS_LIMIT, project, questName, ruleDef, summarize, toMicro, validate, type Allocation, type Rule, type RuleKind, type Spec, claimFee } from "../lib/campaign";
 import { compose, EXAMPLES } from "../lib/compose";
 import { copyButton, download, h, pageHead, replace } from "../lib/dom";
 import { allDrafts, getDraft, newDraftId, saveDraft, timeAgo } from "../lib/library";
 import { walletState } from "../lib/wallet";
 import type { Page } from "../main";
 import { launchBox } from "./live";
+
+function append2(el: HTMLElement, ...children: Parameters<typeof replace>[1][]): HTMLElement {
+  replace(el, ...children);
+  return el;
+}
 import { exposurePill, specFromPlaybook } from "./campaigns";
 
 /** Parses "handle-or-did, amount" lines. */
@@ -76,8 +81,37 @@ export function builderPage(): Page {
   const handles = new Map<string, string>();
   const errors = new WeakMap<Rule, string>();
 
-  const preview = h("div", { class: "side" });
+  const preview = h("div", { class: "side wiz wiz4" });
   const launchBar = h("div", { class: "launchbar" });
+  // On small screens the builder is four short steps instead of one very long page. Wider screens see it all at once.
+  const WIZARD = ["Steps", "Reward", "Name", "Launch"];
+  let wizStep = 1;
+  let wizBlocking = 0;
+  let wizBudget = "0";
+  const wizBar = h("ol", { class: "wizbar", "aria-label": "Building your campaign" });
+  const wizRoot = h("div", { class: "wrap wizroot", "data-step": "1" });
+
+  function goToStep(n: number, focus = true): void {
+    wizStep = n;
+    wizRoot.dataset.step = String(n);
+    drawWizard();
+    if (!focus) return;
+    window.scrollTo({ top: 0 });
+    wizRoot.querySelector<HTMLElement>(`.wiz${n} h2, .wiz${n} h3`)?.setAttribute("tabindex", "-1");
+    wizRoot.querySelector<HTMLElement>(`.wiz${n} h2, .wiz${n} h3`)?.focus({ preventScroll: true });
+  }
+
+  function drawWizard(): void {
+    replace(wizBar, WIZARD.map((label, i) => h("li", null,
+      h("button", { type: "button", class: i + 1 === wizStep ? "now" : i + 1 < wizStep ? "done" : "", "aria-current": i + 1 === wizStep ? "step" : null, onclick: () => goToStep(i + 1) }, `${i + 1}. ${label}`))));
+    const back = wizStep > 1 ? h("button", { class: "btn small ghost", type: "button", onclick: () => goToStep(wizStep - 1) }, "Back") : h("span");
+    const next = wizStep < WIZARD.length
+      ? h("button", { class: "btn small primary", type: "button", onclick: () => goToStep(wizStep + 1) }, `Next: ${WIZARD[wizStep]}`)
+      : wizBlocking
+        ? h("span", { class: "launchnote" }, `${wizBlocking} thing${wizBlocking === 1 ? "" : "s"} to finish`)
+        : h("button", { class: "btn small primary", type: "button", onclick: () => document.getElementById("launchpanel")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, `Launch: ${fromMicro(wizBudget || "0")} ${unit}`);
+    replace(launchBar, back, next);
+  }
   const palette = h("div", { class: "palette", role: "group", "aria-label": "Step types. Drag onto the board, or press to add." });
   const board = h("div", { class: "board" });
   const sentence = h("p", { class: "sentence", "aria-live": "polite" });
@@ -526,10 +560,9 @@ export function builderPage(): Page {
     } catch {
       proj = null;
     }
-    replace(launchBar,
-      h("span", null, blocking.length ? `${blocking.length} thing${blocking.length === 1 ? "" : "s"} to finish` : `Ready: ${fromMicro(spec.budget || "0")} ${unit} pool`),
-      h("button", { class: `btn small ${blocking.length ? "ghost" : "primary"}`, type: "button", onclick: () => document.getElementById("launchpanel")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, blocking.length ? "See what's left" : "Review and launch"),
-    );
+    wizBlocking = blocking.length;
+    wizBudget = spec.budget;
+    drawWizard();
     const link = `${location.origin}/c/preview#${encodeSpec(spec)}`;
     const overBudget = proj && spec.root && proj.allocated > BigInt(spec.budget || "0");
 
@@ -556,6 +589,7 @@ export function builderPage(): Page {
           h("span", { class: "tag" }, "what people will see"),
           h("h3", null, spec.name || "Your campaign"),
           h("p", { class: "questreward" }, spec.root ? "Listed amounts" : `${fromMicro(proj?.perClaimant ?? 0n)} ${unit}`),
+          spec.root || !spec.rules.length ? null : h("p", { class: "muted small-text" }, `Claimers pay a network fee of about ${fromMicro(claimFee(spec.rules))} ${unit} to collect.`),
           h("p", { class: "muted small-text" }, spec.rules.length ? `${summarize(spec.rules)[0]!.toUpperCase()}${summarize(spec.rules).slice(1)}.` : "Add steps to see them here."),
         ),
       ),
@@ -565,16 +599,16 @@ export function builderPage(): Page {
         blocking.length
           ? h("p", { class: "muted small-text" }, "Fix the items above to unlock the preview and the launch files.")
           : [
-              h("a", { class: "btn primary", href: `/c/preview#${encodeSpec(spec)}` }, "Preview the claim page"),
-              h("p", { class: "muted small-text" }, "Test the rules against any real account. No funds involved. Participants follow their progress and claim on Skydrop."),
+              isPublished()
+                ? launchBox(spec)
+                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
+              h("h3", { style: "margin-top:14px" }, "Try it first"),
+              h("p", { class: "muted small-text" }, "Test the rules against any real account. No funds involved."),
               h("div", { class: "row" },
-                copyButton(() => participantLink(encodeSpec(spec)), "Copy link for participants"),
+                h("a", { class: "btn small ghost", href: `/c/preview#${encodeSpec(spec)}` }, "Preview the claim page"),
                 copyButton(() => link, "Copy preview link"),
                 h("button", { class: "btn small ghost", type: "button", onclick: () => download(`${slug(spec.name)}.campaign.json`, JSON.stringify({ spec, create: createArgs(spec, 0, "<your key>", DEPLOYMENT.linkRegistry || "<link registry>"), proofs }, null, 2)) }, "Download manifest"),
               ),
-              isPublished()
-                ? [h("h3", { style: "margin-top:14px" }, "Launch it"), launchBox(spec)]
-                : h("p", { class: "note warn", style: "margin:0" }, h("strong", null, "Can't be funded yet."), (contractsOnNetwork() ? " The contract is on the testnet, but funding from this site is still being built, so this stops at the preview and manifest." : " The contract isn't published on the network, so this stops at the preview and manifest.")),
             ],
       ),
       cap > 0 ? h("div", { class: "panel" },
@@ -624,7 +658,7 @@ export function builderPage(): Page {
 
   return {
     title: "Campaign builder",
-    body: h("div", { class: "wrap" },
+    body: append2(wizRoot,
       announcer,
       pageHead("Campaign builder", pb ? `Start from: ${pb.name}` : "Build your campaign", pb ? pb.how : "Drag steps onto the board and paste a post into each. Like one post, repost another, follow someone: a claim has to prove every step."),
       pb ? h("div", { class: "note warn", style: "margin:-8px 0 24px" }, h("strong", null, "Where this can be gamed: "), pb.caution) : null,
@@ -640,26 +674,27 @@ export function builderPage(): Page {
         ),
         magicOut,
       ),
+      wizBar,
       launchBar,
       h("div", { class: "builder", onpointerdown: markEdited, oninput: markEdited, onchange: markEdited, onkeydown: markEdited },
         h("div", null,
-          h("div", { class: "panel" },
+          h("div", { class: "panel wiz wiz1" },
             h("div", { class: "row", style: "justify-content:space-between" }, h("h2", { style: "font:700 16.5px var(--body)" }, "1. Build the steps"), h("div", { class: "row" }, saveNote, undoBtn)),
             palette,
             board,
             sentence,
             h("p", { class: "muted small-text" }, `Up to ${MAX_RULES} steps. Click “and” between two steps to make them either/or. People can do the steps in any order: the contract can check that each one happened, not which came first.`),
           ),
-          h("div", { class: "panel" },
+          h("div", { class: "panel wiz wiz2" },
             h("h2", null, "2. Set the reward"),
             moneyBox,
           ),
-          h("div", { class: "panel" },
+          h("div", { class: "panel wiz wiz3" },
             h("h2", null, "3. Name it"),
             h("label", { class: "field" }, "Name", nameInput),
             h("label", { class: "field" }, "What it's for (optional)", h("textarea", { rows: "2", maxlength: "256", oninput: (e: Event) => { spec.about = (e.target as HTMLTextAreaElement).value; autosave(); } }, spec.about), h("small", null, "Shown on the claim page.")),
           ),
-          h("details", { class: "panel more", open: advancedOpen },
+          h("details", { class: "panel more wiz wiz2", open: advancedOpen },
             h("summary", null, "Advanced: repeat rounds, referrals, per-person amounts"),
             advBox,
             h("div", { style: "margin-top:14px" }, allocationPanel),

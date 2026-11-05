@@ -317,7 +317,8 @@ footer code { font-family: var(--mono); font-size: 12px; }
 
 @media (max-width: 800px) {
   .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 22px; }
-  .stamp-wrap { order: -1; margin: 0 0 0 34px; transform: rotate(4deg) scale(0.72); transform-origin: left top; height: 160px; }
+  /* What you came to do comes first; the stamp follows it. */
+  .stamp-wrap { margin: 0 0 0 34px; transform: rotate(4deg) scale(0.72); transform-origin: left top; height: 160px; }
   .grid2, .trust { grid-template-columns: 1fr; }
   .trust > div + div { border-left: 0; border-top: 2px dashed var(--line-strong); }
   .nav a.hide-sm, .net.hide-sm { display: none; }

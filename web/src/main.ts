@@ -7,6 +7,7 @@ import * as chain from "./chain";
 import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } from "./dom";
 import { toHex } from "./cbor";
 import * as env from "./envelope";
+import { attachSuggest } from "../../web-atproto/src/lib/suggest";
 import { currentLang, setLang, startChinese } from "./i18n";
 import type { Lang } from "./i18n";
 import * as wallets from "./wallet";
@@ -518,11 +519,14 @@ function renderGiftsPaused(): void {
 function renderRewardsHome(): void {
   const input = h("input", { class: "input", placeholder: "yourname.bsky.social", "aria-label": "Your Bluesky handle", autocomplete: "off", autocapitalize: "off", spellcheck: "false" }) as HTMLInputElement;
   const form = h("form", { class: "homeform" }, h("div", { class: "field" }, input), h("button", { class: "btn primary", type: "submit" }, "Show my rewards"));
+  const show = (handle: string): void => {
+    location.href = handle ? `/quests?handle=${encodeURIComponent(handle)}` : "/quests";
+  };
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const handle = input.value.trim();
-    location.href = handle ? `/quests?handle=${encodeURIComponent(handle)}` : "/quests";
+    show(input.value.trim());
   });
+  attachSuggest(input, show);
   layout(
     "home",
     h(

@@ -1,0 +1,10 @@
+/* Account suggestions. The two sites name their colours differently, so each colour falls back to the other's token. */
+.suggestwrap { position: relative; }
+.suggest { position: absolute; z-index: 45; top: calc(100% + 6px); left: 0; right: 0; margin: 0; padding: 4px; list-style: none; max-height: 320px; overflow-y: auto; background: var(--surface, var(--card)); border: 2px solid var(--fg, var(--edge)); border-radius: 10px; box-shadow: 4px 4px 0 var(--fg, var(--drop)); }
+.suggest[hidden] { display: none; }
+.suggestitem { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 8px; border-radius: 7px; cursor: pointer; color: var(--fg, var(--text)); text-align: left; }
+.suggestitem:hover, .suggestitem[aria-selected="true"] { background: var(--surface-2, var(--well)); }
+.suggestitem img, .suggestblank { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--surface-2, var(--well)); }
+.suggesttext { display: grid; min-width: 0; font-size: 14.5px; line-height: 1.25; }
+.suggesttext strong, .suggesttext small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggesttext small { color: var(--muted); font-size: 13px; }

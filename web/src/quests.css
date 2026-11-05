@@ -40,6 +40,9 @@ main:focus { outline: none; }
 .qfoot { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; padding-block: 18px 34px; border-top: 2px dashed var(--fg); color: var(--muted); font-size: 13.5px; }
 .qfoot a { color: var(--fg); font-weight: 600; padding-block: 8px; }
 .qfoot span { margin-left: auto; font: 400 12px var(--mono); }
+.qfoot select { width: auto; min-height: 36px; padding: 4px 8px; font-size: 13.5px; background: var(--surface); color: var(--fg); border: 2px solid var(--fg); border-radius: 8px; }
+.qnet { margin: 0; font-size: 13px; color: var(--muted); }
+@media (max-width: 640px) { .qfoot select { min-height: 44px; font-size: 16px; } .qfoot span { margin-left: 0; flex-basis: 100%; } }
 .qtoastbtn { margin-left: 12px; padding: 4px 10px; min-height: 32px; background: none; color: inherit; border: 2px solid currentColor; border-radius: 6px; font: inherit; font-weight: 700; cursor: pointer; }
 .btn { border: 2px solid var(--fg); box-shadow: 3px 3px 0 var(--fg); border-radius: 8px; font-weight: 700; transition: transform .08s, box-shadow .08s; }
 .btn:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--fg); filter: none; }

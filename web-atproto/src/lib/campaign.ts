@@ -182,7 +182,7 @@ export interface Spec {
 export const UNIT = 1_000_000n;
 export const EPOCHS_PER_DAY = 24; // about one epoch an hour was observed on Esmeralda; an assumption, not a guarantee
 
-/** What a real one-step first claim's transaction cost on Esmeralda: 0.04 tTARI. More steps cost more. */
+/** What a real one-step first claim's transaction cost on Esmeralda: 0.04 tTARI. More steps cost more: see claimFee. */
 export const CLAIM_FEE_MICRO = 40_000n;
 
 export const MAX_RULES = 8;
@@ -278,7 +278,7 @@ export function validate(s: Spec): Problem[] {
   if (bonus > 0n && s.maxReferrals === 0) warn("A bonus with a referral limit of 0 can never pay.");
   if (bonus > 0n && exposure(s).level !== "Low") warn("Paid referrals on an open campaign reward making fake accounts. Add a vouch rule or keep the bonus tiny.");
   if (reward > 0n && budget > 0n && !s.root && budget < reward) err("The pool can't cover even one reward.");
-  if (reward > 0n && !s.root && reward <= CLAIM_FEE_MICRO * BigInt(Math.max(1, s.rules.length))) warn(`Claimers pay the network fee themselves, about ${fromMicro(CLAIM_FEE_MICRO)} tTARI or more for a claim, so a reward this small may not be worth claiming.`);
+  if (reward > 0n && !s.root && reward <= claimFee(s.rules) * 2n) warn(`Claimers pay the network fee themselves, about ${fromMicro(claimFee(s.rules))} tTARI for this campaign, so a reward this small may not be worth claiming.`);
   return out;
 }
 
@@ -308,6 +308,29 @@ const POINTS_PER_OWN_PROOF = 6.8;
 const POINTS_PER_VOUCH = 14.2;
 export const POINTS_LIMIT = 250;
 
+// Fitted to live claims: about 12,000 µT of storage and loading, plus computing at about 1,000 µT per million points.
+// Real repos need about a third more computing than the test keys POINTS_* were measured with.
+const FEE_BASE = 12_000;
+const FEE_PER_M_POINTS = 1_350;
+
+function claimComputeM(rules: Rule[]): { computeM: number; ownCommits: number; vouches: number } {
+  const vouches = rules.filter((r) => RULES[r.kind]?.side === "voucher").length;
+  const ownCommits = rules.length - vouches;
+  return { computeM: POINTS_BASE + POINTS_PER_OWN_PROOF * Math.max(ownCommits, 1) + POINTS_PER_VOUCH * vouches, ownCommits, vouches };
+}
+
+/** Roughly what collecting costs in network fees, to the nearest 0.01 tTARI. An estimate: long identity logs cost more. */
+export function claimFee(rules: Rule[]): bigint {
+  const micro = FEE_BASE + claimComputeM(rules).computeM * FEE_PER_M_POINTS;
+  return BigInt(Math.round(micro / 10_000)) * 10_000n;
+}
+
+/** What a reward leaves after the fee, rounded down to 0.01 tTARI. Null if the fee would use it all up. */
+export function afterFee(reward: bigint, rules: Rule[]): bigint | null {
+  const left = reward - claimFee(rules);
+  return left > 0n ? (left / 10_000n) * 10_000n : null;
+}
+
 export function project(s: Spec): Projection {
   const reward = BigInt(s.reward || "0");
   const bonus = BigInt(s.bonus || "0");
@@ -317,9 +340,7 @@ export function project(s: Spec): Projection {
   const perClaimant = reward * rounds;
   const worstCasePerClaimant = perClaimant + bonus * BigInt(Math.max(0, s.maxReferrals));
   const maxClaimants = s.root ? BigInt((s.allocations ?? []).length) : perClaimant > 0n ? budget / (perClaimant + (s.maxReferrals > 0 ? bonus : 0n)) : 0n;
-  const vouches = s.rules.filter((r) => RULES[r.kind]?.side === "voucher").length;
-  const ownCommits = s.rules.length - vouches;
-  const computeM = POINTS_BASE + POINTS_PER_OWN_PROOF * Math.max(ownCommits, 1) + POINTS_PER_VOUCH * vouches;
+  const { computeM, ownCommits, vouches } = claimComputeM(s.rules);
   return { perClaimant, maxClaimants, worstCasePerClaimant, allocated, computeM, computeShare: computeM / POINTS_LIMIT, ownCommits, vouches };
 }
 

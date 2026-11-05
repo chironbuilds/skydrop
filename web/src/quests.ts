@@ -5,14 +5,15 @@
 import "./quests.css";
 import { questArt } from "../../web-atproto/src/lib/art";
 import { composeUrl, fetchPost, latestPost, resolveActor, targetLink, type Actor } from "../../web-atproto/src/lib/atproto";
-import { approxTime, CLAIM_FEE_MICRO, decodeSpec, encodeLive, encodeSpec, fromMicro, LIVE_PLACEHOLDER, RULES, summarize, type Rule, type Spec } from "../../web-atproto/src/lib/campaign";
+import { afterFee, approxTime, claimFee, decodeSpec, encodeLive, encodeSpec, fromMicro, LIVE_PLACEHOLDER, RULES, summarize, type Rule, type Spec } from "../../web-atproto/src/lib/campaign";
 import { checkRule, identity } from "../../web-atproto/src/lib/check";
 import { explainChainError, listCampaigns, listParticipated, phaseOf, readCampaign, readReceipt, specOf, waitForOutcome, type ChainCampaign, type Receipt } from "../../web-atproto/src/lib/chain";
 import { icons } from "./dom";
-import { currentLang, startChinese } from "./i18n";
+import { currentLang, setLang, startChinese } from "./i18n";
 import { CLAIM_MAX_FEE, planClaim } from "../../web-atproto/src/lib/claim";
 import { append, copyButton, h, replace } from "../../web-atproto/src/lib/dom";
 import { assess, settle, totals, type Assessment, type StepView } from "../../web-atproto/src/lib/quests";
+import { attachSuggest } from "../../web-atproto/src/lib/suggest";
 import { connectWallet, dryRunInstructions, friendly, onWallet, sendInstructions, shortAddress, silentConnect, walletBalance, walletState } from "../../web-atproto/src/lib/wallet";
 import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../../web-atproto/src/data/deployment";
 
@@ -231,9 +232,11 @@ function livePanel(t: Tracked): HTMLElement {
             }
           });
           const funds = h("div");
-          replace(body, say("Your post is there. Last step:"), go, say(`Goes to your wallet. It pays the network fee, about ${fromMicro(CLAIM_FEE_MICRO)} ${unit} or more, and only the real cost is charged.`), funds, status);
+          const fee = claimFee(c.rules);
+          const net = afterFee(plan.amount, c.rules);
+          replace(body, say("Your post is there. Last step:"), go, say(`Your wallet pays a network fee of about ${fromMicro(fee)} ${unit}${net ? `, so you end up about ${fromMicro(net)} ${unit} better off` : ", which may be more than this reward"}. Only the real cost is charged.`), funds, status);
           void walletBalance().then((have) => {
-            if (have !== null && have < CLAIM_FEE_MICRO) replace(funds, h("p", { class: "note warn", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, which may not cover the fee. Add some first.`));
+            if (have !== null && have < fee) replace(funds, h("p", { class: "note warn", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, which may not cover the fee. Add some first.`));
           });
           break;
         }
@@ -275,6 +278,14 @@ function livePanel(t: Tracked): HTMLElement {
   return panel;
 }
 
+/** What a reward is really worth, once the network fee for collecting it is paid. */
+function feeLine(reward: bigint, rules: Rule[]): HTMLElement {
+  const net = afterFee(reward, rules);
+  return net
+    ? h("p", { class: "qnet" }, `About ${fromMicro(net)} ${unit} after the network fee.`)
+    : h("p", { class: "qfeenote" }, `The network fee, about ${fromMicro(claimFee(rules))} ${unit}, may be more than this reward.`);
+}
+
 /** Where someone is in a live campaign. Only shown while there's still something to do. */
 function flowSteps(t: Tracked, a: Assessment): HTMLElement | null {
   if (!t.spec.component || !["progress", "ready", "unknown"].includes(a.state)) return null;
@@ -309,9 +320,10 @@ function questCard(t: Tracked, a?: Assessment): HTMLElement {
     h("div", { class: "questbody" },
       h("div", { class: "row", style: "justify-content:space-between;gap:6px" },
         h("h3", null, s.name),
-        t.example ? h("span", { class: "pill plain" }, "Example") : liveData.has(t.id) ? h("span", { class: "pill ok" }, "Live") : h("span", { class: "pill plain" }, "Preview"),
+        t.example ? h("span", { class: "pill plain" }, "Example") : liveData.has(t.id) ? h("span", { class: "pill ok" }, "Live") : s.component ? null : h("span", { class: "pill plain" }, "Preview"),
       ),
       unread ? null : h("p", { class: "questreward" }, s.allocations ? (a && a.perRound > 0n ? `${fromMicro(a.perRound)} ${unit}` : "Listed amounts") : `${fromMicro(s.reward)} ${unit}`, s.rounds > 1 ? h("small", { class: "muted" }, ` per round, ${s.rounds} rounds`) : null),
+      unread || (s.allocations && !a?.perRound) ? null : feeLine(a?.perRound ?? BigInt(s.reward), s.rules),
       s.about ? h("p", { class: "muted small-text" }, s.about) : null,
       liveErrors.has(t.id) ? h("p", { class: "fielderr" }, liveErrors.get(t.id)!) : null,
       a && a.paid > 0n ? h("p", { class: "small-text", style: "margin:0" }, h("strong", null, `Collected ${fromMicro(a.paid)} ${unit}`), a.fullAmount > a.paid ? `, ${fromMicro(a.fullAmount - a.paid)} ${unit} still possible.` : ".") : null,
@@ -400,7 +412,7 @@ function openCard(c: ChainCampaign): HTMLElement {
     h("h3", null, c.name),
     h("p", { class: "questreward" }, `${fromMicro(c.reward)} ${unit}`, c.rounds > 1 ? h("small", { class: "muted" }, ` per round, ${c.rounds} rounds`) : null),
     h("p", { class: "muted small-text" }, c.rules.length ? `${summarize(c.rules)[0]!.toUpperCase()}${summarize(c.rules).slice(1)}.` : ""),
-    c.reward <= CLAIM_FEE_MICRO * 2n ? h("p", { class: "qfeenote" }, `Collecting costs about ${fromMicro(CLAIM_FEE_MICRO)} ${unit} in fees, so this may not be worth it.`) : null,
+    feeLine(c.reward, c.rules),
     h("p", { class: "muted small-text" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} ${unit} left · `, h("a", { href: `${CREATOR}/c/${c.component}`, target: "_blank", rel: "noopener" }, "Details")),
     add,
   );
@@ -584,6 +596,37 @@ async function useHandle(text: string): Promise<void> {
 }
 
 // ---- page -------------------------------------------------------------------------------------------------
+function languagePicker(): HTMLElement {
+  const lang = currentLang();
+  const pick = h("select", { "aria-label": "Language" }, h("option", { value: "en", selected: lang === "en" }, "English"), h("option", { value: "zh", selected: lang === "zh" }, "中文"));
+  pick.addEventListener("change", () => setLang(pick.value as "en" | "zh"));
+  return pick;
+}
+
+/** The same choice the home page's menu makes, under the same key. */
+function themePicker(): HTMLElement {
+  const KEY = "skydrop.theme";
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(KEY);
+  } catch {
+    /* storage can be blocked */
+  }
+  const mode = saved === "light" || saved === "dark" ? saved : "auto";
+  const pick = h("select", { "aria-label": "Theme" }, ["auto", "light", "dark"].map((m) => h("option", { value: m, selected: m === mode }, m === "auto" ? "Auto" : m === "light" ? "Light" : "Dark")));
+  pick.addEventListener("change", () => {
+    try {
+      if (pick.value === "auto") localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, pick.value);
+    } catch {
+      /* the choice just lasts this visit */
+    }
+    if (pick.value === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = pick.value;
+  });
+  return pick;
+}
+
 const chip = h("div", { class: "walletchip" });
 onWallet((w) => {
   if (w.connected) replace(chip, h("span", { class: "chipbtn on", title: w.address ?? "" }, h("span", { class: "dot2", "aria-hidden": "true" }), shortAddress(w.address ?? w.account ?? "").slice(0, 16)));
@@ -597,6 +640,7 @@ handleInput.addEventListener("input", () => {
   if (!checking) go.textContent = actor && handleInput.value.trim().replace(/^@/, "").toLowerCase() === actor.handle.toLowerCase() ? "Refresh" : "Show my quests";
 });
 const form = h("form", { class: "row qform" }, h("div", { style: "flex:1;min-width:210px" }, handleInput), go);
+attachSuggest(handleInput, (handle) => void useHandle(handle));
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   void useHandle(handleInput.value);
@@ -637,7 +681,13 @@ append(document.getElementById("app")!, [
       ? h("div", { class: "note warn" }, h("strong", null, "Testnet preview. "), `${contractsOnNetwork() ? `The campaign contract is on ${DEPLOYMENT.network}, but funding and claiming from these sites is still being built.` : `The campaign contract isn't published on ${DEPLOYMENT.network} yet.`} Campaigns here are previews with no funds behind them, so nothing can be collected.`)
       : h("div", { class: "note warn" }, h("strong", null, "Testnet only. "), `Rewards here are ${unit} on the ${DEPLOYMENT.network}, with no real value. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.`),
   ),
-  h("footer", { class: "qfoot wrap" }, h("a", { href: "/#/how" }, "How it works"), h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign"), h("span", null, "Tari testnet: tTARI has no monetary value.")),
+  h("footer", { class: "qfoot wrap" },
+    h("a", { href: "/#/how" }, "How it works"),
+    h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign"),
+    languagePicker(),
+    themePicker(),
+    h("span", null, "Tari testnet: tTARI has no monetary value."),
+  ),
   toastBox,
 ]);
 if (currentLang() === "zh") startChinese();

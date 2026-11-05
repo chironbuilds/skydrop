@@ -2,7 +2,7 @@
 import { DEPLOYMENT, participantLink } from "../data/deployment";
 import { questArt } from "../lib/art";
 import { targetLink } from "../lib/atproto";
-import { approxTime, encodeLive, fromMicro, RULES, summarize, toMicro, type Spec } from "../lib/campaign";
+import { approxTime, claimFee, encodeLive, fromMicro, RULES, summarize, toMicro, type Spec } from "../lib/campaign";
 import { asInputs, campaignFromTx, closeInstructions, createInstruction, currentEpoch, explainChainError, extendInstruction, FUNDS_WORKSPACE, listClaims, phaseOf, readCampaign, TARI_RESOURCE, topUpInstruction, waitForOutcome, type ChainCampaign } from "../lib/chain";
 import { copyButton, h, pageHead, pill, replace } from "../lib/dom";
 import { allocationsFor, rememberAllocations } from "../lib/library";
@@ -228,7 +228,7 @@ export function livePage(component: string): Page {
 
       h("h2", { class: "vh" }, "At a glance"),
       h("div", { class: "grid g3", style: "margin-top:0" },
-        h("div", { class: "card" }, h("span", { class: "tag" }, "reward"), h("h3", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${unit}`), h("p", null, c.rounds > 1 ? `Per round, ${c.rounds} rounds.` : "Paid once per account.")),
+        h("div", { class: "card" }, h("span", { class: "tag" }, "reward"), h("h3", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${unit}`), h("p", null, c.rounds > 1 ? `Per round, ${c.rounds} rounds.` : "Paid once per account.", c.root ? "" : ` Claimers pay a network fee of about ${fromMicro(claimFee(c.rules))} ${unit}.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, "pool left"), h("h3", null, `${fromMicro(c.balance)} ${unit}`), h("p", null, c.root ? "Held by the contract." : `Enough for ${people.toLocaleString("en-US")} more ${people === 1n ? "payment" : "payments"}.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, "claimed"), h("h3", null, `${c.claimants.toLocaleString("en-US")} ${c.claimants === 1 ? "person" : "people"}`), h("p", null, `${fromMicro(c.paid)} ${unit} paid in ${c.payments.toLocaleString("en-US")} ${c.payments === 1 ? "payment" : "payments"}.`)),
       ),

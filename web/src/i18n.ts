@@ -26,6 +26,21 @@ export function setLang(l: Lang): void {
 }
 
 const ZH: Record<string, string> = {
+  // campaign sentences and the testnet notice
+  "Rewards here are tTARI on the Esmeralda testnet, with no real value. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.": "这里的奖励是 Esmeralda 测试网上的 tTARI，没有实际价值。合约尚未经过外部审计。任何人都能创建活动，请自行判断它要求你做的事。",
+  "Like this post.": "点赞这条帖子。",
+  "Repost this post.": "转发这条帖子。",
+  "Comment on this post.": "评论这条帖子。",
+  "Quote this post.": "引用这条帖子。",
+  "Follow an account.": "关注一个账户。",
+  "Follow its author.": "关注它的作者。",
+  "Like and repost this post.": "点赞并转发这条帖子。",
+  "Like, repost and comment on this post.": "点赞、转发并评论这条帖子。",
+  "Like, repost and comment on this post, and follow its author.": "点赞、转发并评论这条帖子，并关注它的作者。",
+  "Be on a list.": "在名单上。",
+  "Be followed by a chosen account.": "被指定账户关注。",
+  "Be verified by a chosen account.": "被指定账户认证。",
+  "On an allocation list.": "在分配名单上。",
   // my quests
   "What you've earned, and what's left": "你已赚到的和还差的",
   "Enter your handle to see every campaign you're tracking. Each step is checked against your own signed Bluesky data, right here in your browser.": "输入你的用户名，查看你关注的每个活动。每一步都会在你的浏览器中，根据你自己已签名的 Bluesky 数据进行核验。",
@@ -504,6 +519,9 @@ const PATTERNS: Pattern[] = [
   [/^Added “(.+)”\.$/, (m) => `已添加「${m[1]}」。`],
   [/^Removed “(.+)”\.$/, (m) => `已移除「${m[1]}」。`],
   [/^Found (\d+) campaigns? you've collected from\.$/, (m) => `找到 ${m[1]} 个你领取过的活动。`],
+  [/^About ([\d.,]+) tTARI after the network fee\.$/, (m) => `扣除网络费用后约 ${m[1]} tTARI。`],
+  [/^The network fee, about ([\d.,]+) tTARI, may be more than this reward\.$/, (m) => `网络费用约 ${m[1]} tTARI，可能超过这份奖励。`],
+  [/^Your wallet pays a network fee of about ([\d.,]+) tTARI, so you end up about ([\d.,]+) tTARI better off\. Only the real cost is charged\.$/, (m) => `你的钱包支付约 ${m[1]} tTARI 的网络费用，实际净得约 ${m[2]} tTARI。只收取实际费用。`],
   [/^You can withdraw up to ([\d.,]+) tTARI\. A small network fee stays behind\.$/, (m) => `最多可提现 ${m[1]} tTARI，会留下一小笔网络手续费。`],
   [/^You have ([\d.,]+) tTARI\. A small network fee is kept back, so the most you can send is$/, (m) => `你有 ${m[1]} tTARI。需要留一小笔网络手续费，所以最多可发送`],
   [/^Larger payments wait a bit so the real owner could stop a hijack\. Next release (.+)\.$/, (m) => `大额付款需要等一会儿，让真正的主人有机会阻止盗用。下次释放时间：${timeZh(m[1]!)}。`],

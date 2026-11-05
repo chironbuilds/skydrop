@@ -52,7 +52,7 @@ export function statusPage(): Page {
       )),
 
       h("h2", { class: "big", style: "margin-top:40px" }, "What a claim costs"),
-      h("p", { class: "muted", style: "margin-top:8px" }, "Measured in the engine on 0.49.2 with one-operation identity logs and common keys. The limit is 250M points per transaction."),
+      h("p", { class: "muted", style: "margin-top:8px" }, "Measured in the engine on 0.49.2 with one-operation identity logs and common keys. The limit is 250M points per transaction. A real one-step claim through Sapient, from a real Bluesky account, paid 0.04 tTARI for the claim itself."),
       h("div", { class: "tablewrap" }, h("table", null,
         h("thead", null, h("tr", null, h("th", null, "Claim"), h("th", { style: "text-align:right" }, "WASM points"), h("th", { style: "text-align:right" }, "Share of limit"))),
         h("tbody", null, [["One rule", "21.2M", "8%"], ["Three rules", "34.8M", "14%"], ["Eight rules, two vouches", "83.6M", "33%"]].map(([a, b, c]) => h("tr", null, h("td", null, a), h("td", { class: "num" }, b), h("td", { class: "num" }, c)))),

@@ -14,7 +14,7 @@ import { compose } from "../src/lib/compose";
 import { assess, totals } from "../src/lib/quests";
 import { keyFromAddress } from "../src/lib/wallet";
 import { groupsOf, requirementCount, requirementsMet } from "../src/lib/campaign";
-import { LIVE_PLACEHOLDER, encodeLive } from "../src/lib/campaign";
+import { LIVE_PLACEHOLDER, afterFee, claimFee, encodeLive } from "../src/lib/campaign";
 import { allocationLeaf, buildAllocationTree, checkAllocation, claimCode, decodeSpec, encodeSpec, exposure, fromHex, fromMicro, newSpec, project, questName, summarize, toHex, toMicro, validate } from "../src/lib/campaign";
 import { satisfies } from "../src/lib/check";
 import { fieldStr, useWasmBytes, verifyChain, verifyRecord } from "../src/lib/verify";
@@ -238,6 +238,19 @@ console.log("Talking to the contract");
   ok(accepted.state === "accepted" && accepted.components[0] === `component_${"07".repeat(32)}`, "a good transaction names its components", JSON.stringify(accepted));
 
   globalThis.fetch = realFetch;
+}
+
+console.log("What a reward is worth");
+{
+  const one: Spec["rules"] = [{ kind: 0, target: "at://x" }];
+  const three: Spec["rules"] = [{ kind: 0, target: "at://x" }, { kind: 1, target: "at://x" }, { kind: 2, target: "did:plc:x" }];
+  ok(claimFee(one) === 40000n, "a one-step claim matches the real one, 0.04 tTARI", String(claimFee(one)));
+  ok(claimFee(three) > claimFee(one), "more steps cost more", String(claimFee(three)));
+  ok(claimFee([...one, { kind: 8, target: "did:plc:x" }]) > claimFee([...one, { kind: 1, target: "at://x" }]), "a vouch costs more than a step of your own");
+  ok(afterFee(1000000n, one) === 960000n, "1 tTARI is about 0.96 after the fee", String(afterFee(1000000n, one)));
+  ok(afterFee(30000n, one) === null, "a reward smaller than the fee leaves nothing");
+  ok(validate({ ...newSpec(), name: "x", rules: [{ kind: 0, target: "at://did:plc:a/app.bsky.feed.post/3k" }], reward: "50000" }).some((p) => /worth claiming/.test(p.text)), "a tiny reward gets a warning");
+  ok(!validate({ ...newSpec(), name: "x", rules: [{ kind: 0, target: "at://did:plc:a/app.bsky.feed.post/3k" }], reward: "1000000" }).some((p) => /worth claiming/.test(p.text)), "a normal reward doesn't");
 }
 
 console.log("What's left to collect");
