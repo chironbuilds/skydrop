@@ -3,12 +3,23 @@
 //! LinkRegistry: binds a Bluesky `did:plc` to an Ootle account with one signed post, so policies can pay a
 //! bound account's funds straight to its wallet. It is a shared, read-only-for-others registry — it holds
 //! no funds. Policies (ClaimPolicy, TipPolicy) call `active_binding` to find where a bound account's
-//! payouts should go.
+//! payouts should go, and every policy that accepts a repo proof calls `chain_floor`.
 //!
 //! The post's signature is the authority, so anyone may submit a binding. A first binding applies at once
 //! (when the registry's delay is zero); a replacement waits `bind_delay` epochs, during which anyone may
 //! `challenge_bind` it with a longer/different identity chain, and a post can be used once (rkey must
 //! increase), so an old post cannot move the binding back.
+//!
+//! **Each DID's data lives in its own record NFT, not in this component.** A substate is capped at 1 MiB and identities
+//! can be made for free, so shared maps could be filled for the cost of the fees, which would raise the cost of every
+//! claim that reads the registry and then stop new key rotations being recorded. So:
+//!
+//! * A DID's record is created by `open_account`, which anyone may call and the caller pays for. Reading a record that
+//!   doesn't exist fails the transaction, because the engine can't ask whether an NFT exists. A client whose claim
+//!   involves a new DID sends `open_account` in the same transaction.
+//! * This can't be used to dodge a floor. There is no way to read "no record" and carry on: a floor is either read from
+//!   the record, or the transaction fails. An account never seen has a floor of 0 either way.
+//! * Records are held in a vault that's replaced after `record_vault_size` DIDs, so that doesn't grow without limit.
 
 use atp_verify::sha256;
 use tari_template_lib::{prelude::*, types::crypto::RistrettoPublicKeyBytes};
@@ -18,6 +29,9 @@ const COLLECTION: &str = "app.bsky.feed.post";
 const MAX_OPS: usize = 16;
 const MAX_NODES: usize = 32;
 const MAX_BLOCK_LEN: usize = 16 * 1024;
+const MAX_DID: usize = 256;
+/// The most ids a record vault may hold before it's replaced. Each id takes about 40 bytes of a 1 MiB substate.
+const MAX_RECORD_VAULT_SIZE: u32 = 20_000;
 
 fn bind_code(component: &str, did: &str, address: &ComponentAddress, owner: &RistrettoPublicKeyBytes) -> String {
     let mut data = BIND_DOMAIN.to_vec();
@@ -42,37 +56,78 @@ fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {
     items.iter().map(|b| b.as_slice()).collect()
 }
 
+fn record_id(did: &str) -> NonFungibleId {
+    NonFungibleId::from_u256(sha256(did.as_bytes()))
+}
+
+/// (bound account, epoch it takes effect, the account it replaces, owner key of the new binding, owner key of the one
+/// it replaces). The registry's own address is the "nothing" sentinel.
+type Binding = (ComponentAddress, u64, ComponentAddress, RistrettoPublicKeyBytes, RistrettoPublicKeyBytes);
+/// One DID's mutable data: its binding; the tip and length of the chain the binding relied on, so a longer or different
+/// chain can cancel it; the rkey of the last bind post used; the longest valid chain seen.
+type Record = (Option<Binding>, Option<(Bytes, u32)>, Option<String>, u32);
+
 #[template]
 mod link_registry {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     pub struct LinkRegistry {
-        /// did -> (bound account, epoch it takes effect, the account it replaces, owner key of the new
-        /// binding, owner key of the one it replaces). The registry's own address is the "nothing" sentinel.
-        bindings: BTreeMap<String, (ComponentAddress, u64, ComponentAddress, RistrettoPublicKeyBytes, RistrettoPublicKeyBytes)>,
-        /// did -> (tip of the chain a binding relied on, its length), so a longer/different chain can cancel it.
-        bind_proof: BTreeMap<String, (Bytes, u32)>,
-        /// did -> rkey of the last bind post used; a later one must be larger.
-        last_bind: BTreeMap<String, String>,
-        /// did -> longest valid chain seen.
-        known_len: BTreeMap<String, u32>,
         /// Epochs a replacement binding waits before taking effect.
         bind_delay: u64,
+        /// One NFT per DID.
+        records: ResourceAddress,
+        /// Holds the single badge allowed to mint and update records.
+        record_badge: Vault,
+        /// Holds the records of recent DIDs; replaced when full.
+        record_vault: Vault,
+        record_vault_count: u32,
+        record_vault_size: u32,
+        /// Vaults that are full. Nothing reads them: a record is reached by its own address.
+        full_vaults: Vec<Vault>,
+        accounts: u64,
     }
 
     impl LinkRegistry {
-        pub fn new(bind_delay: u64) -> Component<Self> {
+        pub fn new(bind_delay: u64, record_vault_size: u32) -> Component<Self> {
+            assert!(record_vault_size >= 1 && record_vault_size <= MAX_RECORD_VAULT_SIZE, "record vault size out of range");
+            let badge_id = NonFungibleId::from_u32(0);
+            let record_badge = ResourceBuilder::non_fungible().with_owner_rule(OwnerRule::None).initial_supply([badge_id.clone()]);
+            let badge_address = NonFungibleAddress::new(record_badge.resource_address(), badge_id);
+            let records = ResourceBuilder::non_fungible()
+                .with_owner_rule(OwnerRule::None)
+                .with_token_symbol("SKYLINK")
+                .mintable(rule!(non_fungible(badge_address.clone())), rule!(deny_all))
+                .update_non_fungible_data(rule!(non_fungible(badge_address)), rule!(deny_all))
+                .withdrawable(rule!(deny_all), rule!(deny_all))
+                .build();
             Component::new(Self {
-                bindings: BTreeMap::new(),
-                bind_proof: BTreeMap::new(),
-                last_bind: BTreeMap::new(),
-                known_len: BTreeMap::new(),
                 bind_delay,
+                records,
+                record_badge: Vault::from_bucket(record_badge),
+                record_vault: Vault::new_empty(records),
+                record_vault_count: 0,
+                record_vault_size,
+                full_vaults: Vec::new(),
+                accounts: 0,
             })
             .with_access_rules(AccessRules::allow_all())
             .create()
+        }
+
+        /// Creates `did`'s record. Anyone may call it, and the caller pays for the storage. Fails if it already exists.
+        pub fn open_account(&mut self, did: String) {
+            assert!(!did.is_empty() && did.len() <= MAX_DID, "a DID must be 1-256 bytes");
+            if self.record_vault_count >= self.record_vault_size {
+                let full = core::mem::replace(&mut self.record_vault, Vault::new_empty(self.records));
+                self.full_vaults.push(full);
+                self.record_vault_count = 0;
+            }
+            let manager = ResourceManager::get(self.records);
+            let empty: Record = (None, None, None, 0);
+            let record = self.record_badge.authorize_with(|| manager.mint_non_fungible(record_id(&did), &did, &empty));
+            self.record_vault.deposit(record);
+            self.record_vault_count += 1;
+            self.accounts += 1;
         }
 
         /// The exact text an owner must post to bind `did` to `address`.
@@ -80,7 +135,7 @@ mod link_registry {
             bind_code(&CallerContext::current_component_address().to_string(), &did, &address, &owner)
         }
 
-        /// The account `did` is bound to, if a binding is in effect.
+        /// The account `did` is bound to, if a binding is in effect. Fails if `did` has no record.
         pub fn binding_for(&self, did: String) -> Option<ComponentAddress> {
             self.active_binding_full(&did).map(|b| b.0)
         }
@@ -90,11 +145,20 @@ mod link_registry {
             self.active_binding_full(&did)
         }
 
-        /// The longest valid operation chain seen for `did` (0 if none). Every policy that accepts a repo
-        /// proof refuses one made with a shorter chain: once a key rotation has been observed here (by any
-        /// bind, challenge, or `observe_chain`), a rotated-away — possibly stolen — key proves nothing anywhere.
+        /// The longest valid operation chain seen for `did`. Every policy that accepts a repo proof refuses one made
+        /// with a shorter chain: once a key rotation has been observed here (by any bind, challenge, or
+        /// `observe_chain`), a rotated-away — possibly stolen — key proves nothing anywhere. Fails if `did` has no
+        /// record, so a claim for a new DID sends `open_account` first.
         pub fn chain_floor(&self, did: String) -> u32 {
-            self.known_len.get(&did).copied().unwrap_or(0)
+            self.read(&did).3
+        }
+
+        pub fn account_count(&self) -> u64 {
+            self.accounts
+        }
+
+        pub fn record_resource(&self) -> ResourceAddress {
+            self.records
         }
 
         /// Binds `did` to the Ootle account `address`. The authority is a post in `did`'s repo containing the
@@ -112,7 +176,8 @@ mod link_registry {
             rkey: String,
         ) {
             assert!(rkey.len() == 13, "posts have 13-character record keys");
-            if let Some(last) = self.last_bind.get(&did) {
+            let (_, _, last_bind, known_len) = self.read(&did);
+            if let Some(last) = &last_bind {
                 assert!(rkey.as_str() > last.as_str(), "this post, or a later one, was already used to bind");
             }
             assert!(!ops.is_empty(), "empty operation chain");
@@ -120,9 +185,7 @@ mod link_registry {
             let ops_s = slices(&ops, MAX_OPS);
             let nodes = slices(&mst_nodes, MAX_NODES);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
-            if let Some(&k) = self.known_len.get(&did) {
-                assert!(chain.len >= k, "stale operation chain: a longer one has been seen");
-            }
+            assert!(chain.len >= known_len, "stale operation chain: a longer one has been seen");
             atp_verify::verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
                 .expect("invalid repo proof");
             let text = atp_verify::record_text(record.as_slice()).expect("record has no text");
@@ -137,53 +200,60 @@ mod link_registry {
             );
 
             let now = Consensus::current_epoch();
-            let entry = match self.active_binding_full(&did) {
+            let entry: Binding = match self.active_binding_full(&did) {
                 Some((c, co)) if c == address && co == owner => (address, now, address, owner, owner),
                 Some((c, co)) => (address, now + self.bind_delay, c, owner, co),
                 None => (address, now + self.bind_delay, me, owner, owner),
             };
-            self.known_len.insert(did.clone(), chain.len);
-            self.last_bind.insert(did.clone(), rkey);
-            self.bind_proof.insert(did.clone(), (Bytes::from_vec(chain.tip.to_vec()), chain.len));
-            self.bindings.insert(did, entry);
+            let updated: Record = (Some(entry), Some((Bytes::from_vec(chain.tip.to_vec()), chain.len)), Some(rkey), chain.len);
+            self.write(&did, &updated);
         }
 
         /// Cancels a binding that has not taken effect yet, with a valid chain at least as long as and
         /// different from the one it relied on (e.g. a key rotation the binder left out). Anyone may call.
         pub fn challenge_bind(&mut self, did: String, ops: Vec<Bytes>) {
-            let (_, since, old, _, old_owner) = self.bindings.get(&did).cloned().expect("no binding");
+            let (binding, proof, last_bind, known_len) = self.read(&did);
+            let (_, since, old, _, old_owner) = binding.expect("no binding");
             assert!(Consensus::current_epoch() < since, "the binding is already in effect");
-            let (tip, len) = self.bind_proof.get(&did).cloned().expect("no binding");
+            let (tip, len) = proof.expect("no binding");
             let ops_s = slices(&ops, MAX_OPS);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
             assert!(chain.len >= len, "that chain is shorter than the one the binding relied on");
             assert!(chain.tip.as_slice() != tip.as_slice(), "that is the chain the binding already relies on");
-            self.known_len.entry(did.clone()).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
             let me = CallerContext::current_component_address();
-            if old == me {
-                self.bindings.remove(&did);
-            } else {
-                self.bindings.insert(did.clone(), (old, 0, old, old_owner, old_owner));
-            }
-            self.bind_proof.remove(&did);
+            let restored: Option<Binding> = if old == me { None } else { Some((old, 0, old, old_owner, old_owner)) };
+            let updated: Record = (restored, None, last_bind, known_len.max(chain.len));
+            self.write(&did, &updated);
         }
 
         /// Records the longest chain seen for `did`, so stale proofs are refused from then on. Anyone may call.
         pub fn observe_chain(&mut self, did: String, ops: Vec<Bytes>) {
             let ops_s = slices(&ops, MAX_OPS);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
-            self.known_len.entry(did).and_modify(|l| *l = (*l).max(chain.len)).or_insert(chain.len);
+            let (binding, proof, last_bind, known_len) = self.read(&did);
+            let updated: Record = (binding, proof, last_bind, known_len.max(chain.len));
+            self.write(&did, &updated);
+        }
+
+        fn read(&self, did: &str) -> Record {
+            ResourceManager::get(self.records).get_non_fungible(&record_id(did)).get_mutable_data()
+        }
+
+        fn write(&self, did: &str, record: &Record) {
+            let manager = ResourceManager::get(self.records);
+            let id = record_id(did);
+            self.record_badge.authorize_with(|| manager.update_non_fungible_data(id, record));
         }
 
         fn active_binding_full(&self, did: &str) -> Option<(ComponentAddress, RistrettoPublicKeyBytes)> {
-            let (address, since, old, owner, old_owner) = self.bindings.get(did)?;
+            let (address, since, old, owner, old_owner) = self.read(did).0?;
             let me = CallerContext::current_component_address();
-            if Consensus::current_epoch() >= *since {
-                Some((*address, *owner))
-            } else if *old == me {
+            if Consensus::current_epoch() >= since {
+                Some((address, owner))
+            } else if old == me {
                 None
             } else {
-                Some((*old, *old_owner))
+                Some((old, old_owner))
             }
         }
     }

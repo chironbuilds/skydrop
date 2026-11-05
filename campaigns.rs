@@ -15,6 +15,12 @@ const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 const CAMPAIGN: &str = "tests/templates/campaigns";
 const LINK: &str = "tests/templates/link-registry";
 
+/// Opens a DID's registry record. The engine has no "does it exist" check, so this just tries.
+fn ensure_open(test: &mut TemplateTest, registry: ComponentAddress, id: &str) {
+    let tx = test.transaction().call_method(registry, "open_account", args![id.to_string()]).build_and_seal(test.secret_key());
+    let _ = test.execute_and_commit_on_success(tx, vec![]);
+}
+
 // ---- DAG-CBOR builder ------------------------------------------------------------------------------
 enum V { U(u64), T(String), B(Vec<u8>), A(Vec<V>), M(Vec<(&'static str, V)>), Link([u8; 32]), Null }
 fn head(major: u8, n: u64, out: &mut Vec<u8>) {
@@ -216,7 +222,7 @@ fn setup() -> Setup {
     set_epoch(&mut test, 1);
     let link_t = test.get_template_address("LinkRegistry");
     let funder = user(&mut test);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&funder.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&funder.key);
     test.execute_expect_success(tx, vec![funder.badge.clone()]);
     let registry = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     Setup { test, registry, funder }
@@ -316,6 +322,7 @@ fn a_quest_pays_once_per_account_only_when_every_rule_is_proven() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0), (1, TARGET.into(), 0), (2, PEER.into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let cp = acct.post(&code, R1);
@@ -330,6 +337,7 @@ fn a_quest_pays_once_per_account_only_when_every_rule_is_proven() {
     fail_with(&mut s.test, tx, u.badge.clone(), "one proof per rule");
     // a proof from someone else's repo is refused
     let stranger = Account::new();
+    ensure_open(&mut s.test, s.registry, &stranger.did);
     let theirs = stranger.like(TARGET, R2);
     let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&theirs, &repost, &follow]));
     fail_with(&mut s.test, tx, u.badge.clone(), "invalid repo commit");
@@ -358,6 +366,7 @@ fn nobody_can_take_a_claim_with_someone_elses_code_post() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let (victim, thief) = (user(&mut s.test), user(&mut s.test));
     let code = code_of(&mut s.test, camp, &acct, &victim, 0);
     let (cp, like) = (acct.post(&code, R1), acct.like(TARGET, R2));
@@ -377,6 +386,7 @@ fn replies_quotes_and_posts_each_prove_their_rule() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(4, TARGET.into(), 0), (5, TARGET.into(), 0), (3, "#OotleLaunch".into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, reply, quote) = (acct.post(&code, R1), acct.reply(TARGET, R2), acct.quote(TARGET, R3));
@@ -395,6 +405,7 @@ fn replies_quotes_and_posts_each_prove_their_rule() {
     // a quote with media nests the record one level deeper and counts too
     let camp2 = create(&mut s, &terms(vec![(5, TARGET.into(), 0)]));
     let acct2 = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct2.did);
     let u2 = user(&mut s.test);
     let code2 = code_of(&mut s.test, camp2, &acct2, &u2, 0);
     let (cp2, q2) = (acct2.post(&code2, R1), acct2.quote_with_media(TARGET, R2));
@@ -405,10 +416,12 @@ fn replies_quotes_and_posts_each_prove_their_rule() {
 fn vouch_rules_need_the_vouchers_own_signed_record() {
     let mut s = setup();
     let org = Account::new();
+    ensure_open(&mut s.test, s.registry, &org.did);
     let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
     let snapshot = T0 - 1;
     let camp = create(&mut s, &terms(vec![(6, list.clone(), snapshot), (7, org.did.clone(), 0), (8, org.did.clone(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let cp = acct.post(&code, R1);
@@ -437,6 +450,7 @@ fn vouch_rules_need_the_vouchers_own_signed_record() {
     // a list proof from before the snapshot is refused
     let late = create(&mut s, &terms(vec![(6, list.clone(), T0 + 1)]));
     let acct2 = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct2.did);
     let u2 = user(&mut s.test);
     let code2 = code_of(&mut s.test, late, &acct2, &u2, 0);
     let cp2 = acct2.post(&code2, R1);
@@ -465,6 +479,8 @@ fn inner(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
 fn allocation_lists_pay_each_account_its_own_amount() {
     let mut s = setup();
     let (a, b) = (Account::new(), Account::new());
+    ensure_open(&mut s.test, s.registry, &a.did);
+    ensure_open(&mut s.test, s.registry, &b.did);
     let (la, lb) = (leaf(&a.did, 3 * MILLION), leaf(&b.did, 5 * MILLION));
     let mut t = terms(vec![(0, TARGET.into(), 0)]);
     t.reward = 0;
@@ -497,6 +513,7 @@ fn rounds_need_time_a_new_post_and_newer_proofs() {
     t.round_epochs = 10;
     let camp = create(&mut s, &t);
     let mut acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code0 = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp0, like0) = (acct.post(&code0, R1), acct.like(TARGET, R2));
@@ -553,6 +570,9 @@ fn referrals_pay_the_referrer_up_to_its_limit() {
     t.max_referrals = 1;
     let camp = create(&mut s, &t);
     let (a, b, c_acct) = (Account::new(), Account::new(), Account::new());
+    ensure_open(&mut s.test, s.registry, &a.did);
+    ensure_open(&mut s.test, s.registry, &b.did);
+    ensure_open(&mut s.test, s.registry, &c_acct.did);
     let (ua, ub, uc) = (user(&mut s.test), user(&mut s.test), user(&mut s.test));
     let make = |test: &mut TemplateTest, acct: &Account, u: &U| {
         let code = code_of(test, camp, acct, u, 0);
@@ -587,6 +607,7 @@ fn a_linked_account_claims_through_a_relayer_and_is_paid_directly() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let (owner, relayer) = (user(&mut s.test), user(&mut s.test));
     let like = acct.like(TARGET, R2);
     let relay = |test: &TemplateTest, like: &Post| {
@@ -619,6 +640,7 @@ fn a_rotated_away_key_proves_nothing() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
     let mut acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, like, old_ops) = (acct.post(&code, R1), acct.like(TARGET, R2), acct.ops.clone());
@@ -641,6 +663,8 @@ fn the_funder_is_held_to_the_window_and_only_the_funder_gets_the_rest() {
     t.funds = MILLION + 500_000;
     let camp = create(&mut s, &t);
     let (a, b) = (Account::new(), Account::new());
+    ensure_open(&mut s.test, s.registry, &a.did);
+    ensure_open(&mut s.test, s.registry, &b.did);
     let (ua, ub) = (user(&mut s.test), user(&mut s.test));
     let code = code_of(&mut s.test, camp, &a, &ua, 0);
     let (cp, like) = (a.post(&code, R1), a.like(TARGET, R2));
@@ -678,6 +702,7 @@ fn the_funder_is_held_to_the_window_and_only_the_funder_gets_the_rest() {
     // after close: no more claims, a stranger can't take the rest, the funder can
     set_epoch(&mut s.test, 20);
     let c = Account::new();
+    ensure_open(&mut s.test, s.registry, &c.did);
     let uc = user(&mut s.test);
     let codec = code_of(&mut s.test, camp, &c, &uc, 0);
     let (cpc, likec) = (c.post(&codec, R1), c.like(TARGET, R2));
@@ -704,6 +729,7 @@ fn receipts_cannot_be_moved_and_component_state_does_not_grow_with_claims() {
     let mut first: Option<U> = None;
     for _ in 0..5 {
         let acct = Account::new();
+        ensure_open(&mut s.test, s.registry, &acct.did);
         let u = user(&mut s.test);
         let code = code_of(&mut s.test, camp, &acct, &u, 0);
         let (cp, like) = (acct.post(&code, R1), acct.like(TARGET, R2));
@@ -733,12 +759,14 @@ fn eight_rule_quest_fits_the_compute_limit() {
     // the worst case: every rule from a different commit, plus vouches with their own chains
     let mut s = setup();
     let org = Account::new();
+    ensure_open(&mut s.test, s.registry, &org.did);
     let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
     let camp = create(&mut s, &terms(vec![
         (0, TARGET.into(), 0), (1, TARGET.into(), 0), (2, PEER.into(), 0), (3, "gm".into(), 0),
         (4, TARGET.into(), 0), (5, TARGET.into(), 0), (6, list.clone(), 0), (8, org.did.clone(), 0),
     ]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let cp = acct.post(&code, R1);
@@ -792,6 +820,7 @@ fn like_repost_and_comment_on_one_post_all_have_to_be_proven() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0), (1, TARGET.into(), 0), (4, TARGET.into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, like, repost, comment) = (acct.post(&code, R1), acct.like(TARGET, R2), acct.repost(TARGET, R3), acct.reply(TARGET, R4));
@@ -818,6 +847,7 @@ fn liking_three_different_posts_needs_a_like_of_each() {
     let mut s = setup();
     let camp = create(&mut s, &terms(vec![(0, x.into(), 0), (0, y.into(), 0), (0, z.into(), 0)]));
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, lx, ly, lz) = (acct.post(&code, R1), acct.like(x, R2), acct.like(y, R3), acct.like(z, R4));
@@ -854,6 +884,7 @@ fn either_or_steps_need_one_proof_from_the_group() {
     let none = skipped();
 
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, follow, like, repost) = (acct.post(&code, R1), acct.follow(PEER, R2), acct.like(x, R3), acct.repost(y, R4));
@@ -870,6 +901,7 @@ fn either_or_steps_need_one_proof_from_the_group() {
     // either branch pays
     claim_ok(&mut s, camp, &acct, &u, &cp, &simple(vec![&follow, &like, &none]));
     let acct2 = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct2.did);
     let u2 = user(&mut s.test);
     let code2 = code_of(&mut s.test, camp, &acct2, &u2, 0);
     let (cp2, follow2, repost2) = (acct2.post(&code2, R1), acct2.follow(PEER, R2), acct2.repost(y, R4));
@@ -880,14 +912,16 @@ fn either_or_steps_need_one_proof_from_the_group() {
 #[test]
 fn an_either_or_step_can_be_a_voucher() {
     // be on the org's list, or like the post: an org member skips the engagement
-    let org = Account::new();
-    let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
     let mut s = setup();
+    let org = Account::new();
+    ensure_open(&mut s.test, s.registry, &org.did);
+    let list = format!("at://{}/app.bsky.graph.list/3jlist0000000", org.did);
     let mut t = terms(vec![(6, list.clone(), 0), (0, TARGET.into(), 0)]);
     t.groups = vec![1, 1];
     let camp = create(&mut s, &t);
     let none = skipped();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let (cp, item) = (acct.post(&code, R1), org.list_item(&acct.did, &list, R2));
@@ -907,6 +941,7 @@ fn a_comment_can_be_required_to_say_something() {
     t.texts = vec!["#OotleLaunch".into()];
     let camp = create(&mut s, &t);
     let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
     let u = user(&mut s.test);
     let code = code_of(&mut s.test, camp, &acct, &u, 0);
     let cp = acct.post(&code, R1);
@@ -927,4 +962,30 @@ fn a_comment_can_be_required_to_say_something() {
     let tx = create_tx(&s, &bad);
     let fb = s.funder.badge.clone();
     fail_with(&mut s.test, tx, fb, "only replies and quotes");
+}
+
+/// Opening a new DID's record and claiming in one transaction is what a real client sends.
+#[test]
+fn a_new_account_opens_its_record_and_claims_in_one_transaction() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let acct = Account::new(); // deliberately not opened yet
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &acct, &u, 0);
+    let (cp, like) = (acct.post(&code, R1), acct.like(TARGET, R2));
+    // with no record the claim fails: there's no way to read "no record" and skip the floor
+    let tx = claim_tx(&s.test, camp, &acct, &u, &cp, &simple(vec![&like]));
+    s.test.execute_expect_failure(tx, vec![u.badge.clone()]);
+    let (commits, nodes, records, rkeys) = proofs(&[&like]);
+    let tx = s.test.transaction()
+        .call_method(s.registry, "open_account", args![acct.did.clone()])
+        .call_method(camp, "claim", args![
+            acct.did.clone(), u.id, u.account, bytes_list(&acct.ops), commits, nodes, records, rkeys, Vec::<Vec<Bytes>>::new(),
+            Bytes::from_vec(cp.commit.clone()), bytes_list(&cp.nodes), Bytes::from_vec(cp.record.clone()), cp.rkey.clone(),
+            0u64, Vec::<Bytes>::new(), Option::<String>::None
+        ])
+        .build_and_seal(&u.key);
+    let before = bal(&mut s.test, &u);
+    s.test.execute_expect_success(tx, vec![u.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
 }

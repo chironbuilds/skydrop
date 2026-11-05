@@ -11,7 +11,8 @@ const ROADMAP: [string, "done" | "next" | "later", string][] = [
   ["Fund and claim from the browser", "next", "Wallet connection for creating and claiming, tested against a live deployment."],
   ["Move Skydrop's app to 0.49", "next", "skydrop.tari.mw still targets contracts from before the network reset."],
   ["Per-account Escrow ledgers", "done", "Nobody can fill the shared Escrow with dust any more. Nothing shared grows with deposits."],
-  ["Fix LinkRegistry capacity", "next", "It keeps every link in one 1 MiB component, which affects Campaign's claim cost. See the trust boundaries."],
+  ["Per-account LinkRegistry records", "done", "Nobody can bloat the registry to raise claim costs or stop key rotations being recorded."],
+  ["Fix older policies' shared state", "next", "ClaimPolicy and others still keep per-account data in one component. See the trust boundaries."],
   ["Third-party audit", "later", "Needed before real funds on mainnet."],
   ["Mainnet", "later", "After the audit, on the mainnet's final fee table."],
 ];
@@ -36,7 +37,7 @@ export function statusPage(): Page {
       pageHead("Status", "Where things actually stand", "What's built, what's tested, what's deployed and what isn't. Updated by hand with each release."),
       h("div", { class: "grid g3", style: "margin-top:0" },
         h("div", { class: "card" }, h("span", { class: "tag" }, "contracts"), h("h3", null, isPublished() ? "Published" : "Not published"), h("p", null, isPublished() ? `On the ${DEPLOYMENT.network}.` : `Built and tested against Ootle ${DEPLOYMENT.ootle}. Nothing is on the network since its reset.`)),
-        h("div", { class: "card" }, h("span", { class: "tag" }, "tests"), h("h3", null, `${total} passing`), h("p", null, `Run on ${TESTED_AT}. Every deliberately broken safety check was caught: 26 in Campaign and 14 in the Escrow.`)),
+        h("div", { class: "card" }, h("span", { class: "tag" }, "tests"), h("h3", null, `${total} passing`), h("p", null, `Run on ${TESTED_AT}. Every deliberately broken safety check was caught: 26 in Campaign, 14 in the Escrow and 18 in the LinkRegistry.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, DEPLOYMENT.network.toLowerCase()), live),
       ),
       h("div", { class: "note warn" }, h("strong", null, "Testnet only. "), "No third-party audit yet. Internal reviews found and fixed real bugs, so expect there are more. Don't put real value behind this yet."),

@@ -41,6 +41,8 @@
 <div><code>claim_round(did, claimant, ops, commits, nodes, records, rkeys, vouch_ops, c_commit, c_nodes, c_record, c_rkey, amount, path)</code><p>A later round. It needs <code>round_epochs</code> since the last payment, a new code post for this round, and a re-proof of every rule from a commit newer than the last one proven. It pays the account on the receipt.</p></div>
 </div>
 
+<p style="margin-top:12px">Every account a claim proves, the claimant's and each voucher's, needs a record in the LinkRegistry. A claim fails without one, so a client adds <code>open_account(did)</code> to the same transaction for any DID that doesn't have a record yet. That's the only way to read a floor of 0, so it can't be used to skip a floor that exists.</p>
+
 <h2>The funder's limits</h2>
 <div class="deflist">
 <div><code>top_up(funds)</code><p>Anyone can add to the pool.</p></div>

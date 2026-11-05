@@ -173,7 +173,7 @@ fn set_epoch(test: &mut TemplateTest, e: u64) {
 }
 
 
-struct Env { test: TemplateTest, escrow: ComponentAddress, drop: ComponentAddress }
+struct Env { reg: ComponentAddress, test: TemplateTest, escrow: ComponentAddress, drop: ComponentAddress }
 
 fn setup() -> Env {
     let mut test = TemplateTest::new(CRATE_PATH, [ESCROW, DROP, LINK]);
@@ -186,7 +186,7 @@ fn setup() -> Env {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction().call_function(drop_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
@@ -198,7 +198,7 @@ fn setup() -> Env {
         .call_method(drop, "receive_badge", args![Workspace("b")])
         .build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
-    Env { test, escrow, drop }
+    Env { reg, test, escrow, drop }
 }
 
 fn terms(snapshot: u64, list: &str) -> Bytes {
@@ -248,6 +248,7 @@ fn balance(env: &mut Env, a: ComponentAddress) -> Amount {
 fn list_members_vouched_for_by_the_org_each_take_one_slot() {
     let mut env = setup();
     let org = Account::new();
+    ensure_open(&mut env.test, env.reg, &org.did);
     let list = format!("at://{}/app.bsky.graph.list/3kteam00000aa", org.did);
     let other_list = format!("at://{}/app.bsky.graph.list/3kfans00000aa", org.did);
     let funder = user(&mut env.test);
@@ -261,6 +262,7 @@ fn list_members_vouched_for_by_the_org_each_take_one_slot() {
     assert_eq!(env.test.call_method::<u32>(env.drop, "slots_left", args![campaign.clone()], vec![]), 2);
 
     let alice = Account::new();
+    ensure_open(&mut env.test, env.reg, &alice.did);
     let alice_w = user(&mut env.test);
     let mallory = user(&mut env.test);
     let alice_code = code(&mut env, &campaign, &alice, &alice_w);
@@ -289,10 +291,12 @@ fn list_members_vouched_for_by_the_org_each_take_one_slot() {
 
     // A second member takes the last slot; after that the drop is exhausted.
     let bob = Account::new();
+    ensure_open(&mut env.test, env.reg, &bob.did);
     let bob_w = user(&mut env.test);
     let bob_code = code(&mut env, &campaign, &bob, &bob_w);
     claim(&mut env, &campaign, &bob, &org, &org.listitem(&bob.did, &list, "3kbbbbbbbbbbb", T0 + 5), &bob.post(&bob_code, "3jaaaaaaaaaaa"), &bob_w, &bob_w, true);
     let carol = Account::new();
+    ensure_open(&mut env.test, env.reg, &carol.did);
     let carol_w = user(&mut env.test);
     let carol_code = code(&mut env, &campaign, &carol, &carol_w);
     claim(&mut env, &campaign, &carol, &org, &org.listitem(&carol.did, &list, "3kccccccccccc", T0), &carol.post(&carol_code, "3jaaaaaaaaaaa"), &carol_w, &carol_w, false);
@@ -304,12 +308,14 @@ fn list_members_vouched_for_by_the_org_each_take_one_slot() {
 fn a_claim_code_is_bound_to_one_campaign() {
     let mut env = setup();
     let org = Account::new();
+    ensure_open(&mut env.test, env.reg, &org.did);
     let list = format!("at://{}/app.bsky.graph.list/3kteam00000aa", org.did);
     let funder = user(&mut env.test);
     let (c1, c2) = (format!("{}:q1", hex(&funder.id)), format!("{}:q2", hex(&funder.id)));
     fund(&mut env, &funder, &c1, terms(T0, &list));
     fund(&mut env, &funder, &c2, terms(T0, &list));
     let alice = Account::new();
+    ensure_open(&mut env.test, env.reg, &alice.did);
     let w = user(&mut env.test);
     let item = org.listitem(&alice.did, &list, "3kaaaaaaaaaaa", T0);
     let p1 = alice.post(&code(&mut env, &c1, &alice, &w), "3jaaaaaaaaaaa");

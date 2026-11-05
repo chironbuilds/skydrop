@@ -30,8 +30,8 @@
   <li><b>Consider the rules where you are.</b> Offering rewards can carry legal and tax obligations, which this software knows nothing about.</li>
 </ul>
 
-<h2>Known open issue: LinkRegistry capacity</h2>
-<div class="note warn"><strong>The LinkRegistry keeps every link and chain floor in one component, capped at 1 MiB, and that needs fixing before mainnet.</strong> Anyone can add entries with self-made identities for only the transaction fee. Every Campaign claim reads the registry for the chain floor, so a bloated registry raises everyone's claim cost, and a full one stops new key rotations and links being recorded. The Escrow's fix doesn't carry over directly: a contract can't ask whether a record exists, and a floor has to be readable for accounts that have never been seen.</div>
+<h2>Known open issue: older policies' shared state</h2>
+<div class="note warn"><strong>The older policies still keep per-account data in one 1 MiB component, and need the same treatment before mainnet.</strong> That covers ClaimPolicy, TipPolicy, EngagementBounty, ListDrop, ServicePay and SocialRecovery. The most concerning is ClaimPolicy, which stores each pending claim's post text, and an account can sign text far longer than Bluesky allows. From reading the code, a small number of self-made accounts with minimum deposits may be enough to fill it and block new gift claims, though that hasn't been demonstrated yet. Refunds wouldn't be affected. Campaign, the Escrow and the LinkRegistry don't have this problem.</div>
 
 <h2>Bugs found so far</h2>
 <p>Internal review of the policy stack found and fixed these before any real funds were at risk. Listed because more of the same kind may remain.</p>
@@ -42,6 +42,7 @@
   <li>A single per-account deposit cap let a stranger fill a victim's slots. Caps are now per policy.</li>
   <li>A junk slot at the front of a bounty pool could block every claim. Campaign ids now name their funder.</li>
   <li>Every deposit lived in one 1 MiB component, so anyone could fill the shared Escrow with dust and block new deposits for everyone. Each account now has its own ledger, and nothing shared grows with deposits.</li>
+  <li>The LinkRegistry had the same shape, so bloating it would have raised the cost of every Campaign claim and then stopped key rotations being recorded. Each DID now has its own record.</li>
 </ul>
 
 <h2>Reporting a problem</h2>

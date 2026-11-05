@@ -168,6 +168,7 @@ fn set_epoch(test: &mut TemplateTest, e: u64) {
 }
 
 struct Env {
+    reg: ComponentAddress,
     test: TemplateTest,
     escrow: ComponentAddress,
     rec: ComponentAddress,
@@ -184,7 +185,7 @@ fn setup() -> Env {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction().call_function(rec_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
@@ -197,7 +198,7 @@ fn setup() -> Env {
         .call_method(rec, "receive_badge", args![Workspace("b")])
         .build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
-    Env { test, escrow, rec }
+    Env { reg, test, escrow, rec }
 }
 
 const VAULT: &str = "vault-alice";
@@ -245,6 +246,9 @@ fn recovery(env: &mut Env) -> Option<(String, u64)> {
 fn guardians_recover_a_vault_after_the_delay_and_the_owner_can_veto() {
     let mut env = setup();
     let (g1, g2, g3) = (Account::new(), Account::new(), Account::new());
+    ensure_open(&mut env.test, env.reg, &g1.did);
+    ensure_open(&mut env.test, env.reg, &g2.did);
+    ensure_open(&mut env.test, env.reg, &g3.did);
     let owner = user(&mut env.test);
     ensure_open(&mut env.test, env.escrow, &VAULT.to_string());
     let tx = env
@@ -259,6 +263,7 @@ fn guardians_recover_a_vault_after_the_delay_and_the_owner_can_veto() {
     let relayer = user(&mut env.test);
     let fresh = user(&mut env.test); // the owner's new wallet
     let outsider = Account::new();
+    ensure_open(&mut env.test, env.reg, &outsider.did);
 
     // A non-guardian's post counts for nothing; one guardian alone starts nothing.
     approve(&mut env, &relayer, &outsider, fresh.account, "3jaaaaaaaaaaa", false);
@@ -294,6 +299,8 @@ fn guardians_recover_a_vault_after_the_delay_and_the_owner_can_veto() {
 fn approvals_for_different_accounts_do_not_add_up() {
     let mut env = setup();
     let (g1, g2) = (Account::new(), Account::new());
+    ensure_open(&mut env.test, env.reg, &g1.did);
+    ensure_open(&mut env.test, env.reg, &g2.did);
     let owner = user(&mut env.test);
     ensure_open(&mut env.test, env.escrow, &VAULT.to_string());
     let tx = env

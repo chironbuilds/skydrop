@@ -43,6 +43,12 @@ const CRATE_PATH: &str = env!("CARGO_MANIFEST_DIR");
 const CAMPAIGN: &str = "tests/templates/campaigns";
 const LINK: &str = "tests/templates/link-registry";
 
+/// Opens a DID's registry record. The engine has no "does it exist" check, so this just tries.
+fn ensure_open(test: &mut TemplateTest, registry: ComponentAddress, id: &str) {
+    let tx = test.transaction().call_method(registry, "open_account", args![id.to_string()]).build_and_seal(test.secret_key());
+    let _ = test.execute_and_commit_on_success(tx, vec![]);
+}
+
 """
 tail = (root / "scripts" / "campaigns_tail.rs.txt").read_text(encoding="utf-8")
 (root / "campaigns.rs").write_text(head + body + tail, encoding="utf-8", newline="\n")

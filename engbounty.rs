@@ -185,7 +185,7 @@ fn repost_bounty_pays_each_account_once() {
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
 
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
 
@@ -229,6 +229,7 @@ fn repost_bounty_pays_each_account_once() {
 
     // A reposter claims: repost record + claim-code post, both in their repo.
     let acct = Account::new();
+    ensure_open(&mut test, reg, &acct.did);
     let claimant = user(&mut test);
     let code: String = test.call_method(bounty, "expected_post_text", args![acct.did.clone(), claimant.id], vec![]);
     let codepost = acct.post(&code, "3jaaaaaaaaaaa");
@@ -275,7 +276,7 @@ fn proof_of_post_bounty_pays_a_post_containing_the_text() {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction().call_function(bounty_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
@@ -302,6 +303,7 @@ fn proof_of_post_bounty_pays_a_post_containing_the_text() {
     test.execute_expect_success(tx, vec![funder.badge.clone()]);
 
     let acct = Account::new();
+    ensure_open(&mut test, reg, &acct.did);
     let claimant = user(&mut test);
     let code: String = test.call_method(bounty, "expected_post_text", args![acct.did.clone(), claimant.id], vec![]);
     let claim = |test: &mut TemplateTest, post: &Post, expect_ok: bool| {

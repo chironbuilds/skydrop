@@ -294,7 +294,7 @@ fn setup() -> Setup {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction().call_function(claim_t, "new", args![escrow, badge_res, reg]).build_and_seal(&admin.key);
@@ -363,6 +363,7 @@ fn escrowed(s: &mut Setup) -> Amount {
 fn window_zero_deposit_claims_immediately() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 5_000, 100, 0);
     let claimant = user(&mut s.test);
@@ -378,6 +379,7 @@ fn window_zero_deposit_claims_immediately() {
 fn deposit_stays_escrowed_until_its_window_passes() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 7_000, 100, 3); // window of 3 epochs
     let claimant = user(&mut s.test);
@@ -396,6 +398,7 @@ fn deposit_stays_escrowed_until_its_window_passes() {
 fn finalize_pays_every_elapsed_deposit_in_one_call() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let a = user(&mut s.test);
     let b = user(&mut s.test);
     deposit(&mut s, &a, &acct.did, 2_000, 100, 0);
@@ -448,6 +451,7 @@ fn start_claim_with(s: &mut Setup, claimant: &U, acct: &Account, rkey: &str, ext
 fn phrase_deposit_pays_only_when_phrase_posted() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit_phrase(&mut s, &sender, &acct.did, 4_000, 100, 0, "launch");
     let claimant = user(&mut s.test);
@@ -494,6 +498,7 @@ fn confirm(s: &mut Setup, who: &U, acct: &Account, code: &str, rkey: &str, rev: 
 fn hold_deposit_pays_only_after_the_post_is_held() {
     let mut s = setup();            // epoch 1
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit_hold(&mut s, &sender, &acct.did, 6_000, 100, 0, 2); // 2-epoch hold, no window
     let claimant = user(&mut s.test);
@@ -525,6 +530,7 @@ fn sponsored_start_and_finalize_are_paid_by_the_fee_vault() {
 
     // A 0.5 tTARI deposit for the account, enough to cover the sponsored fees it will draw.
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit(&mut s, &sender, &acct.did, 500_000, 100, 0);
     let claimant = user(&mut s.test);
@@ -585,6 +591,7 @@ fn returned_for(s: &mut Setup, did: &str, sender: &U) -> Amount {
 fn a_huge_window_deposit_cannot_block_real_deposits_and_is_swept() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let honest = user(&mut s.test);
     let griefer = user(&mut s.test);
     deposit(&mut s, &honest, &acct.did, 5_000, 100, 0);
@@ -605,6 +612,7 @@ fn a_huge_window_deposit_cannot_block_real_deposits_and_is_swept() {
 fn an_unanswered_phrase_gift_is_swept_back_only_after_72_epochs() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     deposit_phrase(&mut s, &sender, &acct.did, 4_000, 500, 0, "launch");
     let anyone = user(&mut s.test);
@@ -624,6 +632,7 @@ fn an_unanswered_phrase_gift_is_swept_back_only_after_72_epochs() {
 fn out_of_range_metadata_never_pays() {
     let mut s = setup();
     let acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let sender = user(&mut s.test);
     // window 11 (> MAX_WINDOW 10), and a bad envelope flag: both invalid, so nothing is payable.
     deposit_raw(&mut s, &sender, &acct.did, 3_000, 100, 11u64.to_be_bytes().to_vec());
@@ -641,6 +650,7 @@ fn out_of_range_metadata_never_pays() {
 fn a_rotated_away_key_cannot_claim_once_the_registry_has_seen_the_rotation() {
     let mut s = setup();
     let mut acct = Account::new();
+    ensure_open(&mut s.test, s.reg, &acct.did);
     let thief = acct.clone(); // holds the old repo key and the old (shorter) chain
     acct.rotate();
     // the owner rotated; someone (the bot) shows the registry the new chain

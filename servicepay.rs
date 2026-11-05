@@ -178,6 +178,7 @@ fn token(acct: &Account, aud: &str, lxm: Option<&str>, nonce: u32) -> String {
 }
 
 struct Env {
+    reg: ComponentAddress,
     test: TemplateTest,
     escrow: ComponentAddress,
     svc: ComponentAddress,
@@ -194,7 +195,7 @@ fn setup() -> Env {
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let escrow = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let badge_res: ResourceAddress = test.call_method(escrow, "policy_badge_resource", args![], vec![]);
-    let tx = test.transaction().call_function(link_t, "new", args![0u64]).build_and_seal(&admin.key);
+    let tx = test.transaction().call_function(link_t, "new", args![0u64, 20_000u32]).build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
     let reg = test.get_previous_output_address(SubstateType::Component).as_component_address().unwrap();
     let tx = test.transaction().call_function(svc_t, "new", args![escrow, badge_res, TARI_TOKEN, reg]).build_and_seal(&admin.key);
@@ -207,7 +208,7 @@ fn setup() -> Env {
         .call_method(svc, "receive_badge", args![Workspace("b")])
         .build_and_seal(&admin.key);
     test.execute_expect_success(tx, vec![admin.badge.clone()]);
-    Env { test, escrow, svc }
+    Env { reg, test, escrow, svc }
 }
 
 /// Credit-line metadata: price ++ provider DID ++ "\n" ++ payout account [++ "\n" ++ method].
@@ -257,6 +258,7 @@ fn escrowed(env: &mut Env) -> Amount {
 fn each_service_auth_token_pays_one_call_to_the_fixed_payout() {
     let mut env = setup();
     let acct = Account::new();
+    ensure_open(&mut env.test, env.reg, &acct.did);
     let payer = user(&mut env.test);
     let provider = user(&mut env.test);
     let relayer = user(&mut env.test);
@@ -300,6 +302,7 @@ fn each_service_auth_token_pays_one_call_to_the_fixed_payout() {
 fn a_method_scoped_credit_line_only_pays_tokens_for_that_method() {
     let mut env = setup();
     let acct = Account::new();
+    ensure_open(&mut env.test, env.reg, &acct.did);
     let payer = user(&mut env.test);
     let provider = user(&mut env.test);
     open_credit(&mut env, &payer, &acct, 2_000, terms(1_000, provider.account, Some("com.example.translate")));

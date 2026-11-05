@@ -66,7 +66,7 @@ for (const [name, file] of TEMPLATES) {
   out[name] = ups.find((id) => id.startsWith("template_"));
   console.log(name, out[name]);
 }
-const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry.replace("template_", ""), functionName: "new" }, [0]));
+const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry.replace("template_", ""), functionName: "new" }, [0, 20000]));
 const registry = ups.find((id) => id.startsWith("component_") && id !== account);
 console.log("\nFor web-atproto/src/data/deployment.ts:");
 console.log(`  campaignTemplate: "${out.Campaign}",\n  linkRegistry: "${registry}",\n  verifier: "${out.Verifier}",`);
