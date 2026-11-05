@@ -110,6 +110,7 @@ mod link_registry {
                 full_vaults: Vec::new(),
                 accounts: 0,
             })
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }

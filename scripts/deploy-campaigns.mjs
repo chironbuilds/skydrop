@@ -21,7 +21,9 @@ const { SecretKeyWallet } = await load("@tari-project/ootle-secret-key-wallet");
 
 const dir = resolve(process.argv[2] ?? ".");
 const go = process.argv[3] === "go";
-const TEMPLATES = [["LinkRegistry", "bsky_link_registry"], ["Campaign", "bsky_campaign"], ["Verifier", "bsky_verifier"]];
+// A third argument, "registry-only", publishes just the LinkRegistry and one instance of it.
+const registryOnly = process.argv[4] === "registry-only";
+const TEMPLATES = [["LinkRegistry", "bsky_link_registry"], ["Campaign", "bsky_campaign"], ["Verifier", "bsky_verifier"]].slice(0, registryOnly ? 1 : 3);
 
 const { entropy } = JSON.parse(readFileSync("publisher.json", "utf8"));
 const { ownerSecret, viewSecret } = deriveAccountKeys(fromHex(entropy), 0);
@@ -74,5 +76,6 @@ const uintLiteral = (n) => {
 const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry, functionName: "new" }, [uintLiteral(0), uintLiteral(20000)]));
 const registry = ups.find((id) => id.startsWith("component_") && id !== account);
 console.log("\nFor web-atproto/src/data/deployment.ts:");
-console.log(`  campaignTemplate: "${out.Campaign}",\n  linkRegistry: "${registry}",\n  verifier: "${out.Verifier}",`);
+console.log(`  LinkRegistry template: ${out.LinkRegistry}`);
+console.log(registryOnly ? `  linkRegistry: "${registry}",` : `  campaignTemplate: "${out.Campaign}",\n  linkRegistry: "${registry}",\n  verifier: "${out.Verifier}",`);
 process.exit(0);

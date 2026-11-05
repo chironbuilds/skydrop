@@ -249,6 +249,14 @@ fn component_bytes(env: &Env) -> usize {
     tari_bor::encode(&env.test.read_only_state_store().get_component(env.reg).unwrap()).unwrap().len()
 }
 
+/// Nobody, including whoever instantiated it, holds owner rights over a registry every campaign relies on.
+#[test]
+fn the_registry_has_no_owner() {
+    let env = env_with(0, 20_000);
+    let component = env.test.read_only_state_store().get_component(env.reg).unwrap();
+    assert_eq!(component.owner_rule().clone(), tari_template_lib::types::SubstateOwnerRule::None);
+}
+
 /// The bug this design fixes: every link and floor sat in one 1 MiB component that anyone could fill.
 #[test]
 fn new_identities_do_not_grow_the_shared_component() {
