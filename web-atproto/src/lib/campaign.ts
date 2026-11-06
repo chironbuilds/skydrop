@@ -214,7 +214,8 @@ export function fromMicro(v: bigint | string): string {
 
 export const newSpec = (): Spec => ({ v: 1, name: "", about: "", rules: [], reward: "1000000", budget: "100000000", rounds: 1, roundDays: 7, bonus: "0", maxReferrals: 0, startsInDays: 0, days: 14 });
 
-const b64url = (s: string): string => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// One character at a time: spreading a long list into fromCharCode can run out of stack.
+const b64url = (s: string): string => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64url = (s: string): string => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)));
 
 export const encodeSpec = (s: Spec): string => b64url(JSON.stringify(s));
@@ -222,8 +223,11 @@ export const encodeSpec = (s: Spec): string => b64url(JSON.stringify(s));
 /** The name a live campaign shows until its contract has been read. */
 export const LIVE_PLACEHOLDER = "Live campaign";
 
+/** Links only carry a list this short, about 1.7 KB. Longer lists are fetched by their root, see lists.ts. */
+export const LINK_LIST_MAX = 25;
+
 /** The link for a live campaign: only what the chain can't supply. */
-export const encodeLive = (component: string, allocations?: Allocation[]): string => b64url(JSON.stringify({ v: 1, name: "", rules: [], component, ...(allocations ? { allocations } : {}) }));
+export const encodeLive = (component: string, allocations?: Allocation[]): string => b64url(JSON.stringify({ v: 1, name: "", rules: [], component, ...(allocations && allocations.length <= LINK_LIST_MAX ? { allocations } : {}) }));
 
 /** Parses a shared spec. Treats it as untrusted: everything it holds is shown as text and re-validated. */
 export function decodeSpec(s: string): Spec {
@@ -287,8 +291,9 @@ export function exposure(s: Spec): { level: "Low" | "Medium" | "High"; why: stri
   if (vouched || s.root) {
     return { level: "Low", why: vouched ? "A voucher you chose decides who qualifies, so fake accounts can't qualify on their own." : "Only the accounts on your list can claim." };
   }
-  if (s.rounds > 1) return { level: "Medium", why: "Anyone can make accounts, but each one has to keep posting and re-proving over time to earn the full reward." };
-  return { level: "High", why: "Bluesky accounts are free. Someone can create many and do every step with each, so expect farming. Keep the reward small or add a vouch rule." };
+  // Measured live: a script with a self-made identity passes every claimant step, with no Bluesky account at all. Rounds only slow it down.
+  if (s.rounds > 1) return { level: "High", why: "A script can make identities for free, with no real Bluesky account, and repeat each round. Rounds only slow it down. Keep the reward small or add a vouch rule." };
+  return { level: "High", why: "A script can make identities for free, with no real Bluesky account, and pass every step. Expect farming down to the network fee. Keep the reward small or add a vouch rule." };
 }
 
 export interface Projection {
@@ -314,8 +319,17 @@ const FEE_BASE = 12_000;
 const FEE_PER_M_POINTS = 1_350;
 
 function claimComputeM(rules: Rule[]): { computeM: number; ownCommits: number; vouches: number } {
-  const vouches = rules.filter((r) => RULES[r.kind]?.side === "voucher").length;
-  const ownCommits = rules.length - vouches;
+  // Someone proves only one step of an either/or, so each group counts once, as its costliest step.
+  const groups = groupsOf(rules);
+  const isVouch = (r: Rule): boolean => RULES[r.kind]?.side === "voucher";
+  const counted = rules.filter((r, i) => {
+    const g = groups[i]!;
+    if (g === 0) return true;
+    const members = rules.filter((_, j) => groups[j] === g);
+    return r === (members.find(isVouch) ?? members[0]);
+  });
+  const vouches = counted.filter(isVouch).length;
+  const ownCommits = counted.length - vouches;
   return { computeM: POINTS_BASE + POINTS_PER_OWN_PROOF * Math.max(ownCommits, 1) + POINTS_PER_VOUCH * vouches, ownCommits, vouches };
 }
 
@@ -366,6 +380,17 @@ export const toHex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(
 export const fromHex = (s: string): Uint8Array => Uint8Array.from(s.match(/../g) ?? [], (b) => parseInt(b, 16));
 
 /** tari-campaign:v1:<component>:<did>:<32-byte key>:<round BE16>, truncated to 16 bytes of SHA-256. */
+/** The code a post must contain to link `did` to a wallet. Mirrors `bind_code` in link-registry/src/lib.rs. */
+export async function bindCode(registry: string, did: string, address: string, owner: Uint8Array): Promise<string> {
+  const te = new TextEncoder();
+  const head = te.encode(`tari-bsky-bind:v1:${registry}:${did}:${address}:`);
+  const data = new Uint8Array(head.length + owner.length);
+  data.set(head);
+  data.set(owner, head.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return `tari-bind:${toHex(digest.slice(0, 16))}`;
+}
+
 export async function claimCode(component: string, did: string, claimant: Uint8Array, round: number): Promise<string> {
   const digest = await sha256(concat(utf8(`tari-campaign:v1:${component}:${did}:`), claimant, utf8(":"), Uint8Array.of(round >> 8, round & 255)));
   return `tari-quest:${toHex(digest.slice(0, 16))}`;
@@ -419,6 +444,28 @@ export async function buildAllocationTree(list: Allocation[]): Promise<MerkleRes
   const proofs: MerkleResult["proofs"] = {};
   list.forEach((a, i) => (proofs[a.did] = { amount: a.amount, path: paths[i]! }));
   return { root: toHex(level[0]!.node), proofs };
+}
+
+/** Just the root of the tree above, for when nobody needs the proofs. Refuses the same lists. */
+export async function allocationRoot(list: Allocation[]): Promise<string> {
+  if (!list.length) throw new Error("The list is empty");
+  const seen = new Set<string>();
+  for (const a of list) {
+    if (seen.has(a.did)) throw new Error(`${a.did} is listed twice`);
+    seen.add(a.did);
+    if (BigInt(a.amount) <= 0n) throw new Error(`${a.did} has no amount`);
+  }
+  let level = await Promise.all(list.map((a) => allocationLeaf(a.did, BigInt(a.amount))));
+  while (level.length > 1) {
+    const pairs: Promise<Uint8Array>[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const a = level[i]!;
+      const b = level[i + 1];
+      pairs.push(b ? parent(a, b) : Promise.resolve(a));
+    }
+    level = await Promise.all(pairs);
+  }
+  return toHex(level[0]!);
 }
 
 /** The same check the contract's merkle_ok runs. */

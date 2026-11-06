@@ -1,5 +1,7 @@
 // Serves the static app, plus share cards: /e/<handle>?e=red&m=note&a=2 returns the page crawlers read (Open Graph),
 // and /og draws the envelope as a PNG. People opening /e/... are sent straight on to the claim page.
+import { handleLists } from "./lists";
+import { esc, handleShare, isLatin, isWide, wrap } from "./share";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-expect-error wrangler turns .wasm imports into compiled modules
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
@@ -16,8 +18,6 @@ const MAX_COVER = 90_000;
 const COVER_TTL = 60 * 60 * 24 * 90;
 
 let ready: Promise<void> | null = null;
-const ENT: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ENT[c]!);
 const cleanHandle = (s: string): string => (/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s) ? s.toLowerCase() : "");
 const cleanAmount = (s: string | null): string => (s && /^[0-9][0-9.,]{0,18}( [A-Za-z]{1,8})?$/.test(s) ? s : "");
 
@@ -67,22 +67,17 @@ async function font(family: string, weight: number, text: string): Promise<Uint8
   }
 }
 
-const isWide = (c: string): boolean => /[\u2e80-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(c) || (c.codePointAt(0) ?? 0) > 0x1f000;
-const isLatin = (c: string): boolean => !isWide(c) && c.charCodeAt(0) < 0x250;
-
-function wrap(text: string, size: number, max: number): string[] {
-  const width = (t: string): number => [...t].reduce((n, ch) => n + (isWide(ch) ? 1 : ch === " " ? 0.3 : 0.56) * size, 0);
-  const lines: string[] = [];
-  let cur = "";
-  for (const ch of [...text]) {
-    if (width(cur + ch) > max && cur) {
-      const sp = !isWide(ch) ? cur.lastIndexOf(" ") : -1;
-      if (sp > 0) { lines.push(cur.slice(0, sp)); cur = cur.slice(sp + 1); } else { lines.push(cur); cur = ""; }
-    }
-    cur += ch;
-  }
-  if (cur.trim()) lines.push(cur.trim());
-  return lines.slice(0, 3).map((l) => l.trim());
+/** Draws a card. `complete` is false if a font couldn't be fetched, so the picture shouldn't be kept. */
+async function render(svg: string, text: string): Promise<{ bytes: Uint8Array; complete: boolean }> {
+  ready ??= initWasm(resvgWasm);
+  await ready;
+  const chars = [...new Set(text)];
+  const latin = chars.filter(isLatin).join("");
+  const wide = chars.filter((c) => !isLatin(c)).join("");
+  const [a, b] = await Promise.all([font("Fraunces", 700, latin || "a"), wide ? font("Noto Sans SC", 700, wide) : Promise.resolve(null)]);
+  const fontBuffers = [a, b].filter((f): f is Uint8Array => !!f);
+  const bytes = new Resvg(svg, { font: { fontBuffers, loadSystemFonts: false, defaultFontFamily: "Fraunces" } }).render().asPng();
+  return { bytes, complete: !!a && (!wide || !!b) };
 }
 
 function toBase64(buf: ArrayBuffer): string {
@@ -145,18 +140,10 @@ async function png(url: URL, env: Env, req: Request): Promise<Response> {
   if (hit) return hit;
   // drawing costs CPU and font downloads: a new picture is allowed a limited number of times per address
   if (await overLimit(req, env, "og", 60)) return new Response("slow down", { status: 429 });
-  ready ??= initWasm(resvgWasm);
-  await ready;
   const coverBytes = cover && !(await banned(cover, env)) ? await env.COVERS.get(cover, "arrayBuffer") : null;
   const built = card(style, handle, note, amount, coverBytes ? "x" : "");
   const svg = coverBytes ? built.svg.replace("__COVER__", "data:image/jpeg;base64," + toBase64(coverBytes)) : built.svg;
-  const chars = [...new Set(built.text)];
-  const latin = chars.filter(isLatin).join("");
-  const wide = chars.filter((c) => !isLatin(c)).join("");
-  const [a, b] = await Promise.all([font("Fraunces", 700, latin || "a"), wide ? font("Noto Sans SC", 700, wide) : Promise.resolve(null)]);
-  const fontBuffers = [a, b].filter((f): f is Uint8Array => !!f);
-  const out = new Resvg(svg, { font: { fontBuffers, loadSystemFonts: false, defaultFontFamily: "Fraunces" } }).render().asPng();
-  const complete = !!a && (!wide || !!b);
+  const { bytes: out, complete } = await render(svg, built.text);
   const res = new Response(out, { headers: { "content-type": "image/png", "cache-control": complete ? "public, max-age=86400" : "no-store" } });
   if (complete) await cache.put(key, res.clone());
   return res;
@@ -227,8 +214,19 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    if (url.pathname === "/api/gate" && req.method === "POST" && (await overLimit(req, env, "gate", 20))) return new Response(JSON.stringify({ error: "Too many locked posts from this address. Try again later." }), { status: 429, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
     const gate = await handleGate(req, liveDeps(env.COVERS as never));
     if (gate) return gate;
+    const list = await handleLists(req, url, env.COVERS, (big) => (big ? overLimit(req, env, "list-big", 2) : overLimit(req, env, "list", 10)));
+    if (list) return list;
+    const share = await handleShare(req, url, {
+      overLimit: () => overLimit(req, env, "og", 60),
+      draw: async (svg, text) => {
+        const { bytes, complete } = await render(svg, text);
+        return complete ? bytes : null;
+      },
+    });
+    if (share) return share;
     if (url.pathname.startsWith("/e/")) return page(url);
     if (url.pathname === "/og") return png(url, env, req);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);

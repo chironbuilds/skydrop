@@ -544,7 +544,7 @@ export function builderPage(): Page {
       h("label", { class: "row", style: "gap:9px;font-size:14px;font-weight:600" }, h("input", { type: "checkbox", style: "width:auto;min-height:0", checked: useAllocation.on, onchange: (e: Event) => { useAllocation.on = (e.target as HTMLInputElement).checked; if (!useAllocation.on) { spec.root = undefined; spec.allocations = undefined; } drawAllocation(); drawSide(); } }), "Pay each account its own amount"),
       useAllocation.on && h("label", { class: "field" }, "Who gets what",
         h("textarea", { class: "mono", rows: "6", placeholder: "alice.bsky.social, 25\nbob.example.com, 10.5\ndid:plc:…, 100", oninput: (e: Event) => { allocationText = (e.target as HTMLTextAreaElement).value; } }, allocationText),
-        h("small", null, "One account per line. Only a 32-byte fingerprint of the list goes on-chain, so size doesn't matter. Publish the list so anyone can check it.")),
+        h("small", null, "One account per line. Only a 32-byte fingerprint goes on-chain. The list itself is public: when you launch, Skydrop stores it so people can prove their amount, and anyone can read it.")),
       useAllocation.on && h("div", { class: "row" }, h("button", { class: "btn small ghost", type: "button", onclick: applyAllocations }, "Build list"), allocationStatus),
     );
   }

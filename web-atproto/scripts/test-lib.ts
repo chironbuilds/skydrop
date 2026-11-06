@@ -6,16 +6,21 @@
  */
 import type { Spec } from "../src/lib/campaign";
 import { DEPLOYMENT } from "../src/data/deployment";
-import { createInstruction, lit, phaseOf, readCampaign, readOutcome, specOf } from "../src/lib/chain";
+import { createInstruction, explainChainError, lit, phaseOf, readCampaign, readOutcome, specOf, TARI_RESOURCE } from "../src/lib/chain";
+import { handleLists } from "../../web/worker/lists";
 import { settle } from "../src/lib/quests";
 import { readFileSync } from "node:fs";
 import { encodeOps, fetchProof, latestPost, parseAtUri, pdsOf, plcLog, toTarget } from "../src/lib/atproto";
 import { compose } from "../src/lib/compose";
-import { assess, totals } from "../src/lib/quests";
+import { assess, deadlineOf, reachableRounds, reminderFile, totals } from "../src/lib/quests";
+import { BATCH_MAX, batchPostText, mergePlans, type ReadyPlan } from "../src/lib/claim";
+import { campaignLink } from "../src/data/deployment";
+import { shareCard, shareDest, sharePage, shareRoute, wrap } from "../../web/worker/share";
+import { openAccountInstruction, type ChainCampaign } from "../src/lib/chain";
 import { keyFromAddress } from "../src/lib/wallet";
 import { groupsOf, requirementCount, requirementsMet } from "../src/lib/campaign";
-import { LIVE_PLACEHOLDER, afterFee, claimFee, encodeLive } from "../src/lib/campaign";
-import { allocationLeaf, buildAllocationTree, checkAllocation, claimCode, decodeSpec, encodeSpec, exposure, fromHex, fromMicro, newSpec, project, questName, summarize, toHex, toMicro, validate } from "../src/lib/campaign";
+import { LIVE_PLACEHOLDER, afterFee, bindCode, claimFee, encodeLive } from "../src/lib/campaign";
+import { allocationLeaf, allocationRoot, buildAllocationTree, checkAllocation, claimCode, decodeSpec, encodeSpec, exposure, fromHex, fromMicro, newSpec, project, questName, summarize, toHex, toMicro, validate } from "../src/lib/campaign";
 import { satisfies } from "../src/lib/check";
 import { fieldStr, useWasmBytes, verifyChain, verifyRecord } from "../src/lib/verify";
 
@@ -72,7 +77,7 @@ ok(!validate(s).some((p) => p.level === "error"), "a simple campaign is valid");
 ok(project(s).maxClaimants === 100n, "pool of 100 at 1 each covers 100 people");
 ok(exposure(s).level === "High", "an open campaign is high risk");
 ok(exposure({ ...s, rules: [{ kind: 7, target: DID }] }).level === "Low", "a vouch rule is low risk");
-ok(exposure({ ...s, rounds: 4 }).level === "Medium", "rounds are medium risk");
+ok(exposure({ ...s, rounds: 4 }).level === "High", "rounds only slow a script down, so they stay high risk");
 const d = decodeSpec(encodeSpec({ ...s, name: "Üñí 🚀" }));
 ok(d.name === "Üñí 🚀", "a spec survives the share link, unicode included");
 threw = false;
@@ -219,7 +224,7 @@ console.log("Talking to the contract");
   ok(live.rules.length === 1 && live.rules[0]!.kind === 0 && live.rules[0]!.target.endsWith("/3kaaaaaaaaaaa"), "reads the rules");
   ok(live.reward === 50000n && live.balance === 200000n && live.rounds === 1, "reads the reward and pool");
   ok(live.openEpoch === 12881 && live.closeEpoch === 12884 && phaseOf(live) === "open", "reads the window");
-  ok(live.linkRegistry === DEPLOYMENT.linkRegistry, "reads the registry");
+  ok(live.linkRegistry === DEPLOYMENT.legacy[0]!.linkRegistry && live.legacy, "reads the registry an older campaign was made with");
   ok(specOf(live).reward === "50000" && specOf(live).name === "Skydrop live test", "turns chain state into terms");
   const link = decodeSpec(encodeLive(COMPONENT_ADDR, [{ did: "did:plc:a", amount: "5" }]));
   ok(link.component === COMPONENT_ADDR && link.allocations?.length === 1, "a live link carries the address and allocation list");
@@ -268,6 +273,155 @@ console.log("What's left to collect");
   ok(settle(a, { ...facts, phase: "upcoming", waitEpochs: 3 }).state === "waiting", "not open yet: waiting");
   const t = totals([one, settle(a, { ...facts, roundsPaid: 1 })]);
   ok(t.collected === 2000000n && t.readyNow === 1000000n && t.toEarn === 3000000n, "totals: collected, ready and still possible", String(t.toEarn));
+}
+
+console.log("fee estimates against live claims");
+{
+  const like = { kind: 0, target: "at://x" } as const;
+  ok(claimFee([like, { kind: 1, target: "at://x" }, { kind: 2, target: "did:plc:x" }]) === 60_000n, "three steps: 0.0602 tTARI measured");
+  ok(claimFee([like, { kind: 1, target: "at://x", or: true }]) === claimFee([like]), "only one step of an either/or is proven");
+  ok(claimFee([like, { kind: 7, target: "did:plc:x", or: true }]) === claimFee([{ kind: 7, target: "did:plc:x" }]), "and it's priced as its costliest step");
+}
+
+console.log("what's really left");
+{
+  const base = { rounds: 3, phase: "open" as const, funded: true, waitText: "x" };
+  const spec = { ...newSpec(), name: "x", reward: "1000", budget: "100000", rounds: 3, rules: [{ kind: 0 as const, target: "at://x" }] };
+  const a = assess(spec, "did:plc:a", [{ status: "met", detail: "" }]);
+  ok(reachableRounds({ rounds: 3, roundsPaid: 0, waitEpochs: 0, closesIn: 100, roundEpochs: 10 }) === 3, "all rounds fit");
+  ok(reachableRounds({ rounds: 3, roundsPaid: 0, waitEpochs: 0, closesIn: 15, roundEpochs: 10 }) === 2, "a late joiner only reaches two of three");
+  ok(reachableRounds({ rounds: 3, roundsPaid: 1, waitEpochs: 10, closesIn: 10, roundEpochs: 10 }) === 0, "a round opening as it closes can't be paid");
+  ok(reachableRounds({ rounds: 3, roundsPaid: 1, waitEpochs: 9, closesIn: 10, roundEpochs: 10 }) === 1, "the last epoch before it closes still counts");
+  ok(settle(a, { ...base, roundsPaid: 0, waitEpochs: 0, closesIn: 15, roundEpochs: 10, pool: 100000n }).fullAmount === 2000n, "still-possible counts only reachable rounds");
+  ok(settle(a, { ...base, roundsPaid: 0, waitEpochs: 0, closesIn: 100, roundEpochs: 10, pool: 1500n }).fullAmount === 1000n, "and only what the pool can pay in whole rounds");
+  const stopped = settle(a, { ...base, roundsPaid: 1, waitEpochs: 20, closesIn: 5, roundEpochs: 20, pool: 100000n });
+  ok(stopped.state === "claimed" && stopped.fullAmount === 1000n, "a campaign closing before the next round counts as finished");
+  ok(settle(a, { ...base, phase: "closed", roundsPaid: 1, waitEpochs: 0, closesIn: 0, roundEpochs: 10, pool: 5000n }).fullAmount === 1000n, "a closed campaign has nothing still possible");
+  ok(settle(a, { ...base, roundsPaid: 0, waitEpochs: 0, waitText: "x" }).fullAmount === 3000n, "without the extra facts it stays as it was");
+  const d = deadlineOf({ epoch: 100, closeEpoch: 110, balance: 50000n }, 1000n);
+  ok(d.closesIn === 10 && d.rewardsLeft === 50 && d.urgent === "closing", "closing within a day is urgent");
+  ok(deadlineOf({ epoch: 100, closeEpoch: 900, balance: 5000n }, 1000n).urgent === "few", "five rewards left is urgent");
+  ok(deadlineOf({ epoch: 100, closeEpoch: 900, balance: 50000n }, 1000n).urgent === null, "otherwise it isn't");
+  ok(deadlineOf({ epoch: 100, closeEpoch: 900, balance: 1000n }, 1000n, true).rewardsLeft === null, "a list has no reward count");
+  const ics = reminderFile("Collect, now; from\nX", new Date("2026-12-01T10:00:00.500Z"), "https://skydrop.tari.mw/q/x");
+  ok(ics.includes("DTSTART:20261201T100000Z") && ics.includes("SUMMARY:Collect\\, now\\; from X") && ics.split("\r\n").length > 8, "a reminder is a well-formed calendar entry and can't inject lines");
+}
+
+console.log("collecting together");
+{
+  const open = openAccountInstruction("did:plc:a");
+  const plan = (n: number): ReadyPlan => ({ kind: "ready", instructions: [open, { CallMethod: { n } }], inputs: [{ substate_id: "shared", version: null }, { substate_id: `own${n}`, version: null }], amount: 1000n, round: 0, bytes: 0, account: "a", referrer: null, linked: true });
+  const m = mergePlans([plan(1), plan(2), plan(3)]);
+  ok(m.instructions.length === 4 && JSON.stringify(m.instructions[0]) === JSON.stringify(open), "an account is opened once, before the claims");
+  ok(m.inputs.length === 4, "each substate is named once");
+  ok(m.amount === 3000n, "the amounts add up");
+  const codes = Array.from({ length: BATCH_MAX }, (_, i) => `tari-quest:${String(i).padStart(32, "0")}`);
+  ok(batchPostText(codes).length <= 300 && codes.every((c) => batchPostText(codes).includes(c)), "a post carrying the most codes fits on Bluesky");
+}
+
+console.log("share links");
+{
+  const C = `component_${"ab".repeat(32)}`;
+  const did = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+  ok(campaignLink(C) === `https://skydrop.tari.mw/q/${C}`, "a live campaign's link is short");
+  ok(campaignLink(C, { ref: did, origin: "https://x" }) === `https://x/q/${C}?ref=${encodeURIComponent(did)}`, "and can carry an invite");
+  ok(campaignLink(C, { allocations: [{ did, amount: "1" }] }).includes("/quests#add="), "a small list still travels in the link");
+  ok(campaignLink(C, { allocations: Array.from({ length: 26 }, () => ({ did, amount: "1" })) }).includes("/q/"), "a long list doesn't");
+  const r = shareRoute(new URL(`https://x/q/${C}/card.png?ref=${did}`))!;
+  ok(r.component === C && r.card && r.ref === did, "the card's address is understood");
+  ok(shareRoute(new URL(`https://x/q/${C}?ref=<script>`))!.ref === null, "a bad invite is dropped");
+  ok(shareRoute(new URL("https://x/q/component_zz")) === null && shareRoute(new URL(`https://x/q/${C}/other`)) === null, "other addresses aren't");
+  const evil = { name: `</title><script>alert(1)</script>`, info: "", component: C, rules: [{ kind: 2, target: "did:plc:x" }], reward: 1000n, root: "", rounds: 1, bonus: 0n, claimants: 0, openEpoch: 0, closeEpoch: 50, epoch: 10, balance: 5000n } as unknown as ChainCampaign;
+  const html = sharePage("https://x", new URL(`https://x/q/${C}`), { component: C, card: false, ref: null }, evil);
+  ok(!html.includes("<script>alert") && html.includes("&lt;/title&gt;"), "a campaign's name can't inject into the page");
+  const svg = shareCard(evil).svg;
+  ok(!svg.includes("<script>") && svg.includes("&lt;script&gt;"), "or into the card");
+  const dest = shareDest("https://x", C, did);
+  ok(decodeSpec(dest.split("#add=")[1]!.split("&")[0]!).component === C && dest.endsWith(`&ref=${did}`), "people end up on their quests with the campaign and invite");
+  ok(wrap("word ".repeat(60), 62, 1060, 2).length === 2, "a long name is cut to fit the card");
+}
+
+console.log("campaigns the sites refuse");
+{
+  const C = "component_fbcba5e6b7765f830a9ac810068ec8b669967e8526a35f13c525a2f5544ff063";
+  const good = await readCampaign(C);
+  ok(good.component === C && good.legacy, "an older campaign in tTARI on its own registry is still shown, marked as older");
+  const real = globalThis.fetch;
+  const swapping = (path: string, from: string): typeof fetch => async (input, init) => {
+    const res = await real(input, init);
+    if (!String(input).endsWith(path)) return res;
+    const j = (await res.json()) as { state: { up: { substate: string } } };
+    const hex = Buffer.from(j.state.up.substate, "base64").toString("hex");
+    if (!hex.includes(from)) throw new Error(`nothing to swap in ${path}`);
+    j.state.up.substate = Buffer.from(hex.split(from).join("ab".repeat(32)), "hex").toString("base64");
+    return new Response(JSON.stringify(j), { status: 200 });
+  };
+  const hexOf = (a: string) => a.slice(a.lastIndexOf("_") + 1);
+  globalThis.fetch = swapping(`/substates/${C}`, hexOf(good.linkRegistry));
+  const reg = await readCampaign(C).then(() => "shown", (e: Error) => e.message);
+  globalThis.fetch = swapping(`/substates/${good.vault}`, hexOf(TARI_RESOURCE));
+  const token = await readCampaign(C).then(() => "shown", (e: Error) => e.message);
+  globalThis.fetch = real;
+  ok(reg.includes("different link registry"), "one that calls its own registry isn't", reg);
+  ok(token.includes("other than tTARI"), "nor one paying in another token", token);
+}
+
+console.log("list storage limits");
+{
+  const kv = { get: async () => null, put: async () => {} };
+  const asked: boolean[] = [];
+  const post = (n: number) => handleLists(new Request("https://x/api/list", { method: "POST", body: JSON.stringify(Array.from({ length: n }, (_, i) => ({ did: `did:plc:${String(i).padStart(24, "a")}`, amount: "1000" }))) }), new URL("https://x/api/list"), kv, async (big) => { asked.push(big); return false; });
+  await post(2);
+  await post(5000);
+  ok(asked[0] === false && asked[1] === true, "a big list counts against the tighter allowance");
+}
+
+console.log("allocation lists");
+{
+  const list = Array.from({ length: 37 }, (_, i) => ({ did: `did:plc:${String(i).padStart(24, "a")}`, amount: String(1000 + i) }));
+  const tree = await buildAllocationTree(list);
+  ok((await allocationRoot(list)) === tree.root, "the root alone matches the full tree");
+  ok(encodeLive("component_" + "a".repeat(64), list).length < 300, "a long list stays out of the link");
+  ok(decodeSpec(encodeLive("component_" + "a".repeat(64), list.slice(0, 25))).allocations?.length === 25, "a short one travels in it");
+  const big = Array.from({ length: 40_000 }, (_, i) => ({ did: `did:plc:${String(i).padStart(24, "a")}`, amount: "1" }));
+  ok(encodeSpec({ ...newSpec(), allocations: big }).length > 1_000_000, "encoding a very long spec doesn't run out of stack");
+
+  const kv = new Map<string, ArrayBuffer>();
+  const store = { get: async (k: string) => kv.get(k) ?? null, put: async (k: string, v: ArrayBuffer) => void kv.set(k, v) };
+  const post = (body: string) => handleLists(new Request("https://x/api/list", { method: "POST", body }), new URL("https://x/api/list"), store, async () => false);
+  const get = (root: string) => handleLists(new Request(`https://x/api/list/${root}`), new URL(`https://x/api/list/${root}`), store, async () => false);
+  const saved = await post(JSON.stringify(list.map((a) => ({ ...a, extra: "dropped" }))));
+  ok(((await saved!.json()) as { root: string }).root === tree.root, "the service stores a list under the same root");
+  const read = (await (await get(tree.root))!.json()) as typeof list;
+  ok(read.length === 37 && !("extra" in read[0]!) && (await allocationRoot(read)) === tree.root, "and gives back exactly that list");
+  ok((await get("f".repeat(64)))!.status === 404, "an unknown root isn't found");
+  ok((await get("not-a-root"))!.status === 404, "nor is anything that isn't a root");
+  ok(kv.size === 1, "only the list was stored");
+  for (const [bad, why] of [["[]", "an empty list"], ["{", "bad json"], [JSON.stringify([{ did: "alice", amount: "1" }]), "a bad account"], [JSON.stringify([{ did: "did:plc:a", amount: "0" }]), "a zero amount"], [JSON.stringify([{ did: "did:plc:a", amount: "99999999999999999999" }]), "an amount over the contract's limit"], [JSON.stringify([{ did: "did:plc:a", amount: "1" }, { did: "did:plc:a", amount: "2" }]), "a repeated account"]] as const) {
+    ok((await post(bad))!.status === 400, `refuses ${why}`);
+  }
+  const limited = await handleLists(new Request("https://x/api/list", { method: "POST", body: "[]" }), new URL("https://x/api/list"), store, async () => true);
+  ok(limited!.status === 429, "slows down a busy address");
+  ok((await handleLists(new Request("https://x/quests"), new URL("https://x/quests"), store, async () => false)) === null, "leaves other addresses alone");
+}
+
+console.log("refusals");
+{
+  const raw = 'Transaction abc accepted the fee but rejected the rest: [{"up_substates":[]},{"ExecutionFailure":{"code":"TemplateError","message":"At instruction #1: Template error: the close epoch can only move later"}}]';
+  ok(explainChainError(raw) === "The close date can only move later.", "finds the contract's words in a refusal");
+  ok(explainChainError(raw.replace("the close epoch can only move later", "something new")) === "something new", "and shows them plainly if it doesn't know them");
+}
+
+console.log("link code");
+{
+  // The registry accepted this exact code on Esmeralda, in transaction 0934d113.
+  const code = await bindCode(
+    "component_aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371",
+    "did:plc:jxfixolq4arujfubra5yab76",
+    "component_217fc26410d1d2d6bd1cb18a36f4268ae6a2792348e5e93429642ca59265af4b",
+    fromHex("029ec74aaad0fc0228b16bc9fa367edc15e8cbd9f30bc026d6ca1eda8f6ad81c"),
+  );
+  ok(code === "tari-bind:f3c39544f5fd62a5381fbb93c698c567", "matches a code the contract accepted", code);
 }
 
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");

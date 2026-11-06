@@ -26,6 +26,34 @@ export function setLang(l: Lang): void {
 }
 
 const ZH: Record<string, string> = {
+  // linking a wallet
+  "Skip the post. ": "跳过发帖。",
+  "Link your wallet once and first claims on any campaign need no post.": "只需关联一次钱包，之后任何活动的首次领取都无需发帖。",
+  "Link a wallet": "关联钱包",
+  "Wallet linked. ": "钱包已关联。",
+  "New wallet linked. ": "新钱包已关联。",
+  "Link the connected wallet instead": "改为关联当前连接的钱包",
+  "Link your wallet to skip this": "关联钱包以跳过此步骤",
+  "Post this to link your wallet. ": "发布这条帖子以关联钱包。",
+  "Link this wallet": "关联这个钱包",
+  "Not now": "暂不",
+  "Checking for your post…": "正在查找你的帖子…",
+  "You need the Sapient wallet to link one.": "你需要 Sapient 钱包才能关联。",
+  "Your wallet is linked, so no post is needed.": "你的钱包已关联，无需发帖。",
+  "Pay this wallet instead, with a post": "改为发帖并支付到这个钱包",
+  "The link is public: anyone can see which wallet this account chose. Repeat campaigns still ask for a post from round two on. You can delete this post once it's linked.": "关联是公开的：任何人都能看到这个账户选择了哪个钱包。重复活动从第二轮起仍需发帖。关联后你可以删除这条帖子。",
+  "Wallet linked. First claims no longer need a post.": "钱包已关联。首次领取不再需要发帖。",
+  // invites
+  "Share invite link": "分享邀请链接",
+  "Add another campaign": "添加其他活动",
+  "Remove invite": "移除邀请",
+  "Invite friends. ": "邀请朋友。",
+  "Invites. ": "邀请。",
+  "You were invited. ": "你受到了邀请。",
+  " This campaign has closed.": " 这个活动已结束。",
+  " Its pool is too low to pay more.": " 奖金池余额不足，无法继续支付。",
+  "including invite bonuses": "包含邀请奖励",
+  "That invite can't be used any more. You'll still get your full reward.": "这个邀请已无法使用。你仍会获得全部奖励。",
   // campaign sentences and the testnet notice
   "Rewards here are tTARI on the Esmeralda testnet, with no real value. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.": "这里的奖励是 Esmeralda 测试网上的 tTARI，没有实际价值。合约尚未经过外部审计。任何人都能创建活动，请自行判断它要求你做的事。",
   "Like this post.": "点赞这条帖子。",
@@ -116,6 +144,34 @@ const ZH: Record<string, string> = {
   "Sending to the network…": "正在发送到网络…",
   "Waiting for the network to confirm…": "等待网络确认…",
   "This page checks for it when you come back. You can delete the post after you've collected.": "回来时本页会自动检查。领取后你可以删除这条帖子。",
+  "This campaign's list couldn't be found, so your amount can't be proven yet. Try again in a minute, or ask the creator for a fresh link.": "找不到此活动的名单，暂时无法证明你的金额。请稍后再试，或向创建者索取新链接。",
+  "This campaign hasn't opened yet. If it's due now, try again in a minute or two: the network can lag behind for a moment.": "此活动尚未开始。如果现在应该开始了，请一两分钟后再试：网络可能会短暂滞后。",
+  "The next round hasn't opened yet. If it's due now, try again in a minute or two: the network can lag behind for a moment.": "下一轮尚未开始。如果现在应该开始了，请一两分钟后再试：网络可能会短暂滞后。",
+  "Remind me": "提醒我",
+  "Older contract": "旧版合约",
+  "Made before the latest security fixes": "创建于最新安全修复之前",
+  "Your invite only counts if the linked wallet sends this claim. Connect that wallet to count it.": "只有已关联的钱包发送此领取时，邀请才算数。请连接该钱包。",
+  "This account's identity log doesn't match the one already seen on the network. Refresh and try again. If it keeps happening, the account's keys may have been misused.": "此账号的身份日志与网络上已见到的不一致。请刷新后重试。如果一直如此，账号的密钥可能已被滥用。",
+  "A voucher hasn't posted anything since your last round, so their vouch can't be shown to still stand. Try again once they have.": "担保人自你上一轮以来没有任何新动态，因此无法证明担保仍然有效。请等对方有新动态后再试。",
+  "Post it on Bluesky": "发布到 Bluesky",
+  "Closing soon": "即将结束",
+  "Few left": "所剩不多",
+  "Your payments": "你收到的付款",
+  "See transaction": "查看交易",
+  "From recent network history, so very old payments may not appear.": "来自近期网络记录，很早的付款可能不会显示。",
+  "You qualify": "你已符合条件",
+  "You're on its list": "你在它的名单上",
+  "See if you're on its list": "看看你是否在名单上",
+  "Reading this campaign…": "正在读取此活动…",
+  "Enter your Bluesky handle to see where you stand. No sign-in, and no wallet until you collect.": "输入你的 Bluesky 账号，看看你的进度。无需登录，领取前也不需要钱包。",
+  "One wallet approval, instead of one for each.": "只需在钱包确认一次，不必逐个确认。",
+  "It proves this Bluesky account chose your wallet, so nobody else can redirect the rewards.": "这能证明此 Bluesky 账号选择了你的钱包，别人无法转走奖励。",
+  "This page checks for it by itself. You can delete the post after you've collected.": "此页面会自动检查。领取后你可以删除这条帖子。",
+  "That post isn't showing yet. It has to come from this account and include the whole code. It can take a few seconds, and this page keeps looking.": "还看不到那条帖子。它必须来自此账号并包含完整口令。可能需要几秒钟，此页面会继续查找。",
+  "That post isn't showing yet. It has to come from this account and include every code. It can take a few seconds, and this page keeps looking.": "还看不到那条帖子。它必须来自此账号并包含所有口令。可能需要几秒钟，此页面会继续查找。",
+  "Those campaigns changed. Your list has been refreshed.": "这些活动有变化，你的列表已刷新。",
+  "You've collected what you can: this campaign closes before your next round.": "你已领取能领的部分：此活动在你的下一轮之前结束。",
+  "this campaign": "此活动",
   "It proves this Bluesky account chose your wallet, so nobody else can redirect the reward.": "它证明这个 Bluesky 账户选择了你的钱包，所以没人能转走奖励。",
   "One last step: post this.": "最后一步：发布这条帖子。",
   "You need the Sapient wallet to collect.": "领取需要 Sapient 钱包。",
@@ -476,6 +532,17 @@ const timeZh = (s: string): string =>
     .replace(/^right away$/, "马上");
 
 const PATTERNS: Pattern[] = [
+  [/^First claims need no post and pay (.+)\.\s*$/, (m) => `首次领取无需发帖，并支付到 ${m[1]}。`],
+  [/^(.+) takes over in about an hour or more\.$/, (m) => `${m[1]} 将在约一小时或更久后生效。`],
+  [/^It proves this Bluesky account chose (.+)\. The network fee is about ([\d.,]+) tTARI\.$/, (m) => `这证明此 Bluesky 账户选择了 ${m[1]}。网络费约 ${m[2]} tTARI。`],
+  [/^It pays your linked wallet, (.+), not the one connected here\.$/, (m) => `将支付到你关联的钱包 ${m[1]}，而不是此处连接的钱包。`],
+  [/^This round pays (.+), the wallet that collected the first round, not the one connected here\.$/, (m) => `本轮将支付到 ${m[1]}，即领取第一轮的钱包，而不是此处连接的钱包。`],
+  [/^You get ([\d.,]+) tTARI for each new person who collects through your link, up to (\d+)\. It's paid to your wallet when they collect\.$/, (m) => `每有一位新用户通过你的链接领取，你可获得 ${m[1]} tTARI，最多 ${m[2]} 位。对方领取时会支付到你的钱包。`],
+  [/^(\d+) of (\d+) invites? used(?:, ([\d.,]+) tTARI earned)?\.$/, (m) => `已使用 ${m[1]}/${m[2]} 个邀请${m[3] ? `，已赚取 ${m[3]} tTARI` : ""}。`],
+  [/^They get ([\d.,]+) tTARI from the campaign's pool when you collect\. Your reward stays the same\. $/, (m) => `你领取时，对方可从活动奖金池获得 ${m[1]} tTARI。你的奖励不变。`],
+  [/^Once you've collected, invite friends and earn ([\d.,]+) tTARI each, up to (\d+)\.$/, (m) => `领取后可邀请朋友，每位可赚取 ${m[1]} tTARI，最多 ${m[2]} 位。`],
+  [/^Invited by (.+)\. $/, (m) => `${m[1]} 邀请了你。`],
+  [/^ \+([\d.,]+) per invite$/, (m) => ` 每次邀请 +${m[1]}`],
   [/^@(\S+) has a linked wallet \((.+)\), so gifts land there directly\.$/, (m) => `@${m[1]} 已关联钱包（${m[2]}），礼物会直接发到那里。`],
   [/^(\S+) has started claiming this\. It's released when its safety window and any phrase are done\.$/, (m) => `${m[1]} 已开始领取。安全期和口令都完成后才会释放。`],
   [/^(\S+) must link a wallet first, then post “(.+)”(?: and keep it up for (.+))?\.$/, (m) => `${m[1]} 需要先关联钱包，然后发布「${m[2]}」${m[3] ? `并保留帖子 ${timeZh(m[3])}` : ""}。`],
@@ -535,10 +602,32 @@ const PATTERNS: Pattern[] = [
   [/^Your post is missing the sender's phrase “(.+)”\..*$/, (m) => `你的帖子缺少发送者指定的这句话「${m[1]}」，必须完全一致，包括大小写。`],
   [/^The sender asked for something specific: (.+)\. It leads the text below\..*$/, (m) => `发送者指定了一句话：${m[1]}。它已经放在下面文字的最前面。只有你的帖子里原样包含它，这笔资金才会释放。`],
   [/^· must post “(.+)”$/, (m) => `· 需要发布「${m[1]}」`],
+  [/^Closes in (.+?)( · (\d+|[\d,]+) rewards? left)?$/, (m) => `${zhTime(m[1]!)}后结束${m[3] ? ` · 还剩 ${m[3]} 份奖励` : ""}`],
+  [/^Opens in (.+), closes in (.+?)( · ([\d,]+) rewards? left)?$/, (m) => `${zhTime(m[1]!)}后开始，${zhTime(m[2]!)}后结束${m[4] ? ` · 还剩 ${m[4]} 份奖励` : ""}`],
+  [/^Collect (\d+) together: ([\d.,]+) tTARI$/, (m) => `一起领取 ${m[1]} 个：${m[2]} tTARI`],
+  [/^One wallet approval for your (\d+) biggest\. Do it again for the rest\.$/, (m) => `一次确认领取最大的 ${m[1]} 个，其余的再来一次。`],
+  [/^One post covers these (\d+) campaigns\.$/, (m) => `一条帖子涵盖这 ${m[1]} 个活动。`],
+  [/^One post covers this campaign\.$/, () => "一条帖子涵盖此活动。"],
+  [/^Collected ([\d.,]+) tTARI from (\d+) campaigns\.$/, (m) => `已从 ${m[2]} 个活动领取 ${m[1]} tTARI。`],
+  [/^(\d+) of (\d+) steps done$/, (m) => `已完成 ${m[1]}/${m[2]} 步`],
+  [/^You already qualify for “(.+)”\. It's been added\.$/, (m) => `你已符合「${m[1]}」的条件，已为你添加。`],
+  [/^You already qualify for (\d+) open campaigns\. They've been added\.$/, (m) => `你已符合 ${m[1]} 个公开活动的条件，已为你添加。`],
+  [/^Your wallet pays a network fee of about ([\d.,]+) tTARI in total\. Only the real cost is charged\.$/, (m) => `你的钱包总共支付约 ${m[1]} tTARI 网络费用，只收取实际成本。`],
+  [/^These can't all go through together: (.+) Nothing was spent\. You can collect them one at a time below\.$/, (m) => `这些无法一起完成：${m[1]} 没有产生任何费用。你可以在下面逐个领取。`],
+  [/^, paid to (.+)$/, (m) => `，付款至 ${m[1]}`],
+  [/^from (.+)$/, (m) => `来自 ${m[1]}`],
+  [/^, round (\d+)$/, (m) => `，第 ${m[1]} 轮`],
   [/^about (\d+) min$/, (m) => `约 ${m[1]} 分钟`],
   [/^about ([\d.]+) hours$/, (m) => `约 ${m[1]} 小时`],
   [/^about (\d+) days$/, (m) => `约 ${m[1]} 天`],
 ];
+
+/** "about 3 days" and the like, inside a longer sentence. */
+function zhTime(t: string): string {
+  if (t === "under an hour") return "不到一小时";
+  const m = /^about (\d+) (hour|hours|days)$/.exec(t);
+  return m ? `约 ${m[1]} ${m[2] === "days" ? "天" : "小时"}` : t;
+}
 
 function zh(raw: string): string | null {
   const lead = /^\s*/.exec(raw)![0];

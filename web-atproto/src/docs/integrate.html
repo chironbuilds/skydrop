@@ -83,8 +83,8 @@ proof.<span class="tok-f">drop</span>();</code></pre>
             <span class="tok-k">let</span> nodes: <span class="tok-t">Vec</span>&lt;&[<span class="tok-t">u8</span>]&gt; = mst_nodes.<span class="tok-f">iter</span>().<span class="tok-f">map</span>(|b| b.<span class="tok-f">as_slice</span>()).<span class="tok-f">collect</span>();
             <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &ops_s).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
             <span class="tok-k">let</span> registry = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.link_registry);
-            <span class="tok-k">let</span> floor: <span class="tok-t">u32</span> = registry.<span class="tok-f">call</span>(<span class="tok-s">"chain_floor"</span>, args![did.<span class="tok-f">clone</span>()]);
-            <span class="tok-f">assert!</span>(chain.len >= floor, <span class="tok-s">"stale operation chain"</span>);
+            <span class="tok-k">let</span> (floor, tip): (<span class="tok-t">u32</span>, <span class="tok-t">Bytes</span>) = registry.<span class="tok-f">call</span>(<span class="tok-s">"chain_pin"</span>, args![did.<span class="tok-f">clone</span>()]);
+            <span class="tok-f">assert!</span>(chain.<span class="tok-f">extends</span>(floor, tip.<span class="tok-f">as_slice</span>()), <span class="tok-s">"stale operation chain"</span>);
 
             <span class="tok-c">// 3. verify the like record really is in the account's signed repo, and points at the target</span>
             atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, commit.<span class="tok-f">as_slice</span>(),
@@ -136,8 +136,8 @@ proof.<span class="tok-f">drop</span>();</code></pre>
     <span class="tok-k">let</span> target = <span class="tok-t">String</span>::<span class="tok-f">from_utf8</span>(meta.<span class="tok-f">as_slice</span>()[<span class="tok-n">1</span>..].<span class="tok-f">to_vec</span>()).<span class="tok-f">unwrap</span>();
 
     <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
-    <span class="tok-k">let</span> floor: <span class="tok-t">u32</span> = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.link_registry).<span class="tok-f">call</span>(<span class="tok-s">"chain_floor"</span>, args![did.<span class="tok-f">clone</span>()]);
-    <span class="tok-f">assert!</span>(chain.len >= floor, <span class="tok-s">"stale operation chain"</span>);
+    <span class="tok-k">let</span> (floor, tip): (<span class="tok-t">u32</span>, <span class="tok-t">Bytes</span>) = ComponentManager::<span class="tok-f">get</span>(<span class="tok-k">self</span>.link_registry).<span class="tok-f">call</span>(<span class="tok-s">"chain_pin"</span>, args![did.<span class="tok-f">clone</span>()]);
+    <span class="tok-f">assert!</span>(chain.<span class="tok-f">extends</span>(floor, tip.<span class="tok-f">as_slice</span>()), <span class="tok-s">"stale operation chain"</span>);
 
     <span class="tok-c">// 1. claim-code post binds the payout to this claimant's key (no front-running)</span>
     atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, c.commit, &c.nodes, c.record,
@@ -172,7 +172,7 @@ proof.<span class="tok-f">drop</span>();</code></pre>
     <span class="tok-f">assert!</span>(payout.<span class="tok-f">to_string</span>() == terms.payout, <span class="tok-s">"payout is fixed by the credit line"</span>);
 
     <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
-    <span class="tok-f">assert!</span>(chain.len >= <span class="tok-k">self</span>.<span class="tok-f">chain_floor</span>(&did), <span class="tok-s">"stale operation chain"</span>);
+    <span class="tok-f">assert!</span>(chain.<span class="tok-f">extends</span>(<span class="tok-k">self</span>.<span class="tok-f">chain_pin</span>(&did)), <span class="tok-s">"stale operation chain"</span>);
     <span class="tok-c">// ES256K signature by the account's repo key; then check who issued it, for whom, for what</span>
     <span class="tok-k">let</span> claims = atp_verify::jwt::<span class="tok-f">verify_service_auth</span>(&token, &chain.signing_key).<span class="tok-f">expect</span>(<span class="tok-s">"bad token"</span>);
     <span class="tok-f">assert!</span>(claims.iss == did && claims.aud == terms.provider);
@@ -196,7 +196,7 @@ proof.<span class="tok-f">drop</span>();</code></pre>
 
 <span class="tok-c">// 1. the org vouches: a listitem in the ORG's repo, for this member, on this list</span>
 <span class="tok-k">let</span> org = atp_verify::<span class="tok-f">verify_plc_chain</span>(&terms.org, &<span class="tok-f">slices</span>(&org_ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad org chain"</span>);
-<span class="tok-f">assert!</span>(org.len >= <span class="tok-f">chain_floor</span>(&terms.org));
+<span class="tok-f">assert!</span>(org.<span class="tok-f">extends</span>(<span class="tok-f">chain_pin</span>(&terms.org)));
 atp_verify::<span class="tok-f">verify_record</span>(&terms.org, &org.signing_key, l_commit, &l_nodes, l_record,
     <span class="tok-s">"app.bsky.graph.listitem"</span>, &l_rkey).<span class="tok-f">expect</span>(<span class="tok-s">"bad listitem proof"</span>);
 <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">field_eq</span>(l_record, &[<span class="tok-s">"subject"</span>], &did));
@@ -206,7 +206,7 @@ atp_verify::<span class="tok-f">verify_record</span>(&terms.org, &org.signing_ke
 
 <span class="tok-c">// 2. the member binds the payout (code commits to policy, campaign, DID and wallet key)</span>
 <span class="tok-k">let</span> chain = atp_verify::<span class="tok-f">verify_plc_chain</span>(&did, &<span class="tok-f">slices</span>(&ops)).<span class="tok-f">expect</span>(<span class="tok-s">"bad chain"</span>);
-<span class="tok-f">assert!</span>(chain.len >= <span class="tok-f">chain_floor</span>(&did));
+<span class="tok-f">assert!</span>(chain.<span class="tok-f">extends</span>(<span class="tok-f">chain_pin</span>(&did)));
 atp_verify::<span class="tok-f">verify_record</span>(&did, &chain.signing_key, c_commit, &c_nodes, c_record, <span class="tok-s">"app.bsky.feed.post"</span>, &c_rkey)?;
 <span class="tok-f">assert!</span>(atp_verify::<span class="tok-f">record_text</span>(c_record)?.<span class="tok-f">contains</span>(&<span class="tok-f">claim_code</span>(me, &campaign, &did, &claimant)));</code></pre>
     <p class="flow-note">A record proof shows the item existed at that commit, not that it still does, so someone removed from the list <em>after</em> the snapshot can still claim with a commit from between. Set the snapshot to the moment the list is final. Funder-namespaced campaigns and one claim per DID work as in the bounty.</p>

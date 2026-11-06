@@ -161,14 +161,16 @@ async function readComponent(address: string): Promise<{ template: string; state
   return { template: asHex(list(header)[0]), state };
 }
 
-/** The spendable amount in a fungible vault. Revealed funds are the only kind the Campaign contract holds. */
-export async function vaultBalance(vault: string): Promise<bigint> {
+/** What a fungible vault holds, and how much of it is spendable. Revealed funds are the only kind the Campaign contract holds. */
+async function readVault(vault: string): Promise<{ resource: string; balance: bigint }> {
   const v = await readSubstate(vault);
   if (!v) throw new Error("The campaign's vault couldn't be read");
   const container = list(list(list(v)[1])[0])[0];
   const fields = list(list(container)[1]);
-  return asBig(fields[1]);
+  return { resource: `resource_${asHex(fields[0])}`, balance: asBig(fields[1]) };
 }
+
+export const vaultBalance = async (vault: string): Promise<bigint> => (await readVault(vault)).balance;
 
 export interface ChainCampaign {
   component: string;
@@ -178,6 +180,8 @@ export interface ChainCampaign {
   vault: string;
   receipts: string;
   linkRegistry: string;
+  /** Made with a contract from before the 2026-11-07 security fixes. */
+  legacy: boolean;
   rules: Rule[];
   groups: number[];
   reward: bigint;
@@ -200,12 +204,17 @@ export const phaseOf = (c: ChainCampaign): CampaignPhase => (c.epoch < c.openEpo
 
 export const isComponent = (s: string): boolean => /^component_[0-9a-f]{64}$/.test(s);
 
-/** Reads a live campaign, refusing anything that wasn't built from the published Campaign template. */
+/**
+ * Reads a live campaign, refusing anything that wasn't built from the published Campaign template. It also refuses two
+ * things the contract itself allows. A campaign can be funded with any token, and these sites call every reward tTARI.
+ * Its creator also picks the registry it calls, so a registry of their own could send linked claims anywhere or fail them.
+ */
 export async function readCampaign(component: string): Promise<ChainCampaign> {
   if (!isComponent(component)) throw new Error("That isn't a campaign address.");
   const comp = await readComponent(component);
   if (!comp) throw new Error("There's no campaign at that address.");
-  if (comp.template !== hexOf(DEPLOYMENT.campaignTemplate)) throw new Error("That address isn't a campaign made with this contract, so it isn't shown.");
+  const legacy = DEPLOYMENT.legacy.find((x) => hexOf(x.campaignTemplate) === comp.template);
+  if (comp.template !== hexOf(DEPLOYMENT.campaignTemplate) && !legacy) throw new Error("That address isn't a campaign made with this contract, so it isn't shown.");
   const s = comp.state;
   const kinds = list(s[7]).map(asNum);
   const targets = list(s[8]) as string[];
@@ -220,7 +229,10 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
     ...(i > 0 && groups[i] !== 0 && groups[i] === groups[i - 1] ? { or: true } : {}),
   }));
   const vault = `vault_${asHex(s[3])}`;
-  const [balance, epoch] = await Promise.all([vaultBalance(vault), currentEpoch()]);
+  const linkRegistry = `component_${asHex(s[6])}`;
+  if (linkRegistry !== (legacy?.linkRegistry ?? DEPLOYMENT.linkRegistry)) throw new Error("That campaign uses a different link registry from these sites, so it isn't shown.");
+  const [{ resource, balance }, epoch] = await Promise.all([readVault(vault), currentEpoch()]);
+  if (resource !== TARI_RESOURCE) throw new Error("That campaign pays in a token other than tTARI, so it isn't shown.");
   return {
     component,
     name: s[0] as string,
@@ -228,7 +240,8 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
     funder: asHex(s[2]),
     vault,
     receipts: asHex(s[4]),
-    linkRegistry: `component_${asHex(s[6])}`,
+    linkRegistry,
+    legacy: !!legacy,
     rules,
     groups,
     reward: asBig(s[12]),
@@ -294,29 +307,65 @@ export async function hasRegistryRecord(did: string, registry: string = DEPLOYME
   return (await readSubstate(await nftId(asHex(reg.state[1]), did))) !== null;
 }
 
+export interface WalletLink {
+  /** Where payouts go now, if anywhere. */
+  active: string | null;
+  /** The key that owns that wallet. Only it can name a referrer on a claim made through the link. */
+  owner: string | null;
+  /** The wallet taking over, and the epoch it does, if a change is waiting. */
+  next: { account: string; since: number } | null;
+}
+
+/** The wallet `did` has linked, as the registry would answer at `epoch`. Null if it has no record or no link. */
+export async function readLink(did: string, epoch: number, registry: string = DEPLOYMENT.linkRegistry): Promise<WalletLink | null> {
+  const reg = await readComponent(registry);
+  if (!reg) throw new Error("The link registry couldn't be read.");
+  const v = await readSubstate(await nftId(asHex(reg.state[1]), did));
+  if (!v) return null;
+  const [, mutable] = list(list(list(v)[1])[0]);
+  const binding = list(mutable)[0];
+  if (!Array.isArray(binding)) return null;
+  const account = `component_${asHex(binding[0])}`;
+  const since = asNum(binding[1]);
+  const old = `component_${asHex(binding[2])}`;
+  if (epoch >= since) return { active: account, owner: asHex(binding[3]), next: null };
+  return { active: old === registry ? null : old, owner: old === registry ? null : asHex(binding[4]), next: { account, since } };
+}
+
 const REASONS: [RegExp, string][] = [
+  [/does not contain the bind code/i, "That post doesn't contain this wallet's link code."],
+  [/already used to bind/i, "That post has already been used. Write a new one."],
+  [/standard Tari account can be linked/i, "Only a standard Tari account can be linked."],
+  [/has not linked a wallet/i, "This account hasn't linked a wallet."],
   [/does not contain the claim code/i, "That post doesn't contain this claim's code."],
   [/campaign has closed/i, "This campaign has closed."],
-  [/has not opened yet/i, "This campaign hasn't opened yet."],
+  [/has not opened yet/i, "This campaign hasn't opened yet. If it's due now, try again in a minute or two: the network can lag behind for a moment."],
   [/pool is exhausted/i, "This campaign's pool has run out."],
-  [/round is not open yet/i, "The next round hasn't opened yet."],
+  [/used all its referrals/i, "Whoever invited you has used all their invites."],
+  [/cannot refer itself/i, "You can't invite yourself."],
+  [/round is not open yet/i, "The next round hasn't opened yet. If it's due now, try again in a minute or two: the network can lag behind for a moment."],
   [/every round has been paid/i, "Every round has already been paid."],
   [/not newer than the last round/i, "These proofs aren't newer than your last round. Post the new code, then try again."],
   [/does not satisfy its campaign rule/i, "One of your records doesn't meet its step any more."],
   [/required step has no proof|either\/or step has no proof/i, "A step is missing its proof."],
-  [/stale operation chain/i, "A newer identity log has been seen for this account. Refresh and try again."],
+  [/stale operation chain/i, "This account's identity log doesn't match the one already seen on the network. Refresh and try again. If it keeps happening, the account's keys may have been misused."],
+  [/not newer than the last round/i, "A voucher hasn't posted anything since your last round, so their vouch can't be shown to still stand. Try again once they have."],
   [/not on the allocation list/i, "This account isn't on the allocation list for that amount."],
   [/predates the campaign's snapshot/i, "A voucher's record predates this campaign's snapshot."],
-  [/has not closed yet/i, "This campaign hasn't closed yet, so its funds can't be taken back."],
+  [/has not closed yet/i, "This campaign hasn't closed yet, so its funds can't be taken back. If it's due now, try again in a minute or two: the network can lag behind for a moment."],
   [/close epoch can only move later/i, "The close date can only move later."],
+  [/close epoch too far/i, "That's further ahead than the contract allows, which is about 833 days from now."],
   [/insufficient|not enough|exceeds/i, "Your wallet doesn't have enough tTARI for this."],
   [/already exists|duplicate|non.?fungible.*exist/i, "This account has already claimed this."],
 ];
 
 /** The contract's words, or the network's, in plain language. */
 export function explainChainError(raw: string): string {
-  for (const [re, text] of REASONS) if (re.test(raw)) return text;
-  return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+  // A refused transaction comes as a long dump of state, with the contract's own words at the end.
+  const said = [...raw.matchAll(/"message":"(?:At instruction #\d+: )?(?:Template error: )?((?:[^"\\]|\\.)*)"/g)].at(-1)?.[1];
+  const text = said ?? raw;
+  for (const [re, plain] of REASONS) if (re.test(text)) return plain;
+  return text.length > 240 ? `${text.slice(0, 240)}…` : text;
 }
 
 /** The resource a vault holds. Contracts' badge resources are only named here, not in their own state. */
@@ -334,26 +383,62 @@ export const asInputs = (ids: string[]): SubstateInput[] => [...new Set(ids)].ma
  * Everything a claim touches. A wallet otherwise finds these one at a time by failing a real transaction, and each
  * failure costs a fee: measured live, about ten failures added 0.157 tTARI to a 0.04 tTARI claim.
  */
-export async function claimInputs(c: ChainCampaign, dids: string[], receiptDid: string | null): Promise<SubstateInput[]> {
-  const reg = await readComponent(c.linkRegistry);
-  if (!reg) throw new Error("The link registry couldn't be read.");
-  const records = asHex(reg.state[1]);
-  const regBadge = `vault_${asHex(reg.state[2])}`;
-  const regVault = `vault_${asHex(reg.state[3])}`;
+export async function claimInputs(c: ChainCampaign, dids: string[], receiptDid: string | null, referrer: Referrer | null = null, payTo: string | null = null): Promise<SubstateInput[]> {
   const campaign = await readComponent(c.component);
   if (!campaign) throw new Error("The campaign couldn't be read.");
   const mintBadge = `vault_${asHex(campaign.state[5])}`;
-  const [regBadgeResource, mintBadgeResource] = await Promise.all([vaultResource(regBadge), vaultResource(mintBadge)]);
+  return asInputs([
+    c.component, c.vault, `resource_${c.receipts}`, mintBadge, await vaultResource(mintBadge),
+    ...(await registryInputs(c.linkRegistry, dids)),
+    ...(receiptDid ? [await nftId(c.receipts, receiptDid)] : []),
+    ...(referrer ? [await nftId(c.receipts, referrer.did), ...(await accountInputs(referrer.account))] : []),
+    ...(payTo ? await accountInputs(payTo, [TARI_RESOURCE, c.receipts]) : []),
+  ]);
+}
+
+/** The registry and the records of each account that already has one. */
+async function registryInputs(registry: string, dids: string[]): Promise<string[]> {
+  const reg = await readComponent(registry);
+  if (!reg) throw new Error("The link registry couldn't be read.");
+  const records = asHex(reg.state[1]);
+  const badge = `vault_${asHex(reg.state[2])}`;
+  const vault = `vault_${asHex(reg.state[3])}`;
   const existing = await Promise.all(dids.map(async (d) => {
     const id = await nftId(records, d);
     return (await readSubstate(id)) ? id : null;
   }));
-  return asInputs([
-    c.component, c.vault, `resource_${c.receipts}`, mintBadge, mintBadgeResource,
-    c.linkRegistry, regBadge, regVault, `resource_${records}`, regBadgeResource,
-    ...existing.filter((x): x is string => !!x),
-    ...(receiptDid ? [await nftId(c.receipts, receiptDid)] : []),
-  ]);
+  return [registry, badge, vault, `resource_${records}`, await vaultResource(badge), ...existing.filter((x): x is string => !!x)];
+}
+
+/** Everything a link touches, including the account being linked, which the contract checks is a standard one. */
+export async function linkInputs(registry: string, did: string, account: string): Promise<SubstateInput[]> {
+  return asInputs([...(await registryInputs(registry, [did])), account]);
+}
+
+/** An account and its vaults for these resources, where it has them yet. A payment into another account has to name them up front. */
+async function accountInputs(account: string, resources: string[] = [TARI_RESOURCE]): Promise<string[]> {
+  const a = await readComponent(account);
+  if (!a) throw new Error("A payout account couldn't be read.");
+  const vaults = a.state[0];
+  const wanted = new Set(resources.map(hexOf));
+  const found: string[] = [];
+  if (vaults instanceof Map) {
+    for (const [resource, vault] of vaults) if (wanted.has(asHex(resource))) found.push(`vault_${asHex(vault)}`);
+  }
+  return [account, ...found];
+}
+
+export interface Referrer { did: string; account: string }
+
+/**
+ * The account to name as referrer, or null if naming it wouldn't work. The contract fails the whole claim on a bad
+ * referrer, and a link can name anyone, so a link that can't pay must never cost the person following it their reward.
+ */
+export async function usableReferrer(c: ChainCampaign, did: string, ref: string | null | undefined, pay: bigint): Promise<Referrer | null> {
+  if (!ref || ref === did || c.bonus <= 0n || c.balance < pay + c.bonus) return null;
+  const receipt = await readReceipt(c, ref).catch(() => null);
+  if (!receipt || receipt.referrals >= c.maxReferrals) return null;
+  return { did: ref, account: receipt.account };
 }
 
 export type TxOutcome = { state: "accepted"; components: string[] } | { state: "rejected"; reason: string } | { state: "pending" };
@@ -411,7 +496,7 @@ async function readEvents(query: string): Promise<ChainEvent[]> {
   return out;
 }
 
-const fromCampaignTemplate = (e: ChainEvent): boolean => e.template === hexOf(DEPLOYMENT.campaignTemplate);
+const fromCampaignTemplate = (e: ChainEvent): boolean => e.template === hexOf(DEPLOYMENT.campaignTemplate) || DEPLOYMENT.legacy.some((x) => hexOf(x.campaignTemplate) === e.template);
 
 /**
  * Live campaigns, newest first, each read back from its contract. They're found from the creation events the engine
@@ -449,10 +534,19 @@ export async function listClaims(component: string, limit = 50): Promise<ClaimEv
     .map((e) => ({ tx: e.tx, did: e.fields.get("did") ?? "", round: Number(e.fields.get("round") ?? 0), amount: BigInt(e.fields.get("amount") ?? 0) }));
 }
 
-/** Campaigns a DID has been paid by, from recent claim events. It only looks back so far, so it can miss old ones. */
-export async function listParticipated(did: string, limit = 1000): Promise<string[]> {
+export interface MyClaim { component: string; tx: string; round: number; amount: bigint }
+
+/** What a DID has been paid, newest first, from recent claim events. It only looks back so far, so it can miss old ones. */
+export async function listMyClaims(did: string, limit = 1000): Promise<MyClaim[]> {
   const events = await readEvents(`topic=${encodeURIComponent("Campaign.campaign.claim")}&limit=${limit}`);
-  return [...new Set(events.filter((e) => fromCampaignTemplate(e) && e.fields.get("did") === did).flatMap((e) => e.components))];
+  return events
+    .filter((e) => fromCampaignTemplate(e) && e.fields.get("did") === did && !!e.components[0])
+    .map((e) => ({ component: e.components[0]!, tx: e.tx, round: Number(e.fields.get("round") ?? 0), amount: BigInt(e.fields.get("amount") ?? 0) }));
+}
+
+/** Campaigns a DID has been paid by. */
+export async function listParticipated(did: string, limit = 1000): Promise<string[]> {
+  return [...new Set((await listMyClaims(did, limit)).map((c) => c.component))];
 }
 
 // ---- transactions --------------------------------------------------------------------------------------------
@@ -525,14 +619,18 @@ export interface ClaimProofs {
   path: string[];
 }
 
+const ruleArgs = (p: Omit<ClaimProofs, "code">): unknown[] => [
+  lit(p.ops),
+  lit(p.proofs.map((x) => x?.commit ?? new Uint8Array())),
+  lit(p.proofs.map((x) => x?.nodes ?? [])),
+  lit(p.proofs.map((x) => x?.record ?? new Uint8Array())),
+  lit(p.proofs.map((x) => x?.rkey ?? "")),
+  lit(p.vouchOps),
+];
+
 function proofArgs(p: ClaimProofs): unknown[] {
   return [
-    lit(p.ops),
-    lit(p.proofs.map((x) => x?.commit ?? new Uint8Array())),
-    lit(p.proofs.map((x) => x?.nodes ?? [])),
-    lit(p.proofs.map((x) => x?.record ?? new Uint8Array())),
-    lit(p.proofs.map((x) => x?.rkey ?? "")),
-    lit(p.vouchOps),
+    ...ruleArgs(p),
     lit(p.code.commit),
     lit(p.code.nodes),
     lit(p.code.record),
@@ -546,6 +644,14 @@ export const claimInstruction = (component: string, p: ClaimProofs, walletKey: s
   const a = proofArgs(p);
   return call(component, "claim", [lit(p.did), lit(fromHex(walletKey)), lit(componentArg(account)), ...a, lit(referrer)]);
 };
+
+/** A first claim paid to the wallet the account has linked. It needs no claim post, and any wallet may submit it. */
+export const claimLinkedInstruction = (component: string, p: Omit<ClaimProofs, "code">, referrer: string | null = null): Instruction =>
+  call(component, "claim_linked", [lit(p.did), ...ruleArgs(p), lit(p.amount), lit(p.path.map((s) => fromHex(s))), lit(referrer)]);
+
+/** Links an account to a wallet. The authority is the post, so any wallet may submit it. */
+export const bindInstruction = (registry: string, did: string, address: string, ownerKey: string, ops: Uint8Array[], post: RecordProof): Instruction =>
+  call(registry, "bind", [lit(did), lit(componentArg(address)), lit(fromHex(ownerKey)), lit(ops), lit(post.commit), lit(post.nodes), lit(post.record), lit(post.rkey)]);
 
 export const claimRoundInstruction = (component: string, p: ClaimProofs, walletKey: string): Instruction =>
   call(component, "claim_round", [lit(p.did), lit(fromHex(walletKey)), ...proofArgs(p)]);

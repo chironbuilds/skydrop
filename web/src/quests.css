@@ -106,6 +106,12 @@ main:focus { outline: none; }
 .qsteptext { display: grid; min-width: 0; }
 .qsteptext small { color: var(--muted); font-size: 12.5px; }
 .qclaim { padding-top: 6px; border-top: 1px solid var(--line); }
+.qlink { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.qlink:empty { display: none; }
+.qlink p { margin: 0; }
+.qlinkflow { display: grid; gap: 8px; flex: 1 1 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.qinvite { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.qinvite p { margin: 0; }
 .linkbtn { background: none; border: none; padding: 6px 2px; min-height: 36px; color: var(--muted); font: 500 13px var(--body); cursor: pointer; text-decoration: underline; }
 .qempty { margin-top: 32px; padding: 34px 22px; text-align: center; background: var(--surface); border: 1.5px dashed var(--line); border-radius: 16px; display: grid; gap: 10px; }
 .qadd { margin-top: 42px; max-width: 560px; display: grid; gap: 10px; }
@@ -114,3 +120,18 @@ main:focus { outline: none; }
   .qfoot a { min-height: 44px; display: inline-flex; align-items: center; padding-block: 0; }
 }
 .qmain > .kicker { color: color-mix(in srgb, var(--accent-2) 80%, var(--fg)); }
+.qdead { margin: 0; font-size: 13px; color: var(--muted); }
+.qdead .pill { margin-right: 4px; }
+.qarrive { display: grid; gap: 6px; margin-top: 20px; max-width: 560px; padding: 16px 18px; background: var(--surface); border: 2px solid var(--fg); border-radius: 10px; box-shadow: 4px 4px 0 var(--fg); }
+.qarrive h2 { font: 800 22px "Fraunces", Georgia, serif; letter-spacing: -.02em; margin: 0; overflow-wrap: anywhere; }
+.qarrive p { margin: 0; }
+.qbatch { display: grid; gap: 8px; justify-items: start; margin-top: 12px; }
+.qbatch.qlinkflow { background: var(--surface); }
+.qbatchlist { margin: 0; padding-left: 18px; font-size: 14.5px; }
+.qflash { outline: 3px solid var(--accent-2); outline-offset: 3px; }
+.qdone > summary, .qhist > summary { cursor: pointer; font: 800 20px "Fraunces", Georgia, serif; letter-spacing: -.02em; display: list-item; min-height: 36px; }
+.qdone > summary .qcount, .qhist > summary .qcount { margin-left: 9px; }
+.qhist { margin-top: 30px; }
+.qhist ul { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 6px; font-size: 14.5px; }
+.qhist li { overflow-wrap: anywhere; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+@media (max-width: 640px) { .qdone > summary, .qhist > summary { min-height: 44px; } }

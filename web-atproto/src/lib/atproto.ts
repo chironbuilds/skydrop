@@ -78,6 +78,24 @@ export function targetLink(target: string): string | null {
   return null;
 }
 
+/** Handles for these accounts, where they have one. Only for showing: it's fine for this to come back empty. */
+export async function handlesFor(dids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const unique = [...new Set(dids)];
+  for (let i = 0; i < unique.length; i += 25) {
+    try {
+      const q = unique.slice(i, i + 25).map((d) => `actors=${encodeURIComponent(d)}`).join("&");
+      const r = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?${q}`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = (await r.json()) as { profiles?: { did: string; handle: string }[] };
+      for (const p of j.profiles ?? []) out.set(p.did, p.handle);
+    } catch {
+      /* the address still shows */
+    }
+  }
+  return out;
+}
+
 export const composeUrl = (text: string): string => `https://bsky.app/intent/compose?text=${encodeURIComponent(text)}`;
 
 type PlcOp = Record<string, unknown>;
@@ -181,8 +199,9 @@ export async function fetchPost(uri: string): Promise<PostInfo | null> {
   return p ? { uri: p.uri, handle: p.author.handle, displayName: p.author.displayName || p.author.handle, avatar: p.author.avatar, text: p.record?.text ?? "" } : null;
 }
 
+/** An account's newest post of its own. A feed also lists its reposts, which can fill the first page, so it reads a long one. */
 export async function latestPost(actor: string): Promise<{ uri: string; text: string } | null> {
-  const r = await fetch(`${APPVIEW}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actor)}&limit=10&filter=posts_no_replies`);
+  const r = await fetch(`${APPVIEW}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actor)}&limit=50&filter=posts_no_replies`);
   if (!r.ok) return null;
   const j = (await r.json()) as { feed?: { post: { uri: string; author: { did: string }; record?: { text?: string } } }[] };
   const did = (await resolveActor(actor)).did;

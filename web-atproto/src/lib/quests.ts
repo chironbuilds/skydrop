@@ -84,20 +84,68 @@ export interface LiveFacts {
   /** Whether the pool can still cover this account's next payment. */
   funded: boolean;
   waitText: string;
+  /** Epochs until it closes. */
+  closesIn?: number;
+  /** Epochs between one account's rounds. */
+  roundEpochs?: number;
+  /** What's left in the pool. */
+  pool?: bigint;
+}
+
+/** Rounds this account could still be paid: the rest of them, unless the campaign closes first. */
+export function reachableRounds(f: Pick<LiveFacts, "rounds" | "roundsPaid" | "waitEpochs" | "closesIn" | "roundEpochs">): number {
+  const rest = Math.max(0, f.rounds - f.roundsPaid);
+  if (f.closesIn === undefined) return rest;
+  if (f.waitEpochs >= f.closesIn) return 0;
+  if (!f.roundEpochs) return Math.min(rest, 1);
+  return Math.min(rest, Math.floor((f.closesIn - 1 - f.waitEpochs) / f.roundEpochs) + 1);
 }
 
 /** Applies what the chain says to an assessment made from Bluesky data alone. */
 export function settle(a: Assessment, f: LiveFacts): Assessment {
   const paid = a.perRound * BigInt(f.roundsPaid);
-  const out: Assessment = { ...a, paid };
+  // What's really still possible: no more than the rounds left before it closes, or than the pool can pay in whole rounds.
+  const reachable = BigInt(reachableRounds(f));
+  const affordable = f.pool !== undefined && a.perRound > 0n ? f.pool / a.perRound : reachable;
+  const fullAmount = paid + a.perRound * (reachable < affordable ? reachable : affordable);
+  const out: Assessment = { ...a, paid, fullAmount };
+  const ended: Assessment = { ...out, fullAmount: paid };
   const collected = paid > 0n ? "You've collected what you earned before it ended." : "You didn't collect from it.";
-  if (a.state === "blocked" && !paid) return f.phase === "closed" ? { ...out, state: "over", headline: "This campaign has closed." } : out;
-  if (f.rounds > 0 && f.roundsPaid >= f.rounds) return { ...out, state: "claimed", headline: "You've collected everything from this campaign." };
-  if (f.phase === "closed") return { ...out, state: "over", headline: `This campaign has closed. ${collected}` };
-  if (!f.funded) return { ...out, state: "over", headline: `This campaign's pool has run out. ${collected}` };
+  if (a.state === "blocked" && !paid) return f.phase === "closed" ? { ...ended, state: "over", headline: "This campaign has closed." } : out;
+  if (f.rounds > 0 && f.roundsPaid >= f.rounds) return { ...ended, state: "claimed", headline: "You've collected everything from this campaign." };
+  if (f.phase === "closed") return { ...ended, state: "over", headline: `This campaign has closed. ${collected}` };
+  if (!f.funded) return { ...ended, state: "over", headline: `This campaign's pool has run out. ${collected}` };
   if (f.phase === "upcoming") return { ...out, state: "waiting", headline: `It opens in ${f.waitText}. You can get your steps done now.` };
+  if (f.roundsPaid > 0 && reachable === 0n) return { ...ended, state: "claimed", headline: "You've collected what you can: this campaign closes before your next round." };
   if (f.roundsPaid > 0 && f.waitEpochs > 0) return { ...out, state: "waiting", headline: `Round ${f.roundsPaid + 1} of ${f.rounds} opens in ${f.waitText}.` };
   return out;
+}
+
+export interface Deadline {
+  /** Epochs until it closes. */
+  closesIn: number;
+  /** How many more of this reward the pool can pay, if everyone is paid the same. */
+  rewardsLeft: number | null;
+  urgent: "closing" | "few" | null;
+}
+
+/** A day of epochs, or five rewards: the point where it's worth telling someone not to wait. */
+const CLOSING_EPOCHS = 24;
+const FEW_REWARDS = 5;
+
+export function deadlineOf(c: { epoch: number; closeEpoch: number; balance: bigint }, pay: bigint, listed = false): Deadline {
+  const closesIn = Math.max(0, c.closeEpoch - c.epoch);
+  const rewardsLeft = listed || pay <= 0n ? null : Number(c.balance / pay);
+  const urgent = closesIn <= CLOSING_EPOCHS ? "closing" : rewardsLeft !== null && rewardsLeft <= FEW_REWARDS ? "few" : null;
+  return { closesIn, rewardsLeft, urgent };
+}
+
+/** A calendar entry, so someone can come back when a round opens. The time is approximate, like every epoch estimate. */
+export function reminderFile(title: string, at: Date, url: string): string {
+  const stamp = (d: Date): string => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const clean = (s: string): string => s.replace(/[\\;,]/g, (c) => `\\${c}`).replace(/\r?\n/g, " ");
+  const end = new Date(at.getTime() + 30 * 60_000);
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Skydrop//Quests//EN", "BEGIN:VEVENT", `UID:${stamp(at)}-${clean(url)}@skydrop.tari.mw`, `DTSTAMP:${stamp(new Date())}`, `DTSTART:${stamp(at)}`, `DTEND:${stamp(end)}`, `SUMMARY:${clean(title)}`, `DESCRIPTION:${clean(`The time is approximate. ${url}`)}`, "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
 }
 
 export interface Totals { readyNow: bigint; readyCount: number; toEarn: bigint; progressCount: number; blockedCount: number; collected: bigint }

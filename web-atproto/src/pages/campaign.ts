@@ -138,7 +138,7 @@ export function campaignPage(id: string): Page {
         return;
       }
       const code = await claimCode("component_preview", actor.did, fromHex(v), 0);
-      const text = `Claiming my reward from ${spec.name}. ${code}`;
+      const text = `Claiming my Skydrop reward. ${code}`;
       replace(codeOut,
         h("pre", null, text),
         h("div", { class: "row", style: "margin-top:10px" }, h("a", { class: "btn ghost small", href: composeUrl(text), target: "_blank", rel: "noopener noreferrer" }, "Post on Bluesky"), copyButton(() => text)),

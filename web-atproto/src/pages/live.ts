@@ -1,11 +1,12 @@
 /** Launching a campaign, and its live page. Everything on the live page is read from the chain. */
-import { DEPLOYMENT, participantLink } from "../data/deployment";
+import { campaignLink, DEPLOYMENT } from "../data/deployment";
 import { questArt } from "../lib/art";
-import { targetLink } from "../lib/atproto";
-import { approxTime, claimFee, encodeLive, fromMicro, RULES, summarize, toMicro, type Spec } from "../lib/campaign";
+import { handlesFor, targetLink } from "../lib/atproto";
+import { approxTime, claimFee, fromMicro, LINK_LIST_MAX, MAX_DURATION_EPOCHS, RULES, summarize, toMicro, type Allocation, type Spec } from "../lib/campaign";
 import { asInputs, campaignFromTx, closeInstructions, createInstruction, currentEpoch, explainChainError, extendInstruction, FUNDS_WORKSPACE, listClaims, phaseOf, readCampaign, TARI_RESOURCE, topUpInstruction, waitForOutcome, type ChainCampaign } from "../lib/chain";
 import { copyButton, h, pageHead, pill, replace } from "../lib/dom";
 import { allocationsFor, rememberAllocations } from "../lib/library";
+import { fetchList, listMatches, saveList } from "../lib/lists";
 import { connectWallet, dryRunInstructions, friendly, onWallet, sendFunded, sendInstructions, walletBalance, type Stage, type WalletState } from "../lib/wallet";
 import type { Page } from "../main";
 
@@ -37,6 +38,13 @@ export function launchBox(spec: Spec): HTMLElement {
       const budget = BigInt(spec.budget);
       const have = await walletBalance();
       if (have !== null && have < budget + LAUNCH_MAX_FEE / 10n) throw new Error(`Your wallet has ${fromMicro(have)} ${unit}, which doesn't cover the ${fromMicro(budget)} ${unit} pool and the fee.`);
+      if (spec.allocations?.length) {
+        status.textContent = "Saving the list…";
+        // People can't prove their amount without the list. A short one can still travel in the link.
+        await saveList(spec.allocations).catch((e: Error) => {
+          if (spec.allocations!.length > LINK_LIST_MAX) throw new Error(`The list couldn't be saved, so nobody could claim from it. Nothing was spent. Try again. (${e.message})`);
+        });
+      }
       status.textContent = "Reading the network…";
       const epoch = await currentEpoch();
       const tx = await sendFunded(budget, TARI_RESOURCE, FUNDS_WORKSPACE, [createInstruction(spec, epoch, w.key!)], [DEPLOYMENT.linkRegistry], LAUNCH_MAX_FEE, (s) => { status.textContent = stageText(s); });
@@ -141,6 +149,7 @@ function manageBox(c: ChainCampaign, w: WalletState, reload: () => void): HTMLEl
       const d = Number(days.value);
       if (!(d > 0)) throw new Error("Enter a number of days above zero.");
       const target = Math.max(c.closeEpoch, c.epoch) + Math.round(d * 24);
+      if (target > c.epoch + MAX_DURATION_EPOCHS) throw new Error("That's further ahead than the contract allows, which is about 833 days from now.");
       await finish(await sendInstructions([extendInstruction(c.component, target)], MANAGE_MAX_FEE, onStage, asInputs([c.component])), `Now closes at epoch ${target.toLocaleString("en-US")}.`);
     } catch (err) {
       fail(err);
@@ -175,6 +184,42 @@ function manageBox(c: ChainCampaign, w: WalletState, reload: () => void): HTMLEl
   );
 }
 
+function save(name: string, type: string, text: string): void {
+  const a = h("a", { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+const csvCell = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+
+/** What the page knows about a campaign's list. Finding it, and saving it if this browser launched it and it's missing. */
+function listBox(c: ChainCampaign, local: Allocation[] | undefined): HTMLElement {
+  const box = h("div");
+  void (async () => {
+    let list = await fetchList(c.root);
+    if (!list && (await listMatches(local, c.root))) {
+      list = await saveList(local!).then(() => local!).catch(() => null);
+      if (!list) {
+        replace(box, h("div", { class: "note warn" }, h("strong", null, "The list couldn't be saved just now. "), local!.length > LINK_LIST_MAX ? "Nobody can claim until it is. Refresh to try again." : "The link above still carries it, so people can claim. Refresh to try again."));
+        return;
+      }
+    }
+    if (!list) {
+      replace(box, h("div", { class: "note warn" }, h("strong", null, "The allocation list can't be found. "), "The chain holds only its fingerprint, so nobody can prove their amount without it. Open this page in the browser that launched the campaign to save it again."));
+      return;
+    }
+    const found = list;
+    const total = found.reduce((n, a) => n + BigInt(a.amount), 0n) * BigInt(c.rounds);
+    const short = c.paid + c.balance < total;
+    replace(box,
+      h("p", { class: "muted small-text" }, `${found.length.toLocaleString("en-US")} ${found.length === 1 ? "account shares" : "accounts share"} ${fromMicro(total)} ${unit}${c.rounds > 1 ? " across all rounds" : ""}. The list is public and matches the fingerprint in the contract. `,
+        h("button", { class: "btn ghost small", type: "button", onclick: () => save("allocation-list.csv", "text/csv", ["account,amount_tTARI", ...found.map((a) => `${csvCell(a.did)},${fromMicro(a.amount).replace(/,/g, "")}`)].join("\n")) }, "Download it")),
+      short ? h("div", { class: "note warn" }, h("strong", null, "The pool doesn't cover the whole list. "), `It has held ${fromMicro(c.paid + c.balance)} ${unit} against ${fromMicro(total)} ${unit} listed, so claims will stop when it runs out. Anyone can add to it.`) : null,
+    );
+  })();
+  return box;
+}
+
 export function livePage(component: string): Page {
   const body = h("div", { class: "wrap narrow" }, pageHead("Live campaign", "Reading the contract…"));
   let stopWallet: (() => void) | null = null;
@@ -190,7 +235,9 @@ export function livePage(component: string): Page {
     document.title = `${c.name} · ATProto for Ootle`;
     const allocations = allocationsFor(component);
         const phase = phaseOf(c);
-    const people = c.reward > 0n ? c.balance / c.reward : 0n;
+    // A bonus can go with each claim, so this is the number the pool is sure to cover.
+    const people = c.reward > 0n ? c.balance / (c.reward + (c.maxReferrals > 0 ? c.bonus : 0n)) : 0n;
+    const invites = c.bonus > 0n && c.maxReferrals > 0;
     const paidShare = c.paid + c.balance > 0n ? Number((c.paid * 1000n) / (c.paid + c.balance)) / 10 : 0;
     const manage = h("div");
     const claims = h("div", null, h("p", { class: "muted small-text" }, "Reading recent claims…"));
@@ -200,19 +247,32 @@ export function livePage(component: string): Page {
       if (w.key === c.funder && w.account) replace(manage, manageBox(c, w, () => void load()));
       else replace(manage);
     });
-    void listClaims(component).then((list) => {
+    const downloadClaims = async (btn: HTMLButtonElement) => {
+      btn.disabled = true;
+      try {
+        const all = await listClaims(component, 1000);
+        const names = await handlesFor(all.map((x) => x.did));
+        save("claims.csv", "text/csv", ["account,handle,round,amount_tTARI,transaction", ...all.map((x) => [csvCell(x.did), csvCell(names.get(x.did) ?? ""), x.round + 1, fromMicro(x.amount).replace(/,/g, ""), x.tx].join(","))].join("\n"));
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    void listClaims(component).then(async (list) => {
+      const names = await handlesFor(list.map((x) => x.did));
       replace(claims, list.length
-        ? h("div", { class: "tablewrap" }, h("table", null,
-            h("thead", null, h("tr", null, h("th", null, "Account"), h("th", null, "Round"), h("th", { style: "text-align:right" }, "Paid"))),
-            h("tbody", null, list.map((x) => h("tr", null,
-              h("td", { class: "m" }, h("a", { href: `https://bsky.app/profile/${x.did}`, target: "_blank", rel: "noopener noreferrer" }, x.did)),
-              h("td", { class: "num" }, String(x.round + 1)),
-              h("td", { class: "num" }, `${fromMicro(x.amount)} ${unit}`)))),
-          ))
+        ? h("div", null,
+            h("div", { class: "tablewrap" }, h("table", null,
+              h("thead", null, h("tr", null, h("th", null, "Account"), h("th", null, "Round"), h("th", { style: "text-align:right" }, "Paid"))),
+              h("tbody", null, list.map((x) => h("tr", null,
+                h("td", { class: names.has(x.did) ? "" : "m" }, h("a", { href: `https://bsky.app/profile/${x.did}`, target: "_blank", rel: "noopener noreferrer" }, names.has(x.did) ? `@${names.get(x.did)}` : x.did)),
+                h("td", { class: "num" }, String(x.round + 1)),
+                h("td", { class: "num" }, `${fromMicro(x.amount)} ${unit}`)))),
+            )),
+            h("p", { class: "muted small-text", style: "margin-top:10px" }, h("button", { class: "btn ghost small", type: "button", onclick: (e: Event) => void downloadClaims(e.currentTarget as HTMLButtonElement) }, "Download as CSV"), " The network only keeps recent activity searchable, so very old claims can be missing."))
         : h("p", { class: "muted small-text" }, "Nobody has claimed yet."));
     }).catch(() => replace(claims, h("p", { class: "muted small-text" }, "Recent claims couldn't be read.")));
 
-    const link = participantLink(encodeLive(c.component, allocations));
+    const link = campaignLink(c.component, { allocations });
     replace(body,
       h("div", { class: "row", style: "margin-top:24px;gap:8px" },
         pill(phase === "open" ? "ok" : phase === "upcoming" ? "info" : "plain", phase === "open" ? "Open" : phase === "upcoming" ? "Not open yet" : "Closed"),
@@ -228,13 +288,13 @@ export function livePage(component: string): Page {
 
       h("h2", { class: "vh" }, "At a glance"),
       h("div", { class: "grid g3", style: "margin-top:0" },
-        h("div", { class: "card" }, h("span", { class: "tag" }, "reward"), h("h3", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${unit}`), h("p", null, c.rounds > 1 ? `Per round, ${c.rounds} rounds.` : "Paid once per account.", c.root ? "" : ` Claimers pay a network fee of about ${fromMicro(claimFee(c.rules))} ${unit}.`)),
-        h("div", { class: "card" }, h("span", { class: "tag" }, "pool left"), h("h3", null, `${fromMicro(c.balance)} ${unit}`), h("p", null, c.root ? "Held by the contract." : `Enough for ${people.toLocaleString("en-US")} more ${people === 1n ? "payment" : "payments"}.`)),
+        h("div", { class: "card" }, h("span", { class: "tag" }, "reward"), h("h3", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${unit}`), h("p", null, c.rounds > 1 ? `Per round, ${c.rounds} rounds.` : "Paid once per account.", c.root ? "" : ` Claimers pay a network fee of about ${fromMicro(claimFee(c.rules))} ${unit}.`, invites ? ` Inviting someone earns ${fromMicro(c.bonus)} ${unit}, up to ${c.maxReferrals} per person.` : "")),
+        h("div", { class: "card" }, h("span", { class: "tag" }, "pool left"), h("h3", null, `${fromMicro(c.balance)} ${unit}`), h("p", null, c.root ? "Held by the contract." : invites ? `Enough for at least ${people.toLocaleString("en-US")} more ${people === 1n ? "claim" : "claims"}, bonuses included.` : `Enough for ${people.toLocaleString("en-US")} more ${people === 1n ? "payment" : "payments"}.`)),
         h("div", { class: "card" }, h("span", { class: "tag" }, "claimed"), h("h3", null, `${c.claimants.toLocaleString("en-US")} ${c.claimants === 1 ? "person" : "people"}`), h("p", null, `${fromMicro(c.paid)} ${unit} paid in ${c.payments.toLocaleString("en-US")} ${c.payments === 1 ? "payment" : "payments"}.`)),
       ),
       h("div", { class: "meter big", role: "img", "aria-label": `${paidShare} percent of the funds paid out`, style: "margin-top:16px" }, h("i", { style: `width:${paidShare}%` })),
       h("p", { class: "muted small-text" }, phaseLine(c), " Times assume about one epoch an hour."),
-      c.root && !allocations ? h("div", { class: "note warn" }, h("strong", null, "Allocation list not in this browser. "), "The chain holds only its fingerprint. Share the link from the browser that launched it, so claimers receive the list.") : null,
+      c.root ? listBox(c, allocations) : null,
       manage,
 
       h("h2", { class: "big", style: "margin-top:38px" }, "What to do"),
