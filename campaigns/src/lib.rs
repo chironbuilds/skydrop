@@ -16,12 +16,15 @@
 //!     the rules that limit fake accounts, because the voucher decides who gets one.
 //! * **Allocations** (optional): a Merkle root of `(did, amount)` set by the funder pays each DID its own amount.
 //! * **Rounds** (optional): the reward repeats up to `rounds` times, at least `round_epochs` apart. Each round
-//!   needs its own new code post and a re-proof of every rule from a newer commit, so it pays people who stay.
+//!   needs its own new code post and a re-proof of every rule from a newer commit, so it pays people who stay. A vouch
+//!   must come from a newer commit of the voucher's repo too, so one that has been withdrawn can't be replayed. A voucher
+//!   who has committed nothing since the last round holds the next one up until they do.
 //! * **Referrals** (optional): a new claimant may name a DID that already claimed; that DID's account is paid
 //!   `referral_bonus`, up to `max_referrals` times.
 //! * **Payout binding**: `claim` needs a post in the DID's repo whose code commits to this campaign, the DID, the
 //!   wallet key and the round, so nobody can redirect a claim. `claim_linked` needs no code: it pays the wallet
-//!   the DID linked in the LinkRegistry and anyone may submit it.
+//!   the DID linked in the LinkRegistry and anyone may submit it, unless it names a referrer, which only the linked
+//!   wallet may do. Otherwise anyone could claim for a linked account and name themselves.
 //! * **Funder limits**: the pool can be topped up by anyone and the close epoch can only move later. Only after
 //!   the close epoch can the funder take what is left. Rounds not claimed by then are forfeited.
 //!
@@ -150,8 +153,9 @@ fn slices(items: &[Bytes], max: usize) -> Vec<&[u8]> {
 
 /// A receipt's immutable data: the DID and the account its rewards go to.
 type ReceiptData = (String, ComponentAddress);
-/// A receipt's mutable data: rounds paid, epoch of the last payment, newest commit time proven, referrals paid.
-type ReceiptState = (u16, u64, u64, u32);
+/// A receipt's mutable data: rounds paid, epoch of the last payment, newest commit time proven, referrals paid, and for
+/// each rule the newest commit time of a voucher's repo proven for it (0 for anything else).
+type ReceiptState = (u16, u64, u64, u32, Vec<u64>);
 
 #[template]
 mod campaign {
@@ -329,12 +333,13 @@ mod campaign {
             self.assert_open();
             let key = self.verify_chain(&did, &ops);
             self.verify_code(&did, &key, &claimant, 0, &c_commit, &c_nodes, &c_record, &c_rkey);
-            let rev = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops);
-            self.first_payment(did, account, rev, amount, path, referrer);
+            let (rev, vouched) = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops, &[]);
+            self.first_payment(did, account, rev, vouched, amount, path, referrer);
         }
 
         /// First claim paid to the wallet `did` linked in the LinkRegistry. Needs no code post and no signature:
-        /// the registry already binds the DID to its wallet, so anyone may submit it (a relayer can pay the fee).
+        /// the registry already binds the DID to its wallet, so anyone may submit it (a relayer can pay the fee). Naming a
+        /// referrer does need the linked wallet's signature, because the bonus is the account's to give.
         #[allow(clippy::too_many_arguments)]
         pub fn claim_linked(
             &mut self,
@@ -351,10 +356,13 @@ mod campaign {
         ) {
             self.assert_open();
             let key = self.verify_chain(&did, &ops);
-            let rev = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops);
-            let wallet: Option<ComponentAddress> = ComponentManager::get(self.link_registry).call("binding_for", args![did.clone()]);
-            let account = wallet.expect("this account has not linked a wallet");
-            self.first_payment(did, account, rev, amount, path, referrer);
+            let (rev, vouched) = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops, &[]);
+            let wallet: Option<(ComponentAddress, RistrettoPublicKeyBytes)> = ComponentManager::get(self.link_registry).call("active_binding", args![did.clone()]);
+            let (account, owner) = wallet.expect("this account has not linked a wallet");
+            if referrer.is_some() {
+                require_signer(owner);
+            }
+            self.first_payment(did, account, rev, vouched, amount, path, referrer);
         }
 
         /// A later round for `did`. It needs a new code post for this round, a re-proof of every rule from a newer
@@ -383,20 +391,22 @@ mod campaign {
             let id = receipt_id(&did);
             let nft = manager.get_non_fungible(&id);
             let (_, account): ReceiptData = nft.get_data();
-            let (paid_rounds, last_epoch, last_rev, referrals): ReceiptState = nft.get_mutable_data();
+            let (paid_rounds, last_epoch, last_rev, referrals, last_vouched): ReceiptState = nft.get_mutable_data();
             assert!(paid_rounds < self.rounds, "every round has been paid");
             let now = Consensus::current_epoch();
             assert!(now >= last_epoch.saturating_add(self.round_epochs), "this round is not open yet");
 
             let key = self.verify_chain(&did, &ops);
             self.verify_code(&did, &key, &claimant, paid_rounds, &c_commit, &c_nodes, &c_record, &c_rkey);
-            let rev = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops);
+            let (rev, vouched) = self.verify_rules(&did, &key, &commits, &nodes, &records, &rkeys, &vouch_ops, &last_vouched);
             // `rev` is 0 only when this claim proved nothing from the claimant's own repo (only vouches)
             assert!(rev == 0 || rev > last_rev, "these proofs are not newer than the last round's");
 
             let pay = self.amount_for(&did, amount, &path);
             self.pay(account, pay);
-            let state: ReceiptState = (paid_rounds + 1, now, rev.max(last_rev), referrals);
+            // A step of an either/or skipped this round keeps what it last proved.
+            let vouched = vouched.iter().enumerate().map(|(i, v)| (*v).max(last_vouched.get(i).copied().unwrap_or(0))).collect();
+            let state: ReceiptState = (paid_rounds + 1, now, rev.max(last_rev), referrals, vouched);
             self.mint_badge.authorize_with(|| manager.update_non_fungible_data(id, &state));
             emit_event("campaign.claim", metadata!["did" => did, "round" => paid_rounds.to_string(), "amount" => pay.to_string()]);
         }
@@ -430,8 +440,8 @@ mod campaign {
         /// Verifies a PLC chain and checks it reaches the shared floor, so a rotated-away key proves nothing.
         fn verify_chain(&self, did: &str, ops: &[Bytes]) -> atp_verify::Key {
             let chain = atp_verify::verify_plc_chain(did, &slices(ops, MAX_OPS)).expect("invalid operation chain");
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![String::from(did)]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![String::from(did)]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
             chain.signing_key
         }
 
@@ -444,13 +454,15 @@ mod campaign {
             assert!(text.contains(&code), "the post does not contain the claim code");
         }
 
-        /// Proves every rule. Returns the newest commit time among proofs from the claimant's own repo. A proof that
-        /// repeats the previous commit of that repo skips its signature check, which saves most of the cost.
+        /// Proves every rule. Returns the newest commit time among proofs from the claimant's own repo, and each rule's
+        /// voucher commit time. A vouch must be newer than `last_vouched` says the last round's was. A proof that
+        /// repeats the previous commit of the claimant's repo skips its signature check, which saves most of the cost.
         #[allow(clippy::too_many_arguments)]
-        fn verify_rules(&self, did: &str, key: &atp_verify::Key, commits: &[Bytes], nodes: &[Vec<Bytes>], records: &[Bytes], rkeys: &[String], vouch_ops: &[Vec<Bytes>]) -> u64 {
+        fn verify_rules(&self, did: &str, key: &atp_verify::Key, commits: &[Bytes], nodes: &[Vec<Bytes>], records: &[Bytes], rkeys: &[String], vouch_ops: &[Vec<Bytes>], last_vouched: &[u64]) -> (u64, Vec<u64>) {
             let n = self.kinds.len();
             assert!(commits.len() == n && nodes.len() == n && records.len() == n && rkeys.len() == n, "one proof per rule");
             let mut proven = vec![false; n];
+            let mut vouched = vec![0u64; n];
             let mut newest = 0u64;
             let mut own_root: Option<(&[u8], [u8; 32])> = None;
             let mut vouch = 0usize;
@@ -476,6 +488,8 @@ mod campaign {
                     }
                     let rev = atp_verify::commit_rev_micros(commit).expect("bad voucher commit");
                     assert!(rev >= self.snapshots[i], "that voucher proof predates the campaign's snapshot");
+                    assert!(rev > last_vouched.get(i).copied().unwrap_or(0), "that voucher proof is not newer than the last round's");
+                    vouched[i] = rev;
                     continue;
                 }
                 let root = match own_root {
@@ -505,7 +519,7 @@ mod campaign {
                 let g = self.groups[i];
                 assert!(g == 0 || (0..n).any(|j| self.groups[j] == g && proven[j]), "an either/or step has no proof");
             }
-            newest
+            (newest, vouched)
         }
 
         fn amount_for(&self, did: &str, amount: u64, path: &[Bytes]) -> Amount {
@@ -517,7 +531,8 @@ mod campaign {
             Amount::from(amount)
         }
 
-        fn first_payment(&mut self, did: String, account: ComponentAddress, rev: u64, amount: u64, path: Vec<Bytes>, referrer: Option<String>) {
+        #[allow(clippy::too_many_arguments)]
+        fn first_payment(&mut self, did: String, account: ComponentAddress, rev: u64, vouched: Vec<u64>, amount: u64, path: Vec<Bytes>, referrer: Option<String>) {
             assert!(ComponentManager::get(account).get_template_address() == TemplateAddress::from_array([0; 32]), "rewards go to a standard Tari account");
             let pay = self.amount_for(&did, amount, &path);
             if let Some(from) = referrer {
@@ -527,7 +542,7 @@ mod campaign {
             // Minting an id that exists fails the transaction: this is what makes a claim once-only.
             let manager = ResourceManager::get(self.receipts);
             let data: ReceiptData = (did.clone(), account);
-            let state: ReceiptState = (1, Consensus::current_epoch(), rev, 0);
+            let state: ReceiptState = (1, Consensus::current_epoch(), rev, 0, vouched);
             let receipt = self.mint_badge.authorize_with(|| manager.mint_non_fungible(receipt_id(&did), &data, &state));
             ComponentManager::get(account).invoke("deposit", args![receipt]);
             self.claimants += 1;
@@ -543,11 +558,11 @@ mod campaign {
             let id = receipt_id(from);
             let nft = manager.get_non_fungible(&id);
             let (_, account): ReceiptData = nft.get_data();
-            let (rounds, epoch, rev, referrals): ReceiptState = nft.get_mutable_data();
+            let (rounds, epoch, rev, referrals, vouched): ReceiptState = nft.get_mutable_data();
             assert!(referrals < self.max_referrals, "that referrer has used all its referrals");
             let bonus = self.referral_bonus;
             self.pay(account, bonus);
-            let state: ReceiptState = (rounds, epoch, rev, referrals + 1);
+            let state: ReceiptState = (rounds, epoch, rev, referrals + 1, vouched);
             self.mint_badge.authorize_with(|| manager.update_non_fungible_data(id, &state));
         }
 

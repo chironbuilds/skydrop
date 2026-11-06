@@ -45,6 +45,11 @@ pub fn base64url_decode(s: &str) -> Option<Vec<u8>> {
             acc &= (1 << bits) - 1;
         }
     }
+    // One spelling per value. The spare bits at the end must be zero, or the same bytes could be written up to 16 ways,
+    // and anything that tells values apart by their text (a spent-token list) could be fooled. A lone 6 bits is no byte.
+    if bits >= 6 || acc != 0 {
+        return None;
+    }
     Some(out)
 }
 

@@ -96,13 +96,14 @@ mod engagement_bounty {
         badge_vault: Vault,
         /// campaign id -> the DIDs that have already claimed it.
         claimed: BTreeMap<String, BTreeSet<String>>,
-        /// The LinkRegistry whose `chain_floor` a claim's operation chain must reach.
+        /// The LinkRegistry whose `chain_pin` a claim's operation chain must reach.
         link_registry: ComponentAddress,
     }
 
     impl EngagementBounty {
         pub fn new(escrow: ComponentAddress, badge_resource: ResourceAddress, link_registry: ComponentAddress) -> Component<Self> {
             Component::new(Self { escrow, badge_vault: Vault::new_empty(badge_resource), claimed: BTreeMap::new(), link_registry })
+                .with_owner_rule(OwnerRule::None)
                 .with_access_rules(AccessRules::allow_all())
                 .create()
         }
@@ -166,8 +167,8 @@ mod engagement_bounty {
             assert!(c_commit.len() <= MAX_BLOCK_LEN && c_record.len() <= MAX_BLOCK_LEN, "block too large");
             let ops_s = slices(&ops, MAX_OPS);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![did.clone()]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![did.clone()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
 
             // 1. the claim-code post binds the payout to this claimant's key (no front-running)
             let c_nodes_s = slices(&c_nodes, MAX_NODES);

@@ -114,13 +114,14 @@ mod list_drop {
         badge_vault: Vault,
         /// campaign id -> the DIDs that have already claimed it.
         claimed: BTreeMap<String, BTreeSet<String>>,
-        /// The LinkRegistry whose `chain_floor` both chains must reach.
+        /// The LinkRegistry whose `chain_pin` both chains must reach.
         link_registry: ComponentAddress,
     }
 
     impl ListDrop {
         pub fn new(escrow: ComponentAddress, badge_resource: ResourceAddress, link_registry: ComponentAddress) -> Component<Self> {
             Component::new(Self { escrow, badge_vault: Vault::new_empty(badge_resource), claimed: BTreeMap::new(), link_registry })
+                .with_owner_rule(OwnerRule::None)
                 .with_access_rules(AccessRules::allow_all())
                 .create()
         }
@@ -188,8 +189,8 @@ mod list_drop {
             // 1. the org vouches: a listitem in the org's repo, for this member, on this list, from a commit
             //    made at or after the snapshot
             let org_chain = atp_verify::verify_plc_chain(&terms.org, &slices(&org_ops, MAX_OPS)).expect("invalid org operation chain");
-            let org_floor: u32 = registry.call("chain_floor", args![terms.org.clone()]);
-            assert!(org_chain.len >= org_floor, "stale org operation chain: a longer one has been seen");
+            let (org_floor, org_floor_tip): (u32, Bytes) = registry.call("chain_pin", args![terms.org.clone()]);
+            assert!(org_chain.extends(org_floor, org_floor_tip.as_slice()), "stale org operation chain: a longer or different one has been seen");
             atp_verify::verify_record(&terms.org, &org_chain.signing_key, l_commit.as_slice(), &slices(&l_nodes, MAX_NODES), l_record.as_slice(), LISTITEM, &l_rkey)
                 .expect("invalid listitem proof");
             assert!(atp_verify::field_eq(l_record.as_slice(), &["subject"], &did), "that list item is for another account");
@@ -199,8 +200,8 @@ mod list_drop {
 
             // 2. the member binds the payout to their own wallet key (no front-running)
             let chain = atp_verify::verify_plc_chain(&did, &slices(&ops, MAX_OPS)).expect("invalid operation chain");
-            let floor: u32 = registry.call("chain_floor", args![did.clone()]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = registry.call("chain_pin", args![did.clone()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
             atp_verify::verify_record(&did, &chain.signing_key, c_commit.as_slice(), &slices(&c_nodes, MAX_NODES), c_record.as_slice(), POST, &c_rkey)
                 .expect("invalid claim-code proof");
             let text = atp_verify::record_text(c_record.as_slice()).expect("claim post has no text");

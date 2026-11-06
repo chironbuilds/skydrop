@@ -110,17 +110,40 @@ fn cid_string(block: &[u8]) -> String {
 pub struct ChainInfo {
     /// The repo signing key (`verificationMethods.atproto`) after the last operation.
     pub signing_key: Key,
-    /// Hash of the last operation in the chain. A longer chain extending this one means this chain is stale.
+    /// Identifies the last operation by what its signature covers. The `sig` field itself isn't covered, so a hash of
+    /// the whole block would let anyone make a "different" chain by re-encoding it. Only a key holder can change this.
     pub tip: [u8; 32],
     pub len: u32,
+    /// The same hash for every operation, genesis first.
+    pub hashes: Vec<[u8; 32]>,
+    /// Which of the previous operation's rotation keys signed each operation: 0 is the highest priority. Genesis has 0.
+    pub signers: Vec<u8>,
+}
+
+impl ChainInfo {
+    /// Whether this chain carries on from the one already seen: at least as long, and holding its last operation at the
+    /// same place. Length alone isn't enough, because anyone holding a rotated-away rotation key can sign a longer fork.
+    pub fn extends(&self, seen_len: u32, seen_tip: &[u8]) -> bool {
+        if seen_len == 0 {
+            return true;
+        }
+        self.len >= seen_len && self.hashes.get(seen_len as usize - 1).is_some_and(|h| h.as_slice() == seen_tip)
+    }
+
+    /// Whether this chain beats `seen` where the two split, by being signed there with a higher-priority rotation key.
+    /// It's the rule PLC uses to let a recovery key undo a lower key's operation. False if neither split from the other.
+    pub fn overrides(&self, seen: &ChainInfo) -> bool {
+        let split = self.hashes.iter().zip(&seen.hashes).position(|(a, b)| a != b);
+        split.is_some_and(|k| self.signers[k] < seen.signers[k])
+    }
 }
 
 fn rotation_keys(op: &[u8]) -> Result<Vec<Key>, Error> {
     if cbor::text_field(op, "type")? == "create" {
-        // Legacy genesis: the signing key and the recovery key may both authorise the next operation.
+        // Legacy genesis: the signing key and the recovery key may both authorise the next operation. PLC ranks recovery first.
         let (s, _) = cbor::map_get(op, "signingKey")?;
         let (r, _) = cbor::map_get(op, "recoveryKey")?;
-        return Ok(alloc::vec![Key::from_did_key(cbor::text(op, s)?.0)?, Key::from_did_key(cbor::text(op, r)?.0)?]);
+        return Ok(alloc::vec![Key::from_did_key(cbor::text(op, r)?.0)?, Key::from_did_key(cbor::text(op, s)?.0)?]);
     }
     let (vs, _) = cbor::map_get(op, "rotationKeys")?;
     let mut keys = Vec::new();
@@ -158,6 +181,8 @@ pub fn verify_plc_chain(did: &str, ops: &[&[u8]]) -> Result<ChainInfo, Error> {
     }
     let mut signers: Vec<Key> = Vec::new();
     let mut prev_cid = String::new();
+    let mut hashes = Vec::with_capacity(ops.len());
+    let mut used = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let ty = cbor::text_field(op, "type")?;
         if ty != "plc_operation" && !(i == 0 && ty == "create") {
@@ -174,14 +199,15 @@ pub fn verify_plc_chain(did: &str, ops: &[&[u8]]) -> Result<ChainInfo, Error> {
         }
         let (unsigned, (sv, _)) = cbor::strip_key(op, "sig")?;
         let sig = enc::base64url_decode(cbor::text(op, sv)?.0).ok_or(Error::BadSignature)?;
-        if !signers.iter().any(|k| k.verify(&unsigned, &sig)) {
-            return Err(Error::BadSignature);
-        }
+        let signer = signers.iter().position(|k| k.verify(&unsigned, &sig)).ok_or(Error::BadSignature)?;
+        used.push(signer as u8);
+        hashes.push(sha256(&unsigned));
         signers = rotation_keys(op)?;
         prev_cid = cid_string(op);
     }
     let last = ops.last().ok_or(Error::BrokenChain)?;
-    Ok(ChainInfo { signing_key: signing_key(last)?, tip: sha256(last), len: ops.len() as u32 })
+    let tip = *hashes.last().ok_or(Error::BrokenChain)?;
+    Ok(ChainInfo { signing_key: signing_key(last)?, tip, len: ops.len() as u32, hashes, signers: used })
 }
 
 /// The handles an account's own signed identity chain asserts, read from an operation's `alsoKnownAs`

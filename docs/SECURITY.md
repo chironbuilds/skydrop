@@ -83,3 +83,48 @@ or DoS found) and must be re-checked for each addition.
 - **Campaign avoids this by design.** Each campaign is its own component and records claims as receipt NFTs, so its state doesn't grow per claimant (5 claims: 358 to 362 bytes).
 - **Campaign limits, by design.** The order of steps can't be proven, because accounts sign their own timestamps. Nor can the wording of a reply, or that a record wasn't deleted after the proof; rounds require a newer commit, which someone holding their own repo key could still sign. Open campaigns are farmable since accounts are free; vouch rules and allocation lists are the defence.
 - **Mutation check.** `scripts/wsl-mutate-campaign.sh` removes each of 21 safety checks in turn. All 21 were caught by the test suite.
+
+## Audit, 2026-11-07 (Ootle 0.49.2)
+
+Read in full: Campaign, LinkRegistry, atp-verify's chain, repo and CBOR code, Escrow, ListDrop, EngagementBounty, SocialRecovery, ServicePay, TipPolicy, the Skydrop worker and both sites' claim code. Read in part: ClaimPolicy, the JWT reader. Not re-read: bskyclaim (legacy), the bot, Sapient. The contract findings came from reading the code. A1 to A4 and A6 are now fixed in the source with regression tests, and removing any of those ten new checks makes a test fail (`scripts/wsl-mutate-audit.sh`). A5 and A7 are one-line changes with no test of their own, though the existing suites still pass with them. **Deployed on Esmeralda 2026-11-07:** Campaign `template_d911cfc3…`, LinkRegistry `template_ff09d81f…` with registry `component_5825a4a3…` (`bind_delay` 0). Checked live with `live-campaign.ts fixes`: another wallet naming a referrer on a linked claim is refused, a relayed claim with no referrer pays the linked wallet, and the linked wallet can name one. The fork, re-encoding and replay fixes are covered by engine tests only. Not deployed: Verifier, Escrow, ClaimPolicy and the other policies. Campaigns on the old template keep the old behaviour until they close.
+
+### Contract findings and their fixes
+
+| # | Severity | Finding | Fix in source | What's left |
+|---|----------|---------|---------------|-------------|
+| A1 | High | **The chain floor only compared length.** Someone holding a rotation key from an earlier operation, such as an old PDS after a migration or a stolen key, could sign a fork past the floor, claim as the account, link it to their own wallet, raise the floor to lock the owner out, and block later links with a high record key. | The registry pins the newest chain seen, by length and last operation (`chain_pin`), and every contract refuses a chain that doesn't contain it (`ChainInfo::extends`). `resolve_fork` lets a chain signed with a higher-priority rotation key at the split replace the pinned one, PLC's own recovery rule, and clears the link and the record of bind posts made under the chain that lost. | **Not fully closed.** A fork made before any chain has been observed is accepted and pinned, so accounts need observing before they hold value. A key of higher priority than the real signer's can always win here, with no 72-hour limit as PLC has, since a contract can't check that. `bskyclaim` (legacy) still uses its own length check. |
+| A2 | Medium | **Anyone could make "a different chain" from a public one** by re-encoding the `sig` field of the last operation, which the signature doesn't cover, and so cancel any pending claim or link. | A chain's tip now hashes what the signature covers. | Nothing known. |
+| A3 | Medium | **One ServicePay token could be redeemed up to 16 times**, by spelling its signature differently in base64url's spare bits. | `base64url_decode` refuses non-zero spare bits and impossible lengths. | Nothing known. |
+| A4 | Medium | **Anyone could choose the referrer on a linked claim**, so a bot could claim for any qualifying linked account and take the bonus. | Naming a referrer on `claim_linked` needs the linked wallet's signature. A relayer can still submit with no referrer. The sites leave out an invite unless the linked wallet is connected, and say so. | Nothing known. |
+| A5 | Medium | **Some contracts had the publisher as owner.** | Escrow, ClaimPolicy, TipPolicy, ListDrop, EngagementBounty, ServicePay and SocialRecovery now set `OwnerRule::None`. | `bskyclaim` (legacy) isn't changed. |
+| A6 | Low | **A vouch could be replayed after it was withdrawn.** | Receipts keep each rule's newest voucher commit, and a later round needs a newer one. | A cost: a voucher who commits nothing between rounds holds the next round up until they do. A first claim with no snapshot set still accepts a proof from any time. Set a snapshot. |
+| A7 | Low | **SocialRecovery's vault key left out the terms.** | The key now includes the metadata. | Nothing known. |
+| A8 | Note | **Whoever hosts an account can act as it.** A PDS holds its accounts' signing keys, and usually a rotation key. That's how atproto works, and no proof can rule it out. | None possible. | Say so in anything aimed at mainnet. |
+
+Other changes this makes: `observe_chain` now refuses a chain that doesn't carry on from the pin, where it used to do nothing for a shorter one. Receipts and registry records have a new layout, so these are new templates, not upgrades. The registry's `bind_delay` is still chosen when it's created: with 0, links apply at once and `challenge_bind` has nothing to cancel.
+
+### Fixed on the sites and the worker
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| S1 | Medium | **A campaign in a worthless token was shown as tTARI.** `create` takes a bucket of any resource, and the sites never looked at the vault's resource. People would spend real fees on it. | `readCampaign` refuses a vault not holding tTARI, which covers both sites, the open list and share cards. |
+| S2 | Medium | **A creator picks the registry their campaign calls, and nothing checked it.** Their own component could send linked claims to any standard account, report any floor, or fail claims so that people burn fees. | `readCampaign` refuses any registry but the deployed one. Checked in the 0.49.2 engine source: signer badges only reach the first call frame, so this code can't use a claimant's signature to spend from their wallet. |
+| S3 | Low | **A claim post repeated the campaign's name**, which its creator writes and which could carry a link or a mention. | The post text no longer includes it. |
+| S4 | Low | **The builder understated farming.** It rated repeating campaigns Medium and spoke of creating Bluesky accounts. The live tests passed every claimant step with self-made identities and no Bluesky account. | Without a vouch or a list it's rated High and says this. |
+| S5 | Medium | **List storage could be filled.** One address could store 480 MB a day for about 1000 days. | Lists over 200 KB are limited to 2 an hour per address, or 9.6 MB a day. Smaller ones stay at 10 an hour. |
+| S6 | Low | **Locked posts had no rate limit**: 32 KB each, kept for a year. | 20 an hour per address. |
+| S7 | Low | **Made-up `/q/` addresses each caused a network read.** | Misses are cached for a minute. |
+
+### Open, on the worker
+
+- **Tip to unlock can't currently unlock anything.** `depositsFor` reads the indexer's old JSON layout, and 0.49 serves CBOR, so `unlock` answers 503 for any post not already paid for. It fails closed, but it's broken. Two concurrent unlocks can also spend one payment on two posts, since KV isn't atomic. `createGate` doesn't prove the DID is the creator's, so anyone can make a locked post that names someone else.
+- **The rate limiter writes to KV on every counted request**, so it can use up the account's daily KV writes.
+- **The sites set no CSP or `frame-ancestors`.** Pages build everything with text nodes, and the only `innerHTML` is static, so this is hardening. Check that Sapient's embedded view doesn't frame them before setting `frame-ancestors`.
+
+### Checked and found sound
+
+- Claim codes bind component, DID, wallet key and round, so a watcher can't redirect a claim from a public post. Later rounds pay only the receipt's account, and a receipt can't be withdrawn or minted twice.
+- The funder can't take funds before the close epoch or move it earlier. Payouts and referrals only go to standard accounts.
+- Allocation trees separate leaves from inner nodes, so a node can't pose as a leaf. Membership proofs walk hash-authenticated nodes, and CBOR reads are bounds-checked with limited depth.
+- Share pages and cards escape everything from the contract. A malicious name is covered by a test. Lists are stored under their own root and re-checked by readers.
+- `npm audit` finds nothing in production dependencies of either site. No keys or `.env` files are tracked or in git history.

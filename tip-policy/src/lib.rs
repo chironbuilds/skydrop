@@ -60,7 +60,7 @@ mod tip_policy {
         budgets: BTreeMap<String, (Amount, u64, u64, Amount)>,
         /// did -> rkey of the last tip post spent; a later post must have a larger rkey (spend once).
         last_tip: BTreeMap<String, String>,
-        /// The LinkRegistry whose `chain_floor` a tip post's operation chain must reach.
+        /// The LinkRegistry whose `chain_pin` a tip post's operation chain must reach.
         link_registry: ComponentAddress,
     }
 
@@ -83,6 +83,7 @@ mod tip_policy {
                 last_tip: BTreeMap::new(),
                 link_registry,
             })
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }
@@ -161,8 +162,8 @@ mod tip_policy {
             let nodes = slices(&mst_nodes, MAX_NODES);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
             // A tip post spends the tipper's budget, so a rotated-away key must not be able to sign one.
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![did.clone()]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![did.clone()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
             atp_verify::verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), POST, &rkey)
                 .expect("invalid repo proof");
             let (recipient, micro) = atp_verify::tip::parse_tip(record.as_slice(), &self.bot_did).expect("not a tip post");

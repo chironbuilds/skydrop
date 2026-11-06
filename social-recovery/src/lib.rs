@@ -76,6 +76,8 @@ fn vault_key(vault_id: &str, dep: &EscDep) -> String {
     data.extend_from_slice(&dep.0.into_array());
     data.extend_from_slice(&dep.5.to_be_bytes());
     data.extend_from_slice(dep.1.to_string().as_bytes());
+    // The terms too: two vaults alike in everything else must not share approvals if their guardians differ.
+    data.extend_from_slice(dep.4.as_slice());
     hex(&sha256(&data))
 }
 
@@ -118,6 +120,7 @@ mod social_recovery {
                 recovering: BTreeMap::new(),
                 last_rkey: BTreeMap::new(),
             })
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }
@@ -161,8 +164,8 @@ mod social_recovery {
 
             let ops_s: Vec<&[u8]> = ops.iter().map(|b| b.as_slice()).collect();
             let chain = atp_verify::verify_plc_chain(&guardian, &ops_s).expect("invalid operation chain");
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![guardian.clone()]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![guardian.clone()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
             let nodes: Vec<&[u8]> = mst_nodes.iter().map(|b| b.as_slice()).collect();
             atp_verify::verify_record(&guardian, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), POST, &rkey)
                 .expect("invalid repo proof");

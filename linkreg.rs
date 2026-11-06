@@ -102,6 +102,23 @@ fn plc_op(prev: Option<&[u8]>, rotation: &SigningKey, repo: &SigningKey, signer:
     let sig = sign(signer, &body(None));
     body(Some(sig))
 }
+/// An operation naming several rotation keys, highest priority first.
+fn plc_op_keys(prev: Option<&[u8]>, rotation: &[&SigningKey], repo: &SigningKey, signer: &SigningKey) -> Vec<u8> {
+    let body = |sig: Option<Vec<u8>>| {
+        let mut m = vec![
+            ("type", V::T("plc_operation".into())),
+            ("prev", match prev { Some(p) => V::T(format!("b{}", base32(&[&[0x01, 0x71, 0x12, 0x20][..], &sha(p)].concat()))), None => V::Null }),
+            ("services", V::M(vec![])),
+            ("alsoKnownAs", V::A(vec![V::T("at://alice.test".into())])),
+            ("rotationKeys", V::A(rotation.iter().map(|k| V::T(did_key(k))).collect())),
+            ("verificationMethods", V::M(vec![("atproto", V::T(did_key(repo)))])),
+        ];
+        if let Some(s) = sig { m.push(("sig", V::T(base64url(&s)))); }
+        cbor(&V::M(m))
+    };
+    let sig = sign(signer, &body(None));
+    body(Some(sig))
+}
 struct Post { commit: Vec<u8>, nodes: Vec<Vec<u8>>, record: Vec<u8>, rkey: String }
 struct Account { did: String, ops: Vec<Vec<u8>>, repo_key: SigningKey, rotation_key: SigningKey }
 impl Account {
@@ -366,10 +383,9 @@ fn a_binding_needs_the_right_code_a_current_chain_and_a_real_account() {
     let p = bind_post(&mut env, &stale, &thief, "3jbbbbbbbbbbb");
     let tx = bind_tx(&env, &stale, &thief, &p);
     fail_with(&mut env, tx, "stale operation chain");
-    // observing a shorter chain doesn't lower the floor
+    // observing a shorter chain is refused, and doesn't lower the floor
     let tx = env.test.transaction().call_method(env.reg, "observe_chain", args![acct.did.clone(), bytes_list(&old_ops)]).build_and_seal(&env.who.key);
-    let b = env.who.badge.clone();
-    env.test.execute_expect_success(tx, vec![b]);
+    fail_with(&mut env, tx, "stale operation chain");
     assert_eq!(floor(&mut env, &acct.did), 2);
     // the current chain works, and a post can't be reused or go backwards
     bind_ok(&mut env, &acct, &w, "3jbbbbbbbbbbb");
@@ -437,4 +453,146 @@ fn challenging_a_first_binding_leaves_nothing_bound() {
     // with no binding left, there's nothing to challenge
     let tx = env.test.transaction().call_method(env.reg, "challenge_bind", args![acct.did.clone(), bytes_list(&acct.ops)]).build_and_seal(&env.who.key);
     fail_with(&mut env, tx, "no binding");
+}
+
+// ---- forks: a rotated-away key can sign a chain of any length, so length alone proves nothing ---------------------
+fn new_key() -> SigningKey { SigningKey::random(&mut rand_core::OsRng) }
+
+fn observe_tx(env: &Env, did: &str, ops: &[Vec<u8>]) -> tari_ootle_transaction::Transaction {
+    env.test.transaction().call_method(env.reg, "observe_chain", args![did.to_string(), bytes_list(ops)]).build_and_seal(&env.who.key)
+}
+fn observe_ok(env: &mut Env, did: &str, ops: &[Vec<u8>]) {
+    let tx = observe_tx(env, did, ops);
+    let b = env.who.badge.clone();
+    env.test.execute_expect_success(tx, vec![b]);
+}
+fn resolve_tx(env: &Env, did: &str, seen: &[Vec<u8>], new: &[Vec<u8>]) -> tari_ootle_transaction::Transaction {
+    env.test.transaction().call_method(env.reg, "resolve_fork", args![did.to_string(), bytes_list(seen), bytes_list(new)]).build_and_seal(&env.who.key)
+}
+/// A fork of `n` operations off the genesis, signed with a key the genesis named.
+fn fork_of(genesis: &[u8], first_signer: &SigningKey, repo: &SigningKey, n: usize) -> Vec<Vec<u8>> {
+    let mine = new_key();
+    let mut ops = vec![genesis.to_vec()];
+    for i in 0..n {
+        let signer = if i == 0 { first_signer } else { &mine };
+        let op = plc_op(Some(ops.last().unwrap()), &mine, repo, signer);
+        ops.push(op);
+    }
+    ops
+}
+
+#[test]
+fn a_longer_fork_from_a_rotated_away_key_is_refused() {
+    let mut env = env_with(0, 20_000);
+    let mut acct = Account::new();
+    let stolen = acct.rotation_key.clone();
+    let genesis = acct.ops[0].clone();
+    // The account rotates to a new rotation key, and that's observed.
+    let next = new_key();
+    let repo = new_key();
+    acct.ops.push(plc_op(Some(&genesis), &next, &repo, &stolen));
+    acct.repo_key = repo;
+    acct.rotation_key = next;
+    open(&mut env, &acct.did);
+    observe_ok(&mut env, &acct.did, &acct.ops);
+    let w = user(&mut env.test);
+    bind_ok(&mut env, &acct, &w, "3jaaaaaaaaaaa");
+
+    // Whoever kept the old key signs a longer chain. Every signature on it is valid.
+    let thief_repo = new_key();
+    let fork = fork_of(&genesis, &stolen, &thief_repo, 5);
+    let mut thief = Account { did: acct.did.clone(), ops: fork.clone(), repo_key: thief_repo, rotation_key: stolen.clone() };
+    let tx = observe_tx(&env, &acct.did, &fork);
+    fail_with(&mut env, tx, "stale operation chain");
+    assert_eq!(floor(&mut env, &acct.did), 2, "the fork moved nothing");
+
+    // Nor can it link the account to the thief's wallet.
+    let tw = user(&mut env.test);
+    let post = bind_post(&mut env, &thief, &tw, "3jbbbbbbbbbbb");
+    let tx = bind_tx(&env, &thief, &tw, &post);
+    fail_with(&mut env, tx, "stale operation chain");
+    assert_eq!(bound(&mut env, &acct.did), Some(w.account));
+
+    // The real account carries on as usual, and its next rotation still counts.
+    let (real_rot, real_repo) = (acct.rotation_key.clone(), new_key());
+    let op = plc_op(Some(acct.ops.last().unwrap()), &real_rot, &real_repo, &real_rot);
+    acct.ops.push(op);
+    observe_ok(&mut env, &acct.did, &acct.ops);
+    assert_eq!(floor(&mut env, &acct.did), 3);
+    thief.ops.truncate(1);
+}
+
+#[test]
+fn re_encoding_an_operation_is_not_a_different_chain() {
+    let mut env = env_with(5, 20_000);
+    let mut acct = Account::new();
+    acct.rotate();
+    open(&mut env, &acct.did);
+    let w = user(&mut env.test);
+    bind_ok(&mut env, &acct, &w, "3jaaaaaaaaaaa");
+    // The signature's length written the long way: the operation still verifies, and its bytes differ.
+    let last = acct.ops.last().unwrap();
+    let at = last.windows(5).position(|x| x == [0x63, b's', b'i', b'g', 0x78]).expect("the sig field");
+    assert_eq!(last[at + 5], 86);
+    let mut respelled = last[..at + 4].to_vec();
+    respelled.extend_from_slice(&[0x79, 0x00, 86]);
+    respelled.extend_from_slice(&last[at + 6..]);
+    let mut ops = acct.ops.clone();
+    *ops.last_mut().unwrap() = respelled;
+    let tx = env.test.transaction().call_method(env.reg, "challenge_bind", args![acct.did.clone(), bytes_list(&ops)]).build_and_seal(&env.who.key);
+    fail_with(&mut env, tx, "already relies on");
+}
+
+#[test]
+fn a_higher_priority_key_takes_back_an_account_and_a_lower_one_cannot() {
+    let mut env = env_with(0, 20_000);
+    let (hi, lo, repo) = (new_key(), new_key(), new_key());
+    let genesis = plc_op_keys(None, &[&hi, &lo], &repo, &hi);
+    let did = format!("did:plc:{}", &base32(&sha(&genesis))[..24]);
+    open(&mut env, &did);
+
+    // The lower key gets in first: its fork is what's pinned, and a link is made under it.
+    let thief_repo = new_key();
+    let fork = fork_of(&genesis, &lo, &thief_repo, 3);
+    observe_ok(&mut env, &did, &fork);
+    let thief = Account { did: did.clone(), ops: fork.clone(), repo_key: thief_repo, rotation_key: lo.clone() };
+    let tw = user(&mut env.test);
+    bind_ok(&mut env, &thief, &tw, "3jzzzzzzzzzzz");
+    assert_eq!(bound(&mut env, &did), Some(tw.account));
+
+    // The real chain, signed with the higher key, is shorter and can't simply be observed.
+    let real_repo = new_key();
+    let real = vec![genesis.clone(), plc_op_keys(Some(&genesis), &[&hi, &lo], &real_repo, &hi)];
+    let tx = observe_tx(&env, &did, &real);
+    fail_with(&mut env, tx, "stale operation chain");
+
+    // A chain that isn't the pinned one can't be named as it, and a prefix isn't a fork.
+    let tx = resolve_tx(&env, &did, &real, &real);
+    fail_with(&mut env, tx, "the chain already seen");
+    let tx = resolve_tx(&env, &did, &fork, &fork[..1].to_vec());
+    fail_with(&mut env, tx, "outrank");
+
+    // It wins where they split: the thief's link goes, and so does the high record key that would block a new one.
+    let tx = resolve_tx(&env, &did, &fork, &real);
+    let b = env.who.badge.clone();
+    env.test.execute_expect_success(tx, vec![b]);
+    assert_eq!(floor(&mut env, &did), 2);
+    assert_eq!(bound(&mut env, &did), None);
+    let owner = Account { did: did.clone(), ops: real.clone(), repo_key: real_repo, rotation_key: hi.clone() };
+    let w = user(&mut env.test);
+    bind_ok(&mut env, &owner, &w, "3jaaaaaaaaaaa");
+    assert_eq!(bound(&mut env, &did), Some(w.account));
+
+    // Beating some other chain proves nothing: the one it beats has to be the one pinned. Here a new chain outranks the
+    // lower key's fork, but that fork lost long ago, and naming it mustn't let anything replace the real pin.
+    let other = vec![genesis.clone(), plc_op_keys(Some(&genesis), &[&hi, &lo], &new_key(), &hi)];
+    let tx = resolve_tx(&env, &did, &fork, &other);
+    fail_with(&mut env, tx, "the chain already seen");
+    assert_eq!(bound(&mut env, &did), Some(w.account));
+
+    // The lower key can't take it back, however long its chain.
+    let tx = resolve_tx(&env, &did, &real, &fork);
+    fail_with(&mut env, tx, "outrank");
+    let tx = observe_tx(&env, &did, &fork);
+    fail_with(&mut env, tx, "stale operation chain");
 }

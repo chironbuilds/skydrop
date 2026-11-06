@@ -989,3 +989,122 @@ fn a_new_account_opens_its_record_and_claims_in_one_transaction() {
     s.test.execute_expect_success(tx, vec![u.badge.clone()]);
     assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
 }
+
+#[test]
+fn a_longer_fork_from_a_rotated_away_key_cannot_claim() {
+    let mut s = setup();
+    let camp = create(&mut s, &terms(vec![(0, TARGET.into(), 0)]));
+    let mut acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
+    let stolen = acct.rotation_key.clone();
+    let genesis = acct.ops[0].clone();
+    let (next, repo) = (SigningKey::random(&mut rand_core::OsRng), SigningKey::random(&mut rand_core::OsRng));
+    acct.ops.push(plc_op(Some(&genesis), &next, &repo, &stolen));
+    acct.repo_key = repo;
+    acct.rotation_key = next;
+    let reporter = user(&mut s.test);
+    let tx = s.test.transaction().call_method(s.registry, "observe_chain", args![acct.did.clone(), bytes_list(&acct.ops)]).build_and_seal(&reporter.key);
+    s.test.execute_expect_success(tx, vec![reporter.badge.clone()]);
+
+    // Three operations against the two seen, all properly signed, naming the thief's own repo key.
+    let (mine, thief_repo) = (SigningKey::random(&mut rand_core::OsRng), SigningKey::random(&mut rand_core::OsRng));
+    let mut ops = vec![genesis.clone()];
+    ops.push(plc_op(Some(&genesis), &mine, &thief_repo, &stolen));
+    let op = plc_op(Some(ops.last().unwrap()), &mine, &thief_repo, &mine);
+    ops.push(op);
+    let thief = Account { did: acct.did.clone(), ops, repo_key: thief_repo, rotation_key: mine, rev: acct.rev };
+    let u = user(&mut s.test);
+    let code = code_of(&mut s.test, camp, &thief, &u, 0);
+    let (cp, like) = (thief.post(&code, R1), thief.like(TARGET, R2));
+    let tx = claim_tx(&s.test, camp, &thief, &u, &cp, &simple(vec![&like]));
+    fail_with(&mut s.test, tx, u.badge.clone(), "stale operation chain");
+}
+
+#[test]
+fn only_the_linked_wallet_can_name_a_referrer_on_a_linked_claim() {
+    let mut s = setup();
+    let mut t = terms(vec![(0, TARGET.into(), 0)]);
+    t.bonus = 200_000;
+    t.max_referrals = 5;
+    let camp = create(&mut s, &t);
+    // Someone has already claimed, so they can be named.
+    let (bot, ub) = (Account::new(), user(&mut s.test));
+    ensure_open(&mut s.test, s.registry, &bot.did);
+    let code = code_of(&mut s.test, camp, &bot, &ub, 0);
+    let (bcp, blike) = (bot.post(&code, R1), bot.like(TARGET, R2));
+    claim_ok(&mut s, camp, &bot, &ub, &bcp, &simple(vec![&blike]));
+
+    let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
+    let owner = user(&mut s.test);
+    let bind: String = s.test.call_method(s.registry, "expected_bind_text", args![acct.did.clone(), owner.account, owner.id], vec![]);
+    let bp = acct.post(&bind, R1);
+    let tx = s.test.transaction()
+        .call_method(s.registry, "bind", args![acct.did.clone(), owner.account, owner.id, bytes_list(&acct.ops), Bytes::from_vec(bp.commit.clone()), bytes_list(&bp.nodes), Bytes::from_vec(bp.record.clone()), bp.rkey.clone()])
+        .build_and_seal(&owner.key);
+    s.test.execute_expect_success(tx, vec![owner.badge.clone()]);
+
+    let like = acct.like(TARGET, R2);
+    let linked = |test: &TemplateTest, sender: &U, referrer: Option<String>| {
+        let (commits, nodes, records, rkeys) = proofs(&[&like]);
+        test.transaction()
+            .call_method(camp, "claim_linked", args![acct.did.clone(), bytes_list(&acct.ops), commits, nodes, records, rkeys, Vec::<Vec<Bytes>>::new(), 0u64, Vec::<Bytes>::new(), referrer])
+            .build_and_seal(&sender.key)
+    };
+    // The bot claims for this account and names itself: refused, and nothing is paid.
+    let before = bal(&mut s.test, &ub);
+    let tx = linked(&s.test, &ub, Some(bot.did.clone()));
+    s.test.execute_expect_failure(tx, vec![ub.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &ub), before);
+
+    // The linked wallet may name who really invited it.
+    let owner_before = bal(&mut s.test, &owner);
+    let tx = linked(&s.test, &owner, Some(bot.did.clone()));
+    s.test.execute_expect_success(tx, vec![owner.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &ub), before + Amount::from(200_000u64));
+    assert_eq!(bal(&mut s.test, &owner), owner_before + Amount::from(MILLION));
+}
+
+#[test]
+fn a_vouch_cannot_be_replayed_in_a_later_round() {
+    let mut s = setup();
+    let mut org = Account::new();
+    ensure_open(&mut s.test, s.registry, &org.did);
+    let mut t = terms(vec![(7, org.did.clone(), 0)]);
+    t.rounds = 2;
+    t.round_epochs = 10;
+    let camp = create(&mut s, &t);
+    let acct = Account::new();
+    ensure_open(&mut s.test, s.registry, &acct.did);
+    let u = user(&mut s.test);
+    let code0 = code_of(&mut s.test, camp, &acct, &u, 0);
+    let cp0 = acct.post(&code0, R1);
+    let follow = org.follow(&acct.did, R3);
+    let vouch = vec![bytes_list(&org.ops)];
+    let c = Claim { rules: vec![&follow], vouch: vouch.clone(), amount: 0, path: vec![], referrer: None };
+    claim_ok(&mut s, camp, &acct, &u, &cp0, &c);
+
+    set_epoch(&mut s.test, 20);
+    let code1 = code_of(&mut s.test, camp, &acct, &u, 1);
+    let cp1 = acct.post(&code1, R2);
+    let round = |test: &TemplateTest, proof: &Post| {
+        let (commits, nodes, records, rkeys) = proofs(&[proof]);
+        test.transaction()
+            .call_method(camp, "claim_round", args![
+                acct.did.clone(), u.id, bytes_list(&acct.ops), commits, nodes, records, rkeys, vouch.clone(),
+                Bytes::from_vec(cp1.commit.clone()), bytes_list(&cp1.nodes), Bytes::from_vec(cp1.record.clone()), cp1.rkey.clone(),
+                0u64, Vec::<Bytes>::new()
+            ])
+            .build_and_seal(&u.key)
+    };
+    // The voucher may have unfollowed since. The old proof can't show otherwise, so it isn't enough.
+    let tx = round(&s.test, &follow);
+    fail_with(&mut s.test, tx, u.badge.clone(), "not newer than the last round");
+    // A newer commit that still holds the follow is.
+    org.rev += 1_000_000;
+    let fresh = org.follow(&acct.did, R3);
+    let before = bal(&mut s.test, &u);
+    let tx = round(&s.test, &fresh);
+    s.test.execute_expect_success(tx, vec![u.badge.clone()]);
+    assert_eq!(bal(&mut s.test, &u), before + Amount::from(MILLION));
+}

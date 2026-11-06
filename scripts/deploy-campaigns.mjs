@@ -23,7 +23,10 @@ const dir = resolve(process.argv[2] ?? ".");
 const go = process.argv[3] === "go";
 // A third argument, "registry-only", publishes just the LinkRegistry and one instance of it.
 const registryOnly = process.argv[4] === "registry-only";
-const TEMPLATES = [["LinkRegistry", "bsky_link_registry"], ["Campaign", "bsky_campaign"], ["Verifier", "bsky_verifier"]].slice(0, registryOnly ? 1 : 3);
+// Publish fees rise with the square of a template's size, so run wasm-opt -Oz first. ONLY=Campaign,Verifier publishes just
+// those, and LINK_TEMPLATE=<address> instantiates a registry from a template already published.
+const ONLY = process.env.ONLY?.split(",");
+const TEMPLATES = [["LinkRegistry", "bsky_link_registry"], ["Campaign", "bsky_campaign"], ["Verifier", "bsky_verifier"]].slice(0, registryOnly ? 1 : 3).filter(([n]) => !ONLY || ONLY.includes(n));
 
 const { entropy } = JSON.parse(readFileSync("publisher.json", "utf8"));
 const { ownerSecret, viewSecret } = deriveAccountKeys(fromHex(entropy), 0);
@@ -48,20 +51,20 @@ if (!go) {
   process.exit(0);
 }
 
-async function submit(build) {
+async function submit(build, maxFee = 6_300_000n) {
   const maxEpoch = await resolveMaxEpoch(provider);
-  const b = build(TransactionBuilder.new(network, maxEpoch)).feeTransactionPayFromComponent(account, 12_000_000n);
+  const b = build(TransactionBuilder.new(network, maxEpoch)).feeTransactionPayFromComponent(account, maxFee);
   b.addInput({ substate_id: account, version: null });
   for (const v of vaults) b.addInput({ substate_id: v, version: null });
   const res = await sendTransaction(provider, signer, b.buildUnsignedTransaction(), { timeoutMs: 240_000 });
   const fin = res?.result?.Finalized;
   const exec = typeof fin?.execution_result === "string" ? decodeExecuteResult(fin.execution_result) : fin?.execution_result;
   const accept = exec?.finalize?.result?.Accept;
-  if (!accept) throw new Error(`Rejected: ${JSON.stringify(exec?.finalize?.result ?? res?.result, (_, x) => (typeof x === "bigint" ? x.toString() : x)).slice(0, 600)}`);
+  if (!accept) { const t = JSON.stringify(exec?.finalize?.result ?? res?.result, (_, x) => (typeof x === "bigint" ? x.toString() : x)); throw new Error(`Rejected: ${t.slice(-500)}`); }
   return (accept.up_substates ?? []).map(([id]) => String(id));
 }
 
-const out = {};
+const out = { LinkRegistry: process.env.LINK_TEMPLATE };
 for (const [name, file] of TEMPLATES) {
   const wasm = readFileSync(join(dir, `${file}.wasm`));
   const ups = await submit((b) => b.publishTemplate(wasm.toString("base64")));
@@ -73,7 +76,7 @@ const uintLiteral = (n) => {
   const hex = n < 24 ? n.toString(16).padStart(2, "0") : n < 256 ? `18${n.toString(16).padStart(2, "0")}` : n < 65536 ? `19${n.toString(16).padStart(4, "0")}` : `1a${n.toString(16).padStart(8, "0")}`;
   return { Literal: hex };
 };
-const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry, functionName: "new" }, [uintLiteral(0), uintLiteral(20000)]));
+const ups = await submit((b) => b.callFunction({ templateAddress: out.LinkRegistry, functionName: "new" }, [uintLiteral(0), uintLiteral(20000)]), 300_000n);
 const registry = ups.find((id) => id.startsWith("component_") && id !== account);
 console.log("\nFor web-atproto/src/data/deployment.ts:");
 console.log(`  LinkRegistry template: ${out.LinkRegistry}`);

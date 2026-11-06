@@ -78,7 +78,7 @@ mod service_pay {
     pub struct ServicePay {
         escrow: ComponentAddress,
         badge_vault: Vault,
-        /// Whose `chain_floor` a user's operation chain must reach (a rotated-away key issues no valid token).
+        /// Whose `chain_pin` a user's operation chain must reach (a rotated-away key issues no valid token).
         link_registry: ComponentAddress,
         /// did -> sha256 (hex) of every token already redeemed for it.
         spent: BTreeMap<String, BTreeSet<String>>,
@@ -98,6 +98,7 @@ mod service_pay {
                 change_vault: Vault::new_empty(resource),
                 change: BTreeMap::new(),
             })
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }
@@ -122,8 +123,8 @@ mod service_pay {
             assert!(token.len() <= MAX_TOKEN_LEN, "token too large");
             let ops_s: Vec<&[u8]> = ops.iter().map(|b| b.as_slice()).collect();
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![did.clone()]);
-            assert!(chain.len >= floor, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![did.clone()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
 
             let claims = atp_verify::jwt::verify_service_auth(&token, &chain.signing_key).expect("invalid service-auth token");
             assert!(claims.iss == did, "the token was not issued by this account");

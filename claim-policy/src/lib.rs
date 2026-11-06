@@ -195,7 +195,7 @@ mod claim_policy {
         escrow: ComponentAddress,
         badge_vault: Vault,
         /// The LinkRegistry this policy consults: where a bound account's payout goes, and the longest
-        /// operation chain seen for each account (its `chain_floor`). Fixed at construction — a setter would
+        /// operation chain seen for each account (its `chain_pin`). Fixed at construction — a setter would
         /// leave a window in which anyone could point the policy at a registry of their own.
         link_registry: ComponentAddress,
         /// One NFT per DID.
@@ -236,6 +236,7 @@ mod claim_policy {
                 full_vaults: Vec::new(),
                 accounts: 0,
             })
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(AccessRules::allow_all())
             .create()
         }
@@ -289,10 +290,10 @@ mod claim_policy {
         }
 
         /// Refuses a chain shorter than the longest this policy or the registry has seen for `did`.
-        fn require_fresh_chain(&self, did: &str, len: u32) {
-            assert!(len >= self.read(did).known_len, "stale operation chain: a longer one has been seen");
-            let floor: u32 = ComponentManager::get(self.link_registry).call("chain_floor", args![did.to_string()]);
-            assert!(len >= floor, "stale operation chain: a longer one has been seen");
+        fn require_fresh_chain(&self, did: &str, chain: &atp_verify::ChainInfo) {
+            assert!(chain.len >= self.read(did).known_len, "stale operation chain: a longer one has been seen");
+            let (floor, floor_tip): (u32, Bytes) = ComponentManager::get(self.link_registry).call("chain_pin", args![did.to_string()]);
+            assert!(chain.extends(floor, floor_tip.as_slice()), "stale operation chain: a longer or different one has been seen");
         }
 
         /// Starts a claim for a LINKED account: the post needs no claim code, because the payout can only go
@@ -436,7 +437,7 @@ mod claim_policy {
             let ops_s = slices(&ops, MAX_OPS);
             let nodes = slices(&mst_nodes, MAX_NODES);
             let chain = atp_verify::verify_plc_chain(&did, &ops_s).expect("invalid operation chain");
-            self.require_fresh_chain(&did, chain.len);
+            self.require_fresh_chain(&did, &chain);
             atp_verify::verify_record(&did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, &rkey)
                 .expect("invalid repo proof");
             let text = atp_verify::record_text(record.as_slice()).expect("record has no text");
@@ -643,7 +644,7 @@ mod claim_policy {
             let ops_s = slices(ops, MAX_OPS);
             let nodes = slices(mst_nodes, MAX_NODES);
             let chain = atp_verify::verify_plc_chain(did, &ops_s).expect("invalid operation chain");
-            self.require_fresh_chain(did, chain.len);
+            self.require_fresh_chain(did, &chain);
             atp_verify::verify_record(did, &chain.signing_key, commit.as_slice(), &nodes, record.as_slice(), COLLECTION, rkey)
                 .expect("invalid repo proof");
             let text = atp_verify::record_text(record.as_slice()).expect("record has no text");

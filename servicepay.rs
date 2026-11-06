@@ -272,6 +272,13 @@ fn each_service_auth_token_pays_one_call_to_the_fixed_payout() {
     assert_eq!(escrowed(&mut env), Amount::from(2_500u64));
     // A token pays once.
     redeem(&mut env, &relayer, &acct, &t1, provider.account, false);
+    // Its signature spelled another way is the same token. A signature ends in 4 spare bits, which must be zero.
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let last = ALPHABET.iter().position(|c| *c == *t1.as_bytes().last().unwrap()).unwrap();
+    assert_eq!(last % 16, 0);
+    let respelled = format!("{}{}", &t1[..t1.len() - 1], ALPHABET[last + 1] as char);
+    redeem(&mut env, &relayer, &acct, &respelled, provider.account, false);
+    assert_eq!(balance(&mut env, provider.account), start + Amount::from(1_000u64));
     // A payout other than the one the user fixed is refused, even with a fresh valid token.
     redeem(&mut env, &relayer, &acct, &token(&acct, PROVIDER, None, 2), relayer.account, false);
     // A token addressed to another service is refused.
