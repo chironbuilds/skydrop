@@ -333,6 +333,7 @@ export async function readLink(did: string, epoch: number, registry: string = DE
 }
 
 const REASONS: [RegExp, string][] = [
+  [/uses the V1 layout|Failed to load template/i, "This campaign was made before the Ootle 0.50 network upgrade. Its contract no longer runs, so it can't pay out."],
   [/does not contain the bind code/i, "That post doesn't contain this wallet's link code."],
   [/already used to bind/i, "That post has already been used. Write a new one."],
   [/standard Tari account can be linked/i, "Only a standard Tari account can be linked."],

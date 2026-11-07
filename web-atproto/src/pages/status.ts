@@ -9,6 +9,7 @@ const ROADMAP: [string, "done" | "next" | "later", string][] = [
   ["Browser build of the verifier", "done", "Powers the live proof and eligibility checks on this site."],
   ["Publish Campaign and LinkRegistry on Esmeralda", "done", "Live on the testnet. The Escrow and ClaimPolicy aren't published yet."],
   ["Fund and claim from the browser", "done", "Creating, topping up and claiming have run live on Esmeralda with the same transactions the sites build. Referral links ran the same way, with the bonus landing in a second account. Linking a wallet and claiming through the link ran too, with no claim post, and paid the linked account whoever sent it. So did allocation lists, either/or steps, two kinds of vouch, a second round, extending and taking back. These used throwaway identities, not real Bluesky accounts."],
+  ["Move the contracts to Ootle 0.50.1", "done", "0.50 stopped loading templates built on older libraries, so Campaign, LinkRegistry and Verifier were rebuilt and republished. Earlier campaigns can no longer pay out."],
   ["Move Skydrop's app to 0.49", "next", "skydrop.tari.mw still targets contracts from before the network reset."],
   ["Per-account Escrow ledgers", "done", "Nobody can fill the shared Escrow with dust any more. Nothing shared grows with deposits."],
   ["Per-account LinkRegistry records", "done", "Nobody can bloat the registry to raise claim costs or stop key rotations being recorded."],

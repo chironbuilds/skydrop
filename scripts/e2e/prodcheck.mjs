@@ -14,7 +14,7 @@ for (const [n, tag] of [[2000, "p"], [20000, "q"]]) {
     console.log(`  read back: ${b.status} ${(await b.json()).length} accounts, CORS ${b.headers.get("access-control-allow-origin")}`);
   }
 }
-const NEW = "template_d911cfc348ffb30eb046776e4746d3880898f059bae997c2735447a4f0866060";
+const NEW = "template_458f453db349adef15c5ed113f5df6291f8b74c7f5ece155c38575e49600b36f";
 for (const page of ["https://skydrop.tari.mw/quests", "https://atproto.tari.mw/"]) {
   const origin = new URL(page).origin;
   const html = await (await fetch(page)).text();

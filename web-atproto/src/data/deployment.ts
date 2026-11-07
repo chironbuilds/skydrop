@@ -8,14 +8,17 @@ export interface LiveCampaign { component: string; name: string }
 
 export const DEPLOYMENT = {
   network: "Esmeralda testnet",
-  ootle: "0.49.2",
+  ootle: "0.50.1",
   indexer: "https://ootle-indexer-a.tari.com",
-  campaignTemplate: "template_d911cfc348ffb30eb046776e4746d3880898f059bae997c2735447a4f0866060",
-  linkRegistry: "component_5825a4a3f5c5703a051f46e3c390b62165e8b3029e9148f39f2a54ebe12c2918",
-  verifier: "template_1c0d23cd6b40ca2feaa098991f0746c3f88040c8b2d0bade227ee429168b923a",
+  campaignTemplate: "template_458f453db349adef15c5ed113f5df6291f8b74c7f5ece155c38575e49600b36f",
+  linkRegistry: "component_c69b5699aeeb7292468b988a34bfd0947694d19514a1fb0762cd0542bcc21dce",
+  verifier: "template_17c2c32b010972b85f8822509b1e921910a54e63bd9b4a9b29b6af78d0681824",
   live: [] as LiveCampaign[],
-  /** Campaigns made before the 2026-11-07 fixes. They still read and pay, on the registry they were made with. New ones can't be created. */
-  legacy: [{ campaignTemplate: "template_40d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b72", linkRegistry: "component_aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371" }],
+  /** Campaigns made before Ootle 0.50. Their state can still be read, but the engine no longer loads their code, so they can't pay out or be closed. */
+  legacy: [
+    { campaignTemplate: "template_40d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b72", linkRegistry: "component_aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371" },
+    { campaignTemplate: "template_d911cfc348ffb30eb046776e4746d3880898f059bae997c2735447a4f0866060", linkRegistry: "component_5825a4a3f5c5703a051f46e3c390b62165e8b3029e9148f39f2a54ebe12c2918" },
+  ],
 };
 
 /** Where participants track campaigns and claim. atproto.tari.mw is for creating them. */

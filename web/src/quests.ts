@@ -911,7 +911,7 @@ function focusArrived(): void {
 /** Open campaigns made with this contract, read back from the chain. Those paying a list only show to accounts on it. */
 async function loadOpen(): Promise<void> {
   try {
-    openCampaigns = (await listCampaigns()).filter((c) => phaseOf(c) !== "closed" && (c.root ? c.balance > 0n : c.balance >= c.reward && c.reward > 0n));
+    openCampaigns = (await listCampaigns()).filter((c) => !c.legacy && phaseOf(c) !== "closed" && (c.root ? c.balance > 0n : c.balance >= c.reward && c.reward > 0n));
   } catch {
     openCampaigns = [];
   }

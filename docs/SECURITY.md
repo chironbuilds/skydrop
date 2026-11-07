@@ -128,3 +128,21 @@ Other changes this makes: `observe_chain` now refuses a chain that doesn't carry
 - Allocation trees separate leaves from inner nodes, so a node can't pose as a leaf. Membership proofs walk hash-authenticated nodes, and CBOR reads are bounds-checked with limited depth.
 - Share pages and cards escape everything from the contract. A malicious name is covered by a test. Lists are stored under their own root and re-checked by readers.
 - `npm audit` finds nothing in production dependencies of either site. No keys or `.env` files are tracked or in git history.
+
+## Republished for Ootle 0.50.1 (2026-11-07)
+
+0.50 stopped loading templates built on older libraries ("the template definition uses the V1 layout"), so every earlier Campaign and LinkRegistry stopped working. No contract source changed: the same code was rebuilt on `tari_template_lib` 0.38. The engine tests pass on 0.50.1 (Campaign 23, LinkRegistry 11).
+
+| Contract | Address |
+|---|---|
+| Campaign template | `template_458f453db349adef15c5ed113f5df6291f8b74c7f5ece155c38575e49600b36f` |
+| LinkRegistry template | `template_d6c377ee52be2114f6b0e3697822277a208014d15b7b07c868073f142c8a668e` |
+| LinkRegistry component | `component_c69b5699aeeb7292468b988a34bfd0947694d19514a1fb0762cd0542bcc21dce` |
+| Verifier template | `template_17c2c32b010972b85f8822509b1e921910a54e63bd9b4a9b29b6af78d0681824` |
+
+Consequences:
+
+- **Earlier campaigns can't pay out or be closed.** Their state still reads, but their code doesn't load, so any funds left in them are stuck. The sites hide them from browse lists and explain the error.
+- **Earlier wallet links don't carry over.** They live on the old registry, so an account links again on the new one.
+
+Run live on these addresses: create, claim, repeat claim refused, link, linked claim, referral (stranger, self and over-limit refused), batch, allocations, either/or, vouches, second round, third round refused, top up, and close. Not yet run after protocol V1 activates at epoch 12951.

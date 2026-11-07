@@ -6,7 +6,7 @@ import puppeteer from "puppeteer-core";
 const CREATOR = process.argv[2] || "http://localhost:5196";
 const SKYDROP = process.argv[3] || "http://localhost:5198/quests.html";
 const INDEXER = "https://ootle-indexer-a.tari.com";
-const DEPLOY_REGISTRY = "component_5825a4a3f5c5703a051f46e3c390b62165e8b3029e9148f39f2a54ebe12c2918";
+const DEPLOY_REGISTRY = "component_c69b5699aeeb7292468b988a34bfd0947694d19514a1fb0762cd0542bcc21dce";
 const OUT = new URL("./prod-shots/", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1");
 const browser = await puppeteer.launch({ executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: "new", args: ["--no-sandbox"] });
 let failed = 0;
@@ -18,7 +18,11 @@ const KEY = "f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19";
 const COMPONENT = "component_91ee41196af2f9598f29a102f34c3467d7dc04d6e425ab2ec4d1b314563f94f9";
 const VAULT_ID = "vault_9105ef345b1d8150f4640222f0fef12dfff24a7327882c47be60be57cdb05006";
 const RECEIPTS = "91fdb97ba4f9dff26404eadc3edd7f2076dc25f09ef7ddec8553a04609f1e48d";
-const SUBSTATE = "8200818285582040d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b7282008082a08200804191820080819771536b7964726f70206c697665207465737478204120636f6e747261637420746573742e204e6f7468696e6720746f207365652e5820f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19d88458209105ef345b1d8150f4640222f0fef12dfff24a7327882c47be60be57cdb05006d883582091fdb97ba4f9dff26404eadc3edd7f2076dc25f09ef7ddec8553a04609f1e48dd884582091f4585a5cfadf26b83de60cc5cac57e01b60a73092c24dd1462f0d133ea386dd8805820aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371810081784661743a2f2f6469643a706c633a6161616161616161616161616161616161616161616161612f6170702e62736b792e666565642e706f73742f336b616161616161616161616181008160810019c3504001000000193251193254000000";
+const RECORDED = "8200818285582040d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b7282008082a08200804191820080819771536b7964726f70206c697665207465737478204120636f6e747261637420746573742e204e6f7468696e6720746f207365652e5820f2c27a21e63e7709434bec061bbb76bdb1d49717f18daec8a1574b3350ffab19d88458209105ef345b1d8150f4640222f0fef12dfff24a7327882c47be60be57cdb05006d883582091fdb97ba4f9dff26404eadc3edd7f2076dc25f09ef7ddec8553a04609f1e48dd884582091f4585a5cfadf26b83de60cc5cac57e01b60a73092c24dd1462f0d133ea386dd8805820aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371810081784661743a2f2f6469643a706c633a6161616161616161616161616161616161616161616161612f6170702e62736b792e666565642e706f73742f336b616161616161616161616181008160810019c3504001000000193251193254000000";
+// Recorded before Ootle 0.50, then pointed at the current template and registry, because the sites hide older campaigns.
+const SUBSTATE = RECORDED
+  .replaceAll("40d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b72", "458f453db349adef15c5ed113f5df6291f8b74c7f5ece155c38575e49600b36f")
+  .replaceAll("aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371", DEPLOY_REGISTRY.slice(10));
 const VAULT = "82028182820383d883582001010101010101010101010101010101010101010101010101010101010101011a00030d400000";
 const b64 = (hex) => Buffer.from(hex, "hex").toString("base64");
 const sha = (x) => createHash("sha256").update(x).digest();
@@ -155,7 +159,7 @@ console.log("The live campaign page");
   check(!(await text(stranger)).includes("Manage your campaign"), "someone else doesn't see the controls");
   await stranger.close();
 
-  const fake = await openPage({ [`/substates/${COMPONENT}`]: { state: { up: { substate: b64(SUBSTATE.replace("40d3f8b2", "deadbeef")) } } } });
+  const fake = await openPage({ [`/substates/${COMPONENT}`]: { state: { up: { substate: b64(SUBSTATE.replace("458f453d", "deadbeef")) } } } });
   await fake.goto(`${CREATOR}/c/${COMPONENT}`, { waitUntil: "networkidle2" });
   check(await waitText(fake, "isn't a campaign made with this contract"), "a look-alike contract is refused");
   await fake.close();
@@ -243,7 +247,7 @@ console.log("Linked wallets and invites, through to the transaction");
   const OTHER_ACCOUNT = "217fc26410d1d2d6bd1cb18a36f4268ae6a2792348e5e93429642ca59265af4b";
   const OWN_ACCOUNT = "60af8d885a000f52cbde41475c426f7ee8beb270cfb7687238b2c97bcd03b311";
   const recordId = (d) => `/substates/nft_${REG_RECORDS}_uuid_${sha(d).toString("hex")}`;
-  // The old campaign claims through its own registry. The page's "wallet linked" line reads the current one.
+  // The link record itself is a real one from the earlier registry, served as if it were on the current one.
   const newReg = await (await fetch(`${INDEXER}/substates/${DEPLOY_REGISTRY}`)).json();
   const NEW_RECORDS = Buffer.from(newReg.state.up.substate, "base64").toString("hex").match(/8800d8835820([0-9a-f]{64})/)[1];
   const newId = (d) => `/substates/nft_${NEW_RECORDS}_uuid_${sha(d).toString("hex")}`;
@@ -325,7 +329,7 @@ console.log("Linked wallets and invites, through to the transaction");
   check(!sent.includes('"claim"'), "not the post-based claim");
   check(sent.includes(`component_${OTHER_ACCOUNT}`), "declaring the linked account as an input");
   check(sent.includes(`nft_${RECEIPTS}_uuid_${sha(REF).toString("hex")}`), "and the inviter's receipt");
-  check(sent.includes(`nft_${REG_RECORDS}_uuid_${sha(BSKY).toString("hex")}`), "and this account's link record");
+  check(sent.includes(`nft_${NEW_RECORDS}_uuid_${sha(BSKY).toString("hex")}`), "and this account's link record");
   check(q.errors.length === 0, "no page errors", q.errors.join(" | ").slice(0, 200));
   await q.close();
 

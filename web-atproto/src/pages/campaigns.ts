@@ -36,7 +36,7 @@ function liveCampaigns(): HTMLElement {
     return box;
   }
   void (async () => {
-    const open = (await listCampaigns()).filter((c) => phaseOf(c) !== "closed" && c.balance > 0n);
+    const open = (await listCampaigns()).filter((c) => !c.legacy && phaseOf(c) !== "closed" && c.balance > 0n);
     replace(box, open.length
       ? [
           h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("p", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`)))),
