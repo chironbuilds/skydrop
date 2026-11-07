@@ -5,20 +5,21 @@
 <style>
 /* Layout: a long engineering deep-dive. One readable column with a contents list; code, tables and diagrams run wider. */
 :root {
-  --bg: #fbfcfd; --fg: #17212b; --muted: #55636f; --line: #d5dde3; --panel: #eef3f6; --accent: #0a66c2; --mark: #a3430f; --bar: #2a6f97;
+  --bg: #fbfcfd; --fg: #17212b; --muted: #55636f; --line: #d5dde3; --panel: #eef3f6; --accent: #0a66c2; --mark: #b23a2e; --sky1: #bfe0fb; --sky2: #eaf5fd; --ground: #17324a; --on-ground: #f2f7fb; --on-ground-2: #b9cbd9; --coin: #d99a12; --coin-edge: #8a6209; --good: #17794f; --card: #ffffff;
   --head: "Bitter", Georgia, serif; --body: "Atkinson Hyperlegible", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #11181f; --fg: #e8eef3; --muted: #9db0be; --line: #2f3e4a; --panel: #1a252e; --accent: #6db4f5; --mark: #f0a06d; --bar: #6db4f5; color-scheme: dark; } }
-:root[data-theme="dark"] { --bg: #11181f; --fg: #e8eef3; --muted: #9db0be; --line: #2f3e4a; --panel: #1a252e; --accent: #6db4f5; --mark: #f0a06d; --bar: #6db4f5; color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #11181f; --fg: #e8eef3; --muted: #9db0be; --line: #2f3e4a; --panel: #223039; --accent: #6db4f5; --mark: #f0877a; --sky1: #12324f; --sky2: #16222d; --ground: #0b1a26; --on-ground: #f2f7fb; --on-ground-2: #b9cbd9; --coin: #f0bd4f; --coin-edge: #a87f22; --good: #58cf9b; --card: #18232c; color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #11181f; --fg: #e8eef3; --muted: #9db0be; --line: #2f3e4a; --panel: #223039; --accent: #6db4f5; --mark: #f0877a; --sky1: #12324f; --sky2: #16222d; --ground: #0b1a26; --on-ground: #f2f7fb; --on-ground-2: #b9cbd9; --coin: #f0bd4f; --coin-edge: #a87f22; --good: #58cf9b; --card: #18232c; color-scheme: dark; }
+*, *::before, *::after { box-sizing: border-box; }
 body { background: var(--bg); color: var(--fg); font: 400 1.08rem/1.62 var(--body); }
 article { max-width: 50rem; margin: 0 auto; padding-block: 3.2rem 5rem; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-article > p, article > ul, article > ol, article > h2, article > h3, article > h1, article > nav { max-width: 41rem; }
+article > p, article > ul:not(.tiles), article > ol:not(.story), article > h2, article > h3, article > h1, article > nav { max-width: 41rem; }
 h1 { font: 700 clamp(2.1rem, 6vw, 3.2rem)/1.1 var(--head); letter-spacing: -.015em; margin: 0; text-wrap: balance; }
 .dek { font-size: 1.26rem; line-height: 1.42; color: var(--muted); margin: 1rem 0 0; }
 .meta { font: 400 .84rem/1.5 var(--mono); color: var(--muted); margin: 1rem 0 1.8rem; }
 nav { border-block: 1px solid var(--line); padding-block: .8rem; margin-bottom: 1.6rem; }
 nav b { font: 700 .95rem var(--head); }
-nav ol { margin: .4rem 0 0; padding-left: 1.4rem; columns: 2 16rem; font-size: .98rem; }
+nav ol { margin: .4rem 0 0; padding-left: 1.4rem; columns: 2 16rem; column-gap: 2.2rem; font-size: .98rem; }
 nav li { margin-bottom: .15rem; }
 h2 { font: 700 1.5rem/1.25 var(--head); margin: 2.8rem 0 .6rem; text-wrap: balance; scroll-margin-top: 1rem; }
 h3 { font: 700 1.08rem/1.3 var(--head); margin: 1.6rem 0 .35rem; }
@@ -29,9 +30,10 @@ code { font: 400 .87em var(--mono); background: var(--panel); padding: .06em .28
 pre { font: 400 .84rem/1.5 var(--mono); background: var(--panel); padding: .85rem 1rem; border-radius: 6px; overflow-x: auto; margin: 0 0 1.15rem; }
 pre code { background: none; padding: 0; font-size: 1em; overflow-wrap: normal; }
 pre .c { color: var(--muted); }
-figure { margin: 1.5rem 0 1.7rem; }
-figure img, figure > svg, .wide-svg svg { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }
-figcaption { font-size: .9rem; line-height: 1.42; color: var(--muted); margin-top: .5rem; max-width: 41rem; }
+figure { margin: 1.6rem 0; }
+figure > svg, .wide-svg svg, .hero svg { display: block; width: 100%; height: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+figcaption, .storycap { font: 400 .9rem/1.42 var(--body); color: var(--muted); margin: .5rem 0 0; max-width: 41rem; }
+.visual { margin: 1.6rem 0; }
 .tw { overflow-x: auto; margin: 0 0 1.25rem; }
 table { border-collapse: collapse; width: 100%; font-size: .96rem; line-height: 1.4; }
 th { text-align: left; font-weight: 700; border-bottom: 2px solid var(--fg); padding: .35rem .8rem .35rem 0; white-space: nowrap; }
@@ -44,20 +46,83 @@ li { margin-bottom: .45rem; }
 .d-sub { fill: var(--muted); font-family: var(--body); }
 .d-mono { fill: var(--fg); font-family: var(--mono); }
 .d-box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
-.d-hot { fill: var(--panel); stroke: var(--mark); stroke-width: 2.5; }
-.d-on { fill: var(--panel); stroke: var(--bar); stroke-width: 2.5; }
+.d-on { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+.d-money { fill: var(--panel); stroke: var(--coin); stroke-width: 2; }
+.d-hot { fill: var(--panel); stroke: var(--mark); stroke-width: 2; }
 .d-mark { fill: var(--mark); font-family: var(--mono); }
-.d-line { stroke: var(--muted); stroke-width: 1.8; fill: none; }
-.d-red { stroke: var(--mark); stroke-width: 2; fill: none; stroke-dasharray: 5 4; }
-.d-bar { fill: var(--bar); }
+.d-line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.d-red { stroke: var(--mark); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+.d-bar { fill: var(--coin); }
 .d-grid { stroke: var(--line); stroke-width: 1; }
 .wide-svg { overflow-x: auto; }
 .wide-svg svg { min-width: 42rem; }
+
+.hero { margin: 0 0 1.6rem; }
+.legend { display: flex; flex-wrap: wrap; gap: .3rem 1rem; margin-top: .5rem; font: 400 .9rem var(--body); color: var(--muted); }
+.legend i { display: inline-block; width: .8rem; height: .8rem; border-radius: 3px; margin-right: .35rem; vertical-align: -1px; }
+.ic { width: 30px; height: 30px; flex: none; color: var(--accent); }
+.tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .7rem; margin: 1.6rem 0; padding: 0; list-style: none; }
+.tiles li { margin: 0; }
+.tiles a { display: grid; gap: .4rem; height: 100%; align-content: start; padding: .85rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--fg); text-decoration: none; font-size: .93rem; line-height: 1.28; font-weight: 700; }
+.tiles a:hover, .tiles a:focus-visible { border-color: var(--accent); outline: 1px solid var(--accent); }
+.tiles small { font-weight: 400; color: var(--muted); font-size: .84rem; }
+.story { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .7rem; margin: 1rem 0 .5rem; padding: 0; list-style: none; counter-reset: st; }
+.story li { margin: 0; padding: .85rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; display: grid; gap: .4rem; align-content: start; counter-increment: st; font-size: .92rem; line-height: 1.36; }
+.story li b::before { content: counter(st) ". "; color: var(--accent); }
+.story svg.pic { width: 100%; height: 76px; color: var(--accent); }
+.storycap { font-size: .9rem; color: var(--muted); margin: 0 0 1.5rem; max-width: 41rem; }
+.look { margin: 1.6rem 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.lookbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .7rem .85rem; background: var(--panel); }
+.lookbar b { font-size: .95rem; margin-right: auto; }
+.lookbar button { font: 700 .9rem var(--body); padding: .45rem .8rem; min-height: 40px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.lookbar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--card); }
+.lookbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lookview { padding: .9rem 1rem 1rem; display: grid; gap: .5rem; }
+.lookview[hidden] { display: none; }
+.lookrow { display: flex; justify-content: space-between; gap: 1rem; padding: .4rem 0; border-bottom: 1px solid var(--line); font-size: .96rem; }
+.lookrow span:last-child { font: 400 .88rem var(--mono); text-align: right; }
+.hiddenval { color: var(--good); }
+.leak { color: var(--mark); }
+.looknote { font-size: .9rem; color: var(--muted); margin: .3rem 0 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .7rem; margin: 1.6rem 0; }
+.card { padding: .85rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; display: grid; gap: .4rem; align-content: start; font-size: .94rem; line-height: 1.38; }
+.card b { font: 700 1.02rem/1.25 var(--head); }
+.tag { justify-self: start; font: 500 .76rem var(--mono); padding: .12rem .45rem; border-radius: 4px; border: 1px solid currentColor; }
+.tag.live { color: var(--good); } .tag.built { color: var(--muted); }
+.proofs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; margin: 1.6rem 0; }
+.proofs > div { padding: .85rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.proofs h3 { margin: 0 0 .5rem; display: flex; gap: .45rem; align-items: center; }
+.proofs ul { list-style: none; margin: 0; padding: 0; font-size: .95rem; }
+.proofs li { margin-bottom: .4rem; padding-left: 1.3rem; text-indent: -1.3rem; }
+.y::before { content: "\2713\00a0\00a0"; color: var(--good); font-weight: 700; }
+.x::before { content: "\2717\00a0\00a0"; color: var(--mark); font-weight: 700; }
+.matrix td, .matrix th { text-align: center; vertical-align: middle; }
+.matrix td:first-child, .matrix th:first-child { text-align: left; }
+.matrix tr.us td { background: var(--panel); font-weight: 700; }
+.yes { color: var(--good); font-weight: 700; } .no { color: var(--mark); font-weight: 700; } .some { color: var(--muted); font-weight: 700; }
+@keyframes drop { to { stroke-dashoffset: -28; } }
+.flow { animation: drop 1.6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .flow { animation: none; } }
+@media (max-width: 760px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .story { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proofs { grid-template-columns: minmax(0, 1fr); }
+}
 </style>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#6b7b88"/></marker>
-  <marker id="arr-r" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#b5531f"/></marker>
+  <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8Z" fill="var(--muted)"/></marker>
+  <symbol id="i-seal" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3l11 4v8c0 7-5 11-11 14C10 26 5 22 5 15V7z"/><path d="M11 16l4 4 7-8"/></g></symbol>
+  <symbol id="i-door" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 28V5h13v23"/><path d="M3 28h26"/><path d="M15 16v.1"/><path d="M23 12l5 4-5 4M19 16h9"/></g></symbol>
+  <symbol id="i-eye" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16s5-9 13-9 13 9 13 9-5 9-13 9S3 16 3 16z"/><circle cx="16" cy="16" r="3.6"/><path d="M5 27L27 5"/></g></symbol>
+  <symbol id="i-grid" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="4" y="4" width="10" height="10" rx="2"/><rect x="18" y="4" width="10" height="10" rx="2"/><rect x="4" y="18" width="10" height="10" rx="2"/><rect x="18" y="18" width="10" height="10" rx="2"/></g></symbol>
+  <symbol id="i-coin" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="16" cy="16" r="12"/><circle cx="16" cy="16" r="7"/><path d="M16 12v8"/></g></symbol>
+  <symbol id="i-gift" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"><rect x="4" y="12" width="24" height="16" rx="2"/><path d="M2 12h28M16 12v16M16 12c-3-8-11-6-8 0M16 12c3-8 11-6 8 0"/></g></symbol>
+  <symbol id="i-list" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 8h16M12 16h16M12 24h16"/><path d="M4 8l1.5 1.5L8 6.5M4 16l1.5 1.5L8 14.5M4 24l1.5 1.5L8 22.5"/></g></symbol>
+  <symbol id="i-chat" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"><path d="M4 6h24v16H13l-6 6v-6H4z"/><path d="M16 10v8M13 12.5c0-2 6-2 6 0s-6 1-6 3 6 2 6 0"/></g></symbol>
+  <symbol id="i-server" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="24" height="9" rx="2"/><rect x="4" y="18" width="24" height="9" rx="2"/><path d="M9 9.5v.1M9 22.5v.1M15 9.5h9M15 22.5h9"/></g></symbol>
+  <symbol id="i-people" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="5"/><circle cx="23" cy="13" r="4"/><path d="M2 27c1-6 5-9 9-9s8 3 9 9M21 19c4 0 8 2 9 8"/></g></symbol>
+  <marker id="arr-r" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 8 4 0 8Z" fill="var(--mark)"/></marker>
 </defs></svg>
 
 <article>
@@ -65,6 +130,36 @@ li { margin-bottom: .45rem; }
   <p class="dek">What the Atmosphere would actually need from a settlement layer, judged by atproto's own principles, and why Ootle meets those needs.</p>
   <p class="meta">Skydrop build notes · November 2026 · Esmeralda testnet · tTARI has no monetary value</p>
 
+  <figure class="hero">
+    <svg viewBox="0 0 1000 400" role="img" aria-labelledby="hero-t">
+      <title id="hero-t">Accounts float in a sky labelled the Atmosphere, each with its own signed repository. Dashed lines carry signed proofs down to a dark ground layer labelled Ootle, the money layer, which holds coins and pays back up to the accounts.</title>
+      <defs><linearGradient id="skyg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--sky1)"/><stop offset="1" style="stop-color:var(--sky2)"/></linearGradient></defs>
+      <rect width="1000" height="400" fill="url(#skyg)"/>
+      <g fill="var(--bg)" opacity=".75"><ellipse cx="150" cy="70" rx="90" ry="22"/><ellipse cx="205" cy="56" rx="60" ry="22"/><ellipse cx="770" cy="50" rx="100" ry="20"/><ellipse cx="830" cy="66" rx="70" ry="18"/><ellipse cx="480" cy="210" rx="110" ry="16"/></g>
+      <text x="36" y="44" font-size="22" font-weight="700" class="d-text" style="font-family:var(--head)">The Atmosphere</text>
+      <text x="36" y="66" font-size="16" class="d-sub">identity and signed data, with no money</text>
+      <g class="d-line" style="stroke:var(--accent);stroke-width:1.5;opacity:.5"><path d="M180 140 340 100M340 100 520 150M520 150 700 100M700 100 860 150M340 100 700 100"/></g>
+      <g id="nodes">
+        <g><circle cx="180" cy="140" r="34" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="180" y="145" text-anchor="middle" font-size="14.5" class="d-mono">@alice</text></g>
+        <g><circle cx="340" cy="100" r="34" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="340" y="105" text-anchor="middle" font-size="14.5" class="d-mono">@bob</text></g>
+        <g><circle cx="520" cy="150" r="34" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="520" y="155" text-anchor="middle" font-size="14.5" class="d-mono">@carol</text></g>
+        <g><circle cx="700" cy="100" r="34" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="700" y="105" text-anchor="middle" font-size="14.5" class="d-mono">@dev</text></g>
+        <g><circle cx="860" cy="150" r="34" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="860" y="155" text-anchor="middle" font-size="14.5" class="d-mono">@erin</text></g>
+      </g>
+      <rect x="0" y="288" width="1000" height="112" fill="var(--ground)"/>
+      <g fill="none" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 10">
+        <path class="flow" stroke="var(--accent)" d="M180 172V288"/><path class="flow" stroke="var(--accent)" d="M520 182V288"/><path class="flow" stroke="var(--accent)" d="M860 182V288"/>
+      </g>
+      <g fill="none" stroke="var(--coin)" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 10" style="animation-direction:reverse">
+        <path class="flow" style="animation-direction:reverse" d="M340 132V288"/><path class="flow" style="animation-direction:reverse" d="M700 132V288"/>
+      </g>
+      <g font-size="15" class="d-sub"><text x="192" y="240">signed proof</text><text x="352" y="240">payment</text><text x="532" y="250">signed proof</text><text x="712" y="240">payment</text></g>
+      <text x="36" y="334" font-size="22" font-weight="700" style="font-family:var(--head);fill:var(--on-ground)">Ootle</text>
+      <text x="36" y="358" font-size="16" style="font-family:var(--body);fill:var(--on-ground-2)">the money layer: reads the proofs itself, then pays</text>
+      <g fill="var(--coin)" stroke="var(--coin-edge)" stroke-width="1.5"><circle cx="760" cy="345" r="20"/><circle cx="800" cy="330" r="20"/><circle cx="840" cy="348" r="20"/><circle cx="880" cy="332" r="20"/><circle cx="920" cy="350" r="20"/></g>
+    </svg>
+    <figcaption class="legend" aria-label="Colour key"><span><i style="background:var(--accent)"></i>Identity and atproto</span><span><i style="background:var(--coin)"></i>Money and Ootle</span><span><i style="background:var(--good)"></i>Verified</span><span><i style="background:var(--mark)"></i>Risk or trust</span></figcaption>
+  </figure>
   <nav aria-label="Contents"><b>Contents</b>
     <ol>
       <li><a href="#gap">The gap in the Atmosphere</a></li>
@@ -82,14 +177,21 @@ li { margin-bottom: .45rem; }
   <p>The atproto community has a clear story about identity and data. An account's permanent ID is a <a href="https://atproto.com/guides/overview">decentralized identifier</a> (DID), and its handle is a domain name that can change. Its likes, follows and posts are records in a <a href="https://atproto.com/guides/understanding-atproto">public per-user database</a> on a Personal Data Server (PDS). Lexicons name the schemas, relays carry the firehose, and App Views aggregate it. Dan Abramov <a href="https://overreacted.io/open-social/">sums up the movement</a> as: &ldquo;What open source did for code, open social does for data.&rdquo;</p>
   <p>Money is missing from that story. The Atmosphere can prove that you wrote something, and it has no native way to pay you for it. Creators can't be tipped, and the people running feeds and labelers have no protocol-level way to get paid. Anyone who wants to reward an account has to bolt on a payment company, and that company becomes the kind of gatekeeper the protocol was designed to route around.</p>
   <p>So I started from a question. If you took atproto's principles seriously, what would you require of a money layer? I built <a href="https://skydrop.tari.mw/quests">Skydrop</a> to find out. It pays Bluesky accounts for verifiable actions, on Tari's Ootle network. Each section below is one requirement I arrived at, and how Ootle met it.</p>
+  <ul class="tiles" aria-label="The five requirements">
+    <li><a href="#verify"><svg class="ic" aria-hidden="true"><use href="#i-seal"/></svg>Native proofs<small>No oracle to believe</small></a></li>
+    <li><a href="#exit"><svg class="ic" aria-hidden="true"><use href="#i-door"/></svg>Credible exit<small>For the money too</small></a></li>
+    <li><a href="#private"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg>Private money<small>Beside public speech</small></a></li>
+    <li><a href="#scale"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg>Per-user state<small>Built for a big world</small></a></li>
+    <li><a href="#small"><svg class="ic" aria-hidden="true"><use href="#i-coin"/></svg>Small value<small>Fees that leave a reward</small></a></li>
+  </ul>
   <figure class="wide-svg">
     <svg viewBox="0 0 800 262" role="img" aria-labelledby="atmo-t">
       <title id="atmo-t">A handle resolves to a permanent DID, which points to a signed repository on a PDS. Bluesky, other Atmosphere apps and Skydrop's Ootle contract all read that same repository. Only the contract also holds funds.</title>
-      <rect class="d-box" x="20" y="26" width="190" height="56" rx="6"/><rect class="d-box" x="20" y="104" width="190" height="56" rx="6"/><rect class="d-box" x="20" y="182" width="190" height="60" rx="6"/>
+      <rect class="d-box" x="20" y="26" width="190" height="56" rx="8"/><rect class="d-box" x="20" y="104" width="190" height="56" rx="8"/><rect class="d-box" x="20" y="182" width="190" height="60" rx="8"/>
       <g class="d-line"><path d="M115 82V103" marker-end="url(#arr)"/><path d="M115 160V181" marker-end="url(#arr)"/></g>
       <g font-size="14" font-weight="700" class="d-text"><text x="34" y="50">Handle</text><text x="34" y="128">DID</text><text x="34" y="206">Signed repository</text></g>
       <g font-size="12.5" class="d-sub"><text x="34" y="70">alice.example, can change</text><text x="34" y="148">did:plc:…, permanent</text><text x="34" y="226">on a PDS, can move hosts</text></g>
-      <rect class="d-box" x="420" y="26" width="360" height="56" rx="6"/><rect class="d-box" x="420" y="104" width="360" height="56" rx="6"/><rect class="d-on" x="420" y="182" width="360" height="60" rx="6"/>
+      <rect class="d-box" x="420" y="26" width="360" height="56" rx="8"/><rect class="d-box" x="420" y="104" width="360" height="56" rx="8"/><rect class="d-money" x="420" y="182" width="360" height="60" rx="8"/>
       <g class="d-line"><path d="M210 206C310 206 320 54 419 54" marker-end="url(#arr)"/><path d="M210 212C310 212 320 132 419 132" marker-end="url(#arr)"/><path d="M210 212H419" marker-end="url(#arr)"/></g>
       <g font-size="14" font-weight="700" class="d-text"><text x="434" y="50">Bluesky</text><text x="434" y="128">Other Atmosphere apps</text><text x="434" y="206">Campaign contract on Ootle</text></g>
       <g font-size="12.5" class="d-sub"><text x="434" y="70">A projection: a timeline</text><text x="434" y="148">Different projections of the same records</text><text x="434" y="226">A projection with a vault: checks the records, then pays</text></g>
@@ -103,15 +205,15 @@ li { margin-bottom: .45rem; }
     <svg viewBox="0 0 800 250" role="img" aria-labelledby="broker-t">
       <title id="broker-t">Two flows. The usual one goes from Bluesky to a company's server, which must be trusted, then to the contract and the wallet. Skydrop's goes from Bluesky, as a signed proof, straight to the contract and the wallet.</title>
       <text x="20" y="32" font-size="15" font-weight="700" class="d-text">Oracle design</text>
-      <rect class="d-box" x="20" y="46" width="150" height="58" rx="6"/><rect class="d-hot" x="224" y="46" width="170" height="58" rx="6"/><rect class="d-box" x="448" y="46" width="130" height="58" rx="6"/><rect class="d-box" x="632" y="46" width="148" height="58" rx="6"/>
+      <rect class="d-box" x="20" y="46" width="150" height="58" rx="8"/><rect class="d-hot" x="224" y="46" width="170" height="58" rx="8"/><rect class="d-money" x="448" y="46" width="130" height="58" rx="8"/><rect class="d-box" x="632" y="46" width="148" height="58" rx="8"/>
       <g class="d-line"><path d="M170 75H223" marker-end="url(#arr)"/><path d="M394 75H447" marker-end="url(#arr)"/><path d="M578 75H631" marker-end="url(#arr)"/></g>
       <g font-size="15" text-anchor="middle" class="d-text"><text x="95" y="80">Bluesky</text><text x="309" y="72">Attestation server</text><text x="513" y="80">Contract</text><text x="706" y="80">Wallet</text></g>
       <text x="309" y="92" font-size="12.5" text-anchor="middle" class="d-mark">trust assumption</text>
       <text x="20" y="150" font-size="15" font-weight="700" class="d-text">This design</text>
-      <rect class="d-box" x="20" y="164" width="150" height="58" rx="6"/><rect class="d-on" x="448" y="164" width="130" height="58" rx="6"/><rect class="d-box" x="632" y="164" width="148" height="58" rx="6"/>
+      <rect class="d-box" x="20" y="164" width="150" height="58" rx="8"/><rect class="d-money" x="448" y="164" width="130" height="58" rx="8"/><rect class="d-box" x="632" y="164" width="148" height="58" rx="8"/>
       <g class="d-line"><path d="M170 193H447" marker-end="url(#arr)"/><path d="M578 193H631" marker-end="url(#arr)"/></g>
       <g font-size="15" text-anchor="middle" class="d-text"><text x="95" y="198">Bluesky</text><text x="513" y="198">Contract</text><text x="706" y="198">Wallet</text></g>
-      <text x="309" y="184" font-size="13.5" text-anchor="middle" class="d-sub">signed proof, carried by the claimant</text>
+      <text x="309" y="184" font-size="12.5" text-anchor="middle" class="d-sub">signed proof, carried by the claimant</text>
     </svg>
     <figcaption>The claimant fetches the proof from public endpoints and submits it. No server has to be believed.</figcaption>
   </figure>
@@ -119,10 +221,10 @@ li { margin-bottom: .45rem; }
   <figure class="wide-svg">
     <svg viewBox="0 0 800 196" role="img" aria-labelledby="proof-t">
       <title id="proof-t">Identity log verification gives the signing key; the key verifies the commit; the commit gives the tree root; the tree path gives the record's content hash; the record's fields are compared with the rule.</title>
-      <rect class="d-box" x="14" y="26" width="136" height="144" rx="6"/><rect class="d-box" x="170" y="26" width="136" height="144" rx="6"/><rect class="d-box" x="326" y="26" width="136" height="144" rx="6"/><rect class="d-box" x="482" y="26" width="136" height="144" rx="6"/><rect class="d-on" x="638" y="26" width="148" height="144" rx="6"/>
+      <rect class="d-box" x="14" y="26" width="136" height="144" rx="8"/><rect class="d-box" x="170" y="26" width="136" height="144" rx="8"/><rect class="d-box" x="326" y="26" width="136" height="144" rx="8"/><rect class="d-box" x="482" y="26" width="136" height="144" rx="8"/><rect class="d-on" x="638" y="26" width="148" height="144" rx="8"/>
       <g class="d-line"><path d="M150 98H169" marker-end="url(#arr)"/><path d="M306 98H325" marker-end="url(#arr)"/><path d="M462 98H481" marker-end="url(#arr)"/><path d="M618 98H637" marker-end="url(#arr)"/></g>
       <g font-size="15" font-weight="700" class="d-text"><text x="26" y="54">DID</text><text x="182" y="54">PLC log</text><text x="338" y="54">Commit</text><text x="494" y="54">MST path</text><text x="650" y="54">Record</text></g>
-      <g font-size="13" class="d-sub">
+      <g font-size="12.5" class="d-sub">
         <text x="26" y="80">Hash of signed</text><text x="26" y="98">genesis, base32,</text><text x="26" y="116">first 24 chars.</text>
         <text x="182" y="80">Each op signed by</text><text x="182" y="98">a rotation key of</text><text x="182" y="116">the previous one.</text>
         <text x="338" y="80">Signed by the key</text><text x="338" y="98">in the last op.</text><text x="338" y="116">Commits to a root.</text>
@@ -135,19 +237,19 @@ li { margin-bottom: .45rem; }
   <figure class="wide-svg">
     <svg viewBox="0 0 800 268" role="img" aria-labelledby="mst-t">
       <title id="mst-t">A signed commit points to a root node. The lookup for app.bsky.feed.like slash 3k compares entries in the root, follows a subtree pointer to a lower node, and finds the matching key, whose value is the hash of the like record.</title>
-      <rect class="d-on" x="20" y="24" width="210" height="96" rx="6"/>
-      <g font-size="13" class="d-mono"><text x="34" y="48">commit</text><text x="34" y="70">did, rev, version: 3</text><text x="34" y="90">data: cid(root)</text><text x="34" y="110">sig: ECDSA, low-S</text></g>
+      <rect class="d-on" x="20" y="24" width="210" height="96" rx="8"/>
+      <g font-size="12.5" class="d-mono"><text x="34" y="48">commit</text><text x="34" y="70">did, rev, version: 3</text><text x="34" y="90">data: cid(root)</text><text x="34" y="110">sig: ECDSA, low-S</text></g>
       <path class="d-line" d="M230 72H288" marker-end="url(#arr)"/>
-      <rect class="d-box" x="290" y="24" width="490" height="96" rx="6"/>
-      <g font-size="13" class="d-mono"><text x="304" y="48">root node</text><text x="304" y="70">l: null</text><text x="304" y="90">e[0] k="app.bsky.feed.follow/…"  v  t: null</text><text x="304" y="110">e[1] k="…post/3l…" p=14  v  t: null</text></g>
+      <rect class="d-box" x="290" y="24" width="490" height="96" rx="8"/>
+      <g font-size="12.5" class="d-mono"><text x="304" y="48">root node</text><text x="304" y="70">l: null</text><text x="304" y="90">e[0] k="app.bsky.feed.follow/…"  v  t: null</text><text x="304" y="110">e[1] k="…post/3l…" p=14  v  t: null</text></g>
       <path class="d-line" d="M410 120 410 160" marker-end="url(#arr)"/>
       <text x="420" y="146" font-size="12.5" class="d-sub">"…like/3k" sorts before "…post", so descend the subtree on its left</text>
-      <rect class="d-box" x="290" y="162" width="490" height="60" rx="6"/>
-      <g font-size="13" class="d-mono"><text x="304" y="184">lower node</text><text x="304" y="206">e[0] k="app.bsky.feed.like/3k…"  v: cid(record)</text></g>
+      <rect class="d-box" x="290" y="162" width="490" height="60" rx="8"/>
+      <g font-size="12.5" class="d-mono"><text x="304" y="184">lower node</text><text x="304" y="206">e[0] k="app.bsky.feed.like/3k…"  v: cid(record)</text></g>
       <path class="d-line" d="M290 196H232" marker-end="url(#arr)"/>
-      <rect class="d-on" x="20" y="160" width="210" height="64" rx="6"/>
-      <g font-size="13" class="d-mono"><text x="34" y="184">record</text><text x="34" y="206">subject.uri == target</text></g>
-      <text x="20" y="252" font-size="12.5" class="d-sub">Simplified. Every node is reached through a hash, so an unauthenticated node can't enter the walk. Limit: 32 nodes, 16 KiB per block, 64 levels.</text>
+      <rect class="d-on" x="20" y="160" width="210" height="64" rx="8"/>
+      <g font-size="12.5" class="d-mono"><text x="34" y="184">record</text><text x="34" y="206">subject.uri == target</text></g>
+      <text x="20" y="252" font-size="12.5" class="d-sub">Simplified. Every node is reached through a hash. Limits: 32 nodes, 16 KiB per block, 64 levels.</text>
     </svg>
     <figcaption>Membership is all the contract needs. It never proves a record's absence, which is why deletion can't be detected (see the last section).</figcaption>
   </figure>
@@ -156,25 +258,34 @@ li { margin-bottom: .45rem; }
   <figure class="wide-svg">
     <svg viewBox="0 0 800 262" role="img" aria-labelledby="code-t">
       <title id="code-t">The domain, component, DID, wallet key and round are hashed with SHA-256, and the first 16 bytes form the claim code in a post in the account's repo. A thief's key gives a different code that the account never posted, so the claim is refused.</title>
-      <rect class="d-box" x="20" y="20" width="220" height="186" rx="6"/>
+      <rect class="d-box" x="20" y="20" width="220" height="186" rx="8"/>
       <text x="34" y="44" font-size="14" font-weight="700" class="d-text">Hash input</text>
       <g font-size="12.5" class="d-mono"><text x="34" y="70">"tari-campaign:v1:"</text><text x="34" y="94">component address</text><text x="34" y="118">did:plc:…</text><text x="34" y="142">wallet key (32 bytes)</text><text x="34" y="166">round (u16, big-endian)</text></g>
-      <text x="34" y="192" font-size="12" class="d-sub">Joined by ":"</text>
+      <text x="34" y="192" font-size="12.5" class="d-sub">Joined by ":"</text>
       <path class="d-line" d="M240 113H288" marker-end="url(#arr)"/>
-      <rect class="d-box" x="290" y="82" width="128" height="62" rx="6"/>
-      <g text-anchor="middle"><text x="354" y="108" font-size="13.5" font-weight="700" class="d-text">SHA-256</text><text x="354" y="128" font-size="12" class="d-sub">first 16 bytes</text></g>
+      <rect class="d-box" x="290" y="82" width="128" height="62" rx="8"/>
+      <g text-anchor="middle"><text x="354" y="108" font-size="12.5" font-weight="700" class="d-text">SHA-256</text><text x="354" y="128" font-size="12.5" class="d-sub">first 16 bytes</text></g>
       <path class="d-line" d="M418 113H466" marker-end="url(#arr)"/>
-      <rect class="d-on" x="468" y="20" width="312" height="94" rx="6"/>
+      <rect class="d-on" x="468" y="20" width="312" height="94" rx="8"/>
       <text x="482" y="44" font-size="14" font-weight="700" class="d-text">Post in the account's repo</text>
       <text x="482" y="70" font-size="12.5" class="d-mono">tari-quest:5e1c07a29b…</text>
-      <text x="482" y="94" font-size="12" class="d-sub">Proven like any other record</text>
-      <rect class="d-hot" x="468" y="140" width="312" height="66" rx="6"/>
+      <text x="482" y="94" font-size="12.5" class="d-sub">Proven like any other record</text>
+      <rect class="d-hot" x="468" y="140" width="312" height="66" rx="8"/>
       <text x="482" y="166" font-size="14" font-weight="700" class="d-text">Thief's wallet key</text>
       <text x="482" y="190" font-size="12.5" class="d-mark">different code, never posted: refused</text>
       <text x="20" y="240" font-size="12.5" class="d-sub">The contract recomputes the code from the key that signed the transaction, then checks that the proven post's text contains it.</text>
     </svg>
     <figcaption>A public proof is useless to anyone but the wallet the account committed to.</figcaption>
   </figure>
+
+  <h3>The life of a reward</h3>
+  <ol class="story">
+    <li><svg class="pic" viewBox="0 0 120 76" aria-hidden="true"><rect x="22" y="8" width="76" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M60 52c-14-9-20-15-20-23 0-6 5-9 9-9 5 0 9 3 11 7 2-4 6-7 11-7 4 0 9 3 9 9 0 8-6 14-20 23z" fill="currentColor"/></svg><b>You act</b>Like a post, in any Atmosphere app. It's an ordinary signed record in your repo.</li>
+    <li><svg class="pic" viewBox="0 0 120 76" aria-hidden="true"><path d="M60 6l34 12v22c0 16-16 26-34 32-18-6-34-16-34-32V18z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M45 38l11 11 20-23" fill="none" stroke="var(--good)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg><b>The proof is checked</b>Your browser fetches it from public endpoints and verifies it. No sign-in.</li>
+    <li><svg class="pic" viewBox="0 0 120 76" aria-hidden="true"><rect x="18" y="12" width="84" height="44" rx="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M34 56v14l14-14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M30 28h60M30 40h36" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg><b>You pick a wallet</b>One post naming your wallet, or a wallet link made once. It's atproto's own primitive.</li>
+    <li><svg class="pic" viewBox="0 0 120 76" aria-hidden="true"><rect x="24" y="22" width="72" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M24 34h72" stroke="currentColor" stroke-width="2"/><circle cx="60" cy="14" r="11" fill="var(--coin)" stroke="var(--coin-edge)" stroke-width="1.5"/><path d="M60 26v20" stroke="var(--coin)" stroke-width="3" stroke-dasharray="3 5"/></svg><b>The contract pays</b>It repeats the same checks itself, then pays. Nobody can approve or block it.</li>
+  </ol>
+  <p class="storycap">Nothing in this path asks a company for permission, including ours.</p>
 
   <h2 id="exit">Credible exit has to cover the money</h2>
   <p>Credible exit is atproto's signature idea: <a href="https://atproto.com/guides/overview">account portability</a> means a host or app can't hold you hostage. A money layer can undo that if it ties your funds to one app, one host or one company's database.</p>
@@ -184,7 +295,49 @@ li { margin-bottom: .45rem; }
     <li><strong>Nobody owns the contracts.</strong> The deployed Campaign contract and link registry have no owner. No key exists that can change their rules, and that includes mine. A campaign's funder can only take back what's left after it closes.</li>
     <li><strong>Apps are replaceable.</strong> Abramov calls apps &ldquo;many projections of the same data&rdquo;, and a contract fits that description. It's one more reader of the same repositories, except this reader holds funds. Skydrop's website could vanish tomorrow, and anyone could build another client against the same public contracts.</li>
   </ul>
-  <p>There's also a nice symmetry in naming. Ootle addresses are long strings no friend would recognise, and atproto already solved that problem with handles. A wallet link is a single signed post, and after that a handle works like a payment address. atproto gives Ootle human names, and Ootle gives those names a purse.</p>
+    <figure class="wide-svg">
+    <svg viewBox="0 0 800 246" role="img" aria-labelledby="move-t">
+      <title id="move-t">An account's DID stays the same as its repository moves from PDS A to PDS B, shown with a dashed arrow. The reward contract is attached to the DID, so its link stays unbroken through the move.</title>
+      <rect class="d-on" x="280" y="18" width="240" height="52" rx="8"/>
+      <text x="400" y="42" text-anchor="middle" font-size="14" font-weight="700" class="d-text">did:plc:… stays the same</text>
+      <text x="400" y="60" text-anchor="middle" font-size="12.5" class="d-sub">the identity is what gets paid</text>
+      <rect class="d-box" x="40" y="130" width="210" height="84" rx="8"/>
+      <text x="145" y="160" text-anchor="middle" font-size="14" font-weight="700" class="d-text">PDS A</text>
+      <text x="145" y="182" text-anchor="middle" font-size="12.5" class="d-sub">the old host</text>
+      <rect class="d-box" x="295" y="130" width="210" height="84" rx="8"/>
+      <text x="400" y="160" text-anchor="middle" font-size="14" font-weight="700" class="d-text">PDS B</text>
+      <text x="400" y="182" text-anchor="middle" font-size="12.5" class="d-sub">the new host</text>
+      <path class="d-line" stroke-dasharray="6 5" d="M250 172H294" marker-end="url(#arr)"/>
+      <rect class="d-money" x="560" y="130" width="210" height="84" rx="8"/>
+      <text x="665" y="160" text-anchor="middle" font-size="14" font-weight="700" class="d-text">Reward contract</text>
+      <text x="665" y="182" text-anchor="middle" font-size="12.5" class="d-sub">claims still resolve</text>
+      <path class="d-line" stroke-dasharray="6 5" d="M340 70 180 129"/>
+      <path class="d-line" d="M400 70V129" marker-end="url(#arr)"/>
+      <path class="d-line" d="M460 70 640 129" marker-end="url(#arr)"/>
+      <text x="212" y="96" font-size="12.5" class="d-sub">was here</text><text x="410" y="104" font-size="12.5" class="d-sub">lives here now</text>
+    </svg>
+    <figcaption>Moving host changes where the repository lives. It changes nothing about who gets paid.</figcaption>
+  </figure>
+<p>There's also a nice symmetry in naming. Ootle addresses are long strings no friend would recognise, and atproto already solved that problem with handles. A wallet link is a single signed post, and after that a handle works like a payment address. atproto gives Ootle human names, and Ootle gives those names a purse.</p>
+
+  <figure class="wide-svg">
+    <svg viewBox="0 0 800 176" role="img" aria-labelledby="name-t">
+      <title id="name-t">Before: a long unreadable wallet address. A single signed post links it. After: the handle alice.example works as a payment address.</title>
+      <text x="20" y="28" font-size="12.5" font-weight="700" class="d-sub">What Ootle knows you by</text>
+      <rect class="d-box" x="20" y="40" width="300" height="52" rx="8"/>
+      <text x="170" y="71" text-anchor="middle" font-size="12.5" class="d-mono">otl_esm_17tp85g0x8emsjs6tasr…u9el5r</text>
+      <path class="d-line" d="M320 66H368" marker-end="url(#arr)"/>
+      <rect class="d-box" x="370" y="40" width="120" height="52" rx="8"/>
+      <text x="430" y="62" text-anchor="middle" font-size="12.5" font-weight="700" class="d-text">One signed</text><text x="430" y="80" text-anchor="middle" font-size="12.5" font-weight="700" class="d-text">post</text>
+      <path class="d-line" d="M490 66H538" marker-end="url(#arr)"/>
+      <text x="540" y="28" font-size="12.5" font-weight="700" class="d-sub">What your friends know you by</text>
+      <rect class="d-on" x="540" y="40" width="240" height="52" rx="8"/>
+      <text x="660" y="71" text-anchor="middle" font-size="15" font-weight="700" class="d-mono">@alice.example</text>
+      <text x="20" y="130" font-size="12.5" class="d-sub">Rewards can then be sent to a name people already recognise. The link is public,</text>
+      <text x="20" y="150" font-size="12.5" class="d-sub">and the account can replace it later with another signed post.</text>
+    </svg>
+    <figcaption>atproto brings the names, and Ootle brings the purse.</figcaption>
+  </figure>
 
   <h2 id="private">Public speech needs private money</h2>
   <p>This is the requirement I care about most, and the one a typical transparent chain fails. atproto repositories are public by design. If you link a public identity to a fully transparent ledger, anyone can look up your handle and read your whole financial history: your balance, who pays you, and what you spend it on. Attaching that to a social network where strangers already argue with you is a safety problem.</p>
@@ -192,23 +345,51 @@ li { margin-bottom: .45rem; }
     <svg viewBox="0 0 800 250" role="img" aria-labelledby="split-t">
       <title id="split-t">On the left, a handle links to a transparent ledger, exposing balance, income and spending to anyone. On the right, the same handle links to a wallet on Ootle: the public claim and its amount are visible, while the wallet's other funds stay in stealth outputs.</title>
       <text x="20" y="30" font-size="15" font-weight="700" class="d-text">Handle + transparent ledger</text>
-      <rect class="d-box" x="20" y="46" width="130" height="50" rx="6"/><text x="85" y="76" text-anchor="middle" font-size="13" class="d-mono">@alice</text>
+      <rect class="d-box" x="20" y="46" width="130" height="50" rx="8"/><text x="85" y="76" text-anchor="middle" font-size="12.5" class="d-mono">@alice</text>
       <path class="d-red" d="M150 71H198" marker-end="url(#arr-r)"/>
-      <rect class="d-hot" x="200" y="46" width="170" height="170" rx="6"/>
-      <g font-size="13" class="d-text"><text x="214" y="72">Whole balance</text><text x="214" y="102">Everyone who paid</text><text x="214" y="132">Everything spent</text><text x="214" y="162">Every future payment</text></g>
+      <rect class="d-hot" x="200" y="46" width="170" height="170" rx="8"/>
+      <g font-size="12.5" class="d-text"><text x="214" y="72">Whole balance</text><text x="214" y="102">Everyone who paid</text><text x="214" y="132">Everything spent</text><text x="214" y="162">Every future payment</text></g>
       <text x="214" y="198" font-size="12.5" class="d-mark">readable by anyone</text>
       <text x="420" y="30" font-size="15" font-weight="700" class="d-text">Handle + Ootle</text>
-      <rect class="d-box" x="420" y="46" width="130" height="50" rx="6"/><text x="485" y="76" text-anchor="middle" font-size="13" class="d-mono">@alice</text>
+      <rect class="d-box" x="420" y="46" width="130" height="50" rx="8"/><text x="485" y="76" text-anchor="middle" font-size="12.5" class="d-mono">@alice</text>
       <path class="d-line" d="M550 71H598" marker-end="url(#arr)"/>
-      <rect class="d-box" x="600" y="46" width="180" height="70" rx="6"/>
-      <g font-size="13" class="d-text"><text x="614" y="72">This public claim</text><text x="614" y="96">and its amount</text></g>
-      <rect class="d-on" x="600" y="136" width="180" height="80" rx="6"/>
-      <g font-size="13" class="d-text"><text x="614" y="162">Other funds, in</text><text x="614" y="184">stealth outputs</text></g>
+      <rect class="d-box" x="600" y="46" width="180" height="70" rx="8"/>
+      <g font-size="12.5" class="d-text"><text x="614" y="72">This public claim</text><text x="614" y="96">and its amount</text></g>
+      <rect class="d-money" x="600" y="136" width="180" height="80" rx="8"/>
+      <g font-size="12.5" class="d-text"><text x="614" y="162">Other funds, in</text><text x="614" y="184">stealth outputs</text></g>
       <text x="614" y="206" font-size="12.5" class="d-sub">not linked to the handle</text>
     </svg>
     <figcaption>What a claim reveals is limited to that claim. This holds only if someone keeps other funds in stealth outputs, which is the wallet's job to make easy.</figcaption>
   </figure>
-  <p>Ootle wallets can hold funds in stealth outputs and reveal only what a given transaction needs. So the things you did in public stay public, as atproto intends, while your finances don't automatically join them. A campaign's pool and each claim are visible, so this isn't total privacy, and a linked wallet is publicly tied to its handle. But public speech and private money are a much better fit for a social network than public speech and public money.</p>
+    <div class="look">
+    <div class="lookbar"><b>Look up @alice.example. What can a stranger see?</b>
+      <button type="button" id="lk-a" aria-pressed="true">Transparent ledger</button>
+      <button type="button" id="lk-b" aria-pressed="false">Ootle</button>
+    </div>
+    <div class="lookview" id="lk-view-a">
+      <div class="lookrow"><span>Whole balance</span><span class="leak">1,240.00</span></div>
+      <div class="lookrow"><span>Salary from employer's wallet</span><span class="leak">+800.00</span></div>
+      <div class="lookrow"><span>Sent to a clinic's wallet</span><span class="leak">&minus;150.00</span></div>
+      <div class="lookrow"><span>Reward from a campaign</span><span class="leak">+0.05</span></div>
+      <p class="looknote">Illustrative figures. Everything linked to the wallet is readable, forever, by anyone holding the handle.</p>
+    </div>
+    <div class="lookview" id="lk-view-b" hidden>
+      <div class="lookrow"><span>Whole balance</span><span class="hiddenval">not visible</span></div>
+      <div class="lookrow"><span>Funds held in stealth outputs</span><span class="hiddenval">not visible</span></div>
+      <div class="lookrow"><span>Payments between stealth outputs</span><span class="hiddenval">not visible</span></div>
+      <div class="lookrow"><span>Reward from a campaign</span><span class="leak">+0.05, public</span></div>
+      <p class="looknote">Illustrative figures. The public claim stays public, and so does the link between handle and wallet. Other funds stay private only if they're kept in stealth outputs.</p>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var a = document.getElementById("lk-a"), b = document.getElementById("lk-b"), va = document.getElementById("lk-view-a"), vb = document.getElementById("lk-view-b");
+      function show(first) { a.setAttribute("aria-pressed", String(first)); b.setAttribute("aria-pressed", String(!first)); va.hidden = !first; vb.hidden = first; }
+      a.addEventListener("click", function () { show(true); });
+      b.addEventListener("click", function () { show(false); });
+    })();
+  </script>
+<p>Ootle wallets can hold funds in stealth outputs and reveal only what a given transaction needs. So the things you did in public stay public, as atproto intends, while your finances don't automatically join them. A campaign's pool and each claim are visible, so this isn't total privacy, and a linked wallet is publicly tied to its handle. But public speech and private money are a much better fit for a social network than public speech and public money.</p>
 
   <h2 id="scale">Big world, per-user state</h2>
   <p>atproto calls itself <a href="https://atproto.com/guides/understanding-atproto">&ldquo;big-world, open social&rdquo;</a>. Everyone's data lives in their own repository, and one person's activity doesn't weigh down anyone else's. A money layer with one big shared state would be the wrong shape: a popular campaign would slow down or raise costs for everybody else.</p>
@@ -216,11 +397,11 @@ li { margin-bottom: .45rem; }
     <svg viewBox="0 0 800 226" role="img" aria-labelledby="shape-t">
       <title id="shape-t">Two matching rows. On atproto each account has its own repository, with relays and App Views across them. On Ootle each campaign has its own state and each claimant has their own receipt, so nothing shared grows with users.</title>
       <text x="20" y="30" font-size="15" font-weight="700" class="d-text">atproto</text>
-      <g class="d-box"><rect x="20" y="44" width="170" height="52" rx="6"/><rect x="210" y="44" width="170" height="52" rx="6"/><rect x="400" y="44" width="170" height="52" rx="6"/><rect x="590" y="44" width="190" height="52" rx="6"/></g>
-      <g font-size="13" text-anchor="middle" class="d-mono"><text x="105" y="75">alice's repo</text><text x="295" y="75">bob's repo</text><text x="485" y="75">carol's repo</text><text x="685" y="75">millions more</text></g>
+      <g class="d-box"><rect x="20" y="44" width="170" height="52" rx="8"/><rect x="210" y="44" width="170" height="52" rx="8"/><rect x="400" y="44" width="170" height="52" rx="8"/><rect x="590" y="44" width="190" height="52" rx="8"/></g>
+      <g font-size="12.5" text-anchor="middle" class="d-mono"><text x="105" y="75">alice's repo</text><text x="295" y="75">bob's repo</text><text x="485" y="75">carol's repo</text><text x="685" y="75">millions more</text></g>
       <text x="20" y="130" font-size="15" font-weight="700" class="d-text">Ootle</text>
-      <g class="d-on"><rect x="20" y="144" width="170" height="52" rx="6"/><rect x="210" y="144" width="170" height="52" rx="6"/><rect x="400" y="144" width="170" height="52" rx="6"/><rect x="590" y="144" width="190" height="52" rx="6"/></g>
-      <g font-size="13" text-anchor="middle" class="d-mono"><text x="105" y="175">alice's receipt</text><text x="295" y="175">bob's receipt</text><text x="485" y="175">campaign's own state</text><text x="685" y="175">each its own substate</text></g>
+      <g class="d-money"><rect x="20" y="144" width="170" height="52" rx="8"/><rect x="210" y="144" width="170" height="52" rx="8"/><rect x="400" y="144" width="170" height="52" rx="8"/><rect x="590" y="144" width="190" height="52" rx="8"/></g>
+      <g font-size="12.5" text-anchor="middle" class="d-mono"><text x="105" y="175">alice's receipt</text><text x="295" y="175">bob's receipt</text><text x="485" y="175">campaign's own state</text><text x="685" y="175">each its own substate</text></g>
     </svg>
     <figcaption>The two systems have the same shape: small independent pieces of state, instead of one global pile.</figcaption>
   </figure>
@@ -257,20 +438,31 @@ li { margin-bottom: .45rem; }
 
   <h2 id="unlocks">What this could unlock</h2>
   <p>Skydrop's campaigns are the first use. The same pieces apply to problems the Atmosphere talks about a lot:</p>
-  <div class="tw"><table>
-    <thead><tr><th scope="col">Atmosphere problem</th><th scope="col">What a money layer adds</th><th scope="col">Status</th></tr></thead>
-    <tbody>
-      <tr><td>Rewarding people for participating</td><td>Campaigns paying for likes, follows, posts or a vouch from a trusted account</td><td>Live on testnet</td></tr>
-      <tr><td>Fair airdrops to a community</td><td>Pay a fixed list of DIDs, or the members of a Bluesky list</td><td>Lists live on testnet</td></tr>
-      <tr><td>Tipping by handle</td><td>A signed post like "@bot tip @someone 5" spends a budget, with no app in control</td><td>Built and tested, not on the current network</td></tr>
-      <tr><td>Paying for feeds, labelers and other services</td><td>atproto's service-auth tokens become metered, per-call payments</td><td>Built and tested, not on the current network</td></tr>
-      <tr><td>Recovering a lost wallet</td><td>Friends approve a recovery by posting from their own accounts</td><td>Built and tested, not on the current network</td></tr>
-    </tbody>
-  </table></div>
-  <p>That second-to-last row is the one I'd most like to see someone pick up. The Atmosphere's infrastructure needs funding, and service-auth already identifies who's calling. Today the contracts handle Bluesky's record types, but the verifier itself works on any collection, so records from other Lexicons could become conditions as those apps grow.</p>
+  <div class="cards">
+    <div class="card"><svg class="ic" aria-hidden="true"><use href="#i-gift"/></svg><b>Rewarding participation</b>Campaigns paying for likes, follows, posts or a vouch from a trusted account.<span class="tag live">Live on testnet</span></div>
+    <div class="card"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg><b>Fair airdrops</b>Pay a fixed list of DIDs, each their own amount, with the list checked against a hash on-chain.<span class="tag live">Live on testnet</span></div>
+    <div class="card"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg><b>Tipping by handle</b>A signed post like "@bot tip @someone 5" spends a budget, with no app in control.<span class="tag built">Built and tested, not deployed</span></div>
+    <div class="card"><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg><b>Paying for feeds and labelers</b>atproto's service-auth tokens become metered, per-call payments to the service.<span class="tag built">Built and tested, not deployed</span></div>
+    <div class="card"><svg class="ic" aria-hidden="true"><use href="#i-people"/></svg><b>Recovering a lost wallet</b>Friends approve a recovery by posting from their own accounts, after a delay the owner can stop.<span class="tag built">Built and tested, not deployed</span></div>
+  </div>
+  <p>Paying for feeds and labelers is the one I'd most like to see someone pick up. The Atmosphere's infrastructure needs funding, and service-auth already identifies who's calling. Today the contracts handle Bluesky's record types, but the verifier itself works on any collection, so records from other Lexicons could become conditions as those apps grow.</p>
 
   <h2 id="limits">Where it falls short</h2>
   <p>"Perfect" is my enthusiasm talking. These are the real limits, and most of them come from atproto's trust model, so no money layer can remove them.</p>
+  <div class="proofs">
+    <div><h3><svg class="ic" aria-hidden="true"><use href="#i-seal"/></svg> What a proof shows</h3><ul>
+      <li class="y">This DID's key signed this repository</li>
+      <li class="y">This record was in it at that commit</li>
+      <li class="y">The record says what the rule requires</li>
+      <li class="y">A chosen voucher vouched for this account</li>
+    </ul></div>
+    <div><h3><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg> What it can't show</h3><ul>
+      <li class="x">That a person is behind the account</li>
+      <li class="x">When the record was really made</li>
+      <li class="x">That it hasn't been deleted since</li>
+      <li class="x">That the account's owner, and not its host, signed</li>
+    </ul></div>
+  </div>
   <ul>
     <li><strong>Bots can farm it.</strong> A contract checks signatures, and it can't tell whether a person is behind them. In my tests a script with a self-made identity passed every claimant step without any Bluesky account. Open campaigns get farmed down to about the fee. Vouches from a trusted account or fixed lists are the defence.</li>
     <li><strong>Proofs don't cover time or deletion.</strong> Accounts sign their own timestamps, and a proof shows a record existed in one commit. It can't show the record hasn't been deleted since.</li>
@@ -281,6 +473,15 @@ li { margin-bottom: .45rem; }
 
   <h2>Why I still say it fits</h2>
   <p>I haven't built this on every chain, so I can't say nothing else could work. But go back through the list: verify proofs natively, keep credible exit intact, keep money private when speech is public, match the per-user shape, and stay cheap enough for small values. A money layer for atproto has to do all five, and on Ootle I could get all five at once.</p>
-  <p>atproto signed its data so credible exit would be real. That same decision lets a contract act as one more projection in the Atmosphere, and I doubt that was anyone's plan.</p>
+    <div class="tw"><table class="matrix">
+    <thead><tr><th scope="col">Approach</th><th scope="col">Native proofs</th><th scope="col">Credible exit</th><th scope="col">Private money</th><th scope="col">Per-user state</th><th scope="col">Small value</th></tr></thead>
+    <tbody>
+      <tr><td>Payment company</td><td class="no">No</td><td class="no">No</td><td class="some">From the public only</td><td>n/a</td><td class="some">Varies</td></tr>
+      <tr><td>Oracle plus a transparent chain</td><td class="no">No</td><td class="some">Partly</td><td class="no">No</td><td class="some">Varies</td><td class="some">Varies</td></tr>
+      <tr class="us"><td>Ootle, as built here</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes, for stealth funds</td><td class="yes">Yes</td><td class="yes">On testnet numbers</td></tr>
+    </tbody>
+  </table></div>
+  <p class="storycap">These rows describe common designs in general and don't rate any particular product. Ootle's row reflects what I built and measured on a testnet.</p>
+<p>atproto signed its data so credible exit would be real. That same decision lets a contract act as one more projection in the Atmosphere, and I doubt that was anyone's plan.</p>
   <p>To try it, creators start at <a href="https://atproto.tari.mw">atproto.tari.mw</a> and participants at <a href="https://skydrop.tari.mw/quests">skydrop.tari.mw</a>.</p>
 </article>
