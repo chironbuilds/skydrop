@@ -5,6 +5,7 @@
  * the whole list.
  */
 import { allocationRoot, type Allocation } from "../../web-atproto/src/lib/campaign";
+import { readCapped } from "../../web-atproto/worker/secure";
 
 export const MAX_LIST_ENTRIES = 20_000;
 const MAX_LIST_BYTES = 2_000_000;
@@ -48,9 +49,8 @@ function parseList(text: string): Allocation[] | string {
 }
 
 async function saveList(req: Request, store: ListStore, slowDown: (big: boolean) => Promise<boolean>): Promise<Response> {
-  if (Number(req.headers.get("content-length") ?? 0) > MAX_LIST_BYTES) return json({ error: "too big" }, 413);
-  const text = await req.text();
-  if (text.length > MAX_LIST_BYTES) return json({ error: "too big" }, 413);
+  const text = await readCapped(req, MAX_LIST_BYTES);
+  if (text === null) return json({ error: "too big" }, 413);
   // Lists are kept for years, so big ones get a tighter allowance: storage is what this could be used to fill.
   if (await slowDown(text.length > BIG_LIST_BYTES)) return json({ error: "slow down" }, 429);
   const list = parseList(text);

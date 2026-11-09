@@ -6,6 +6,7 @@
  * a component built from any other template is refused.
  */
 import { DEPLOYMENT } from "../data/deployment";
+import { cleanLabel } from "./campaign";
 import { createArgs, EPOCHS_PER_DAY, fromHex, toHex, type Rule, type Spec } from "./campaign";
 
 export const TARI_RESOURCE = "resource_0101010101010101010101010101010101010101010101010101010101010101";
@@ -235,8 +236,8 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
   if (resource !== TARI_RESOURCE) throw new Error("That campaign pays in a token other than tTARI, so it isn't shown.");
   return {
     component,
-    name: s[0] as string,
-    info: s[1] as string,
+    name: cleanLabel(s[0] as string),
+    info: cleanLabel(s[1] as string),
     funder: asHex(s[2]),
     vault,
     receipts: asHex(s[4]),

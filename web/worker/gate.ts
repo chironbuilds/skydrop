@@ -17,6 +17,7 @@ import { ristretto255 } from "@noble/curves/ed25519.js";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { CONFIG } from "../src/config";
+import { readCapped } from "../../web-atproto/worker/secure";
 
 const { Point } = ristretto255;
 const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
@@ -26,6 +27,8 @@ export const INDEXER = "https://ootle-indexer-a.tari.com";
 export const NETWORK_BYTE = 0x26;
 const MAX_CIPHERTEXT = 32_768;
 const MAX_TITLE = 80;
+/** The ciphertext as hex or base64, plus the rest of a request. Nothing valid comes near this. */
+const MAX_BODY = 128_000;
 const MIN_PRICE = 1000n;
 const MAX_PRICE = 100_000_000n;
 /** How far a signed challenge's timestamp may be from now. */
@@ -236,7 +239,9 @@ async function currentEpoch(deps: GateDeps): Promise<number> {
 async function createGate(req: Request, deps: GateDeps): Promise<Response> {
   let b: Record<string, unknown>;
   try {
-    b = (await req.json()) as Record<string, unknown>;
+    const text = await readCapped(req, MAX_BODY);
+    if (text === null) return fail(413, "That is too large.");
+    b = JSON.parse(text) as Record<string, unknown>;
   } catch {
     return fail(400, "Send JSON.");
   }
@@ -272,7 +277,9 @@ async function unlock(id: string, req: Request, deps: GateDeps): Promise<Respons
   if (!g) return fail(404, "No such locked post.");
   let b: Record<string, unknown>;
   try {
-    b = (await req.json()) as Record<string, unknown>;
+    const text = await readCapped(req, MAX_BODY);
+    if (text === null) return fail(413, "That is too large.");
+    b = JSON.parse(text) as Record<string, unknown>;
   } catch {
     return fail(400, "Send JSON.");
   }

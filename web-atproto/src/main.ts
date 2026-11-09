@@ -1,5 +1,6 @@
 import "./styles.css";
 import { append, clear, h, replace } from "./lib/dom";
+import { initMotion, pageChange, themeChange } from "./lib/motion";
 import { builderPage } from "./pages/builder";
 import { campaignPage } from "./pages/campaign";
 import { campaignsPage } from "./pages/campaigns";
@@ -64,7 +65,7 @@ function themeButton(): HTMLButtonElement {
     const root = document.documentElement;
     const dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
     const next = dark ? "light" : "dark";
-    root.setAttribute("data-theme", next);
+    themeChange(b, () => root.setAttribute("data-theme", next));
     try {
       localStorage.setItem("atp-theme", next);
     } catch {
@@ -99,7 +100,14 @@ append(app, [
   )),
 ]);
 
+const header = app.querySelector<HTMLElement>(".top")!;
+addEventListener("scroll", () => header.classList.toggle("scrolled", scrollY > 8), { passive: true });
+
 function render(): void {
+  pageChange(paint);
+}
+
+function paint(): void {
   links.classList.remove("open");
   menu.setAttribute("aria-expanded", "false");
   const path = location.pathname;
@@ -135,4 +143,5 @@ document.addEventListener("click", (e) => {
 });
 addEventListener("popstate", render);
 
-render();
+paint();
+initMotion(main);

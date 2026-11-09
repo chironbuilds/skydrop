@@ -1,0 +1,72 @@
+/* The moving parts both sites share. Everything is switched off for anyone who asked for reduced motion. */
+
+/* things arriving */
+.rv-wait { opacity: 0; }
+.rv-in { animation: rv-rise .52s cubic-bezier(.2, .8, .25, 1) var(--rv-delay, 0ms) both; }
+@keyframes rv-rise { from { opacity: 0; transform: translateY(16px) scale(.985); } to { opacity: 1; transform: none; } }
+@media print { .rv-wait { opacity: 1; } }
+
+/* cards lean towards the pointer */
+.qopen, a.card, .quick, .qtile { position: relative; }
+.tilting { transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-3px) !important; transition: transform .08s linear, box-shadow .16s ease, border-color .16s ease !important; will-change: transform; }
+a.card::after, .quick::after { content: ""; position: absolute; inset: 0; border-radius: inherit; opacity: 0; pointer-events: none; background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--accent, #2350d8) 13%, transparent), transparent 70%); transition: opacity .2s ease; }
+a.card:hover::after, .quick:hover::after { opacity: 1; }
+
+/* figures running up */
+.counting { font-variant-numeric: tabular-nums; }
+
+/* confetti */
+.burst { position: fixed; inset: 0; z-index: 120; overflow: hidden; pointer-events: none; }
+.bit { position: absolute; left: 0; top: 0; width: 9px; height: 15px; border-radius: 2px; border: 1px solid rgb(25 23 48 / .7); }
+.bit.coin { width: 17px; height: 17px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff1a8, #f2c230 58%, #b98a10); border: 1.5px solid #191730; }
+
+/* moving between pages */
+@view-transition { navigation: none; }
+::view-transition-old(root) { animation: vt-out .15s ease-in both; }
+::view-transition-new(root) { animation: vt-in .28s cubic-bezier(.2, .8, .25, 1) both; }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(10px); } }
+.theme-swap::view-transition-old(root), .theme-swap::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+.theme-swap::view-transition-old(root) { z-index: 1; }
+.theme-swap::view-transition-new(root) { z-index: 2; }
+
+/* still loading */
+.skelgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; margin-top: 14px; }
+.skel { display: grid; gap: 10px; padding-bottom: 16px; overflow: hidden; background: var(--surface, #fff); border: 1px solid var(--line, #ddd); border-radius: 13px; }
+.skel i { display: block; border-radius: 6px; background: linear-gradient(100deg, var(--surface-2, #eee) 30%, color-mix(in srgb, var(--surface-2, #eee) 45%, var(--surface, #fff)) 50%, var(--surface-2, #eee) 70%); background-size: 240% 100%; animation: skel 1.5s linear infinite; }
+.skel .skel-art { height: 92px; border-radius: 0; }
+.skel .skel-line { height: 13px; margin-inline: 16px; width: 58%; }
+.skel .skel-line.wide { width: 74%; height: 18px; }
+.skel .skel-line.short { width: 36%; }
+@keyframes skel { to { background-position: -240% 0; } }
+
+/* a campaign's picture */
+.questart .tw { animation: twinkle 3.6s ease-in-out infinite; }
+.questart .halo { transform-box: fill-box; transform-origin: center; animation: halo 2.8s ease-in-out infinite; }
+@keyframes twinkle { 50% { opacity: .06; } }
+@keyframes halo { 50% { transform: scale(1.22); opacity: .14; } }
+
+/* a step's icon */
+.ruleicon { display: block; flex: none; }
+.rulechips { display: flex; flex-wrap: wrap; gap: 5px; list-style: none; margin: 0; padding: 0; }
+.rulechip { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--accent, #2350d8); background: color-mix(in srgb, var(--accent, #2350d8) 12%, transparent); transition: transform .18s cubic-bezier(.2, 1.5, .4, 1); }
+.rulechip.or { border: 1.5px dashed color-mix(in srgb, var(--accent, #2350d8) 55%, transparent); }
+a:hover .rulechip, article:hover .rulechip { transform: translateY(-2px); }
+a:hover .rulechip:nth-child(2), article:hover .rulechip:nth-child(2) { transition-delay: .04s; }
+a:hover .rulechip:nth-child(3), article:hover .rulechip:nth-child(3) { transition-delay: .08s; }
+a:hover .rulechip:nth-child(4), article:hover .rulechip:nth-child(4) { transition-delay: .12s; }
+
+/* how much of a pool has gone */
+.poolbar { display: grid; gap: 4px; width: 100%; font-size: 12.5px; color: var(--muted, #666); }
+.poolbar > div { height: 7px; overflow: hidden; border-radius: 5px; background: var(--surface-2, #eee); }
+.poolbar i { display: block; height: 100%; min-width: 3px; border-radius: 5px; background: linear-gradient(90deg, var(--accent, #2350d8), var(--accent-2, #6f35d6)); transform-origin: left; }
+.poolbar i.fill { animation: poolfill .8s cubic-bezier(.2, .8, .25, 1) both; }
+@keyframes poolfill { from { transform: scaleX(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-wait { opacity: 1; }
+  .rv-in, .skel i, .questart .tw, .questart .halo, .poolbar i.fill { animation: none; }
+  .tilting { transform: none !important; }
+  .rulechip { transition: none; }
+  ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+}

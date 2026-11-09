@@ -424,5 +424,42 @@ console.log("link code");
   ok(code === "tari-bind:f3c39544f5fd62a5381fbb93c698c567", "matches a code the contract accepted", code);
 }
 
+console.log("Security layer");
+{
+  const { fullPageRequest, httpsRedirect, inlineHashes, readCapped, secure } = await import("../worker/secure");
+  const { createHash } = await import("node:crypto");
+  const { cleanLabel } = await import("../src/lib/campaign");
+  const script = "location.replace('/x')";
+  const expected = `sha256-${createHash("sha256").update(script).digest("base64")}`;
+  const page = `<!doctype html><script src="/a.js"></script><script>${script}</script>`;
+  ok((await inlineHashes(page)).join() === expected, "hashes inline scripts and skips external ones");
+  const res = await secure(new Response(page, { headers: { "content-type": "text/html; charset=utf-8" } }));
+  const csp = res.headers.get("content-security-policy") ?? "";
+  ok(csp.includes(`'${expected}'`), "a page's own inline script is allowed");
+  ok(!/script-src[^;]*'unsafe-inline'/.test(csp) && !/script-src[^;]*'unsafe-eval'/.test(csp), "no inline or eval scripts beyond that");
+  ok(csp.includes("frame-ancestors 'none'") && csp.includes("base-uri 'none'") && csp.includes("object-src 'none'"), "no framing, base tags or plugins");
+  ok((await res.text()) === page, "the page itself is untouched");
+  ok(res.headers.get("x-content-type-options") === "nosniff" && !!res.headers.get("strict-transport-security"), "the fixed headers are on");
+  const img = await secure(new Response("x", { status: 200, headers: { "content-type": "image/png", "cache-control": "public, max-age=9" } }));
+  ok(img.headers.get("cache-control") === "public, max-age=9" && !img.headers.get("content-security-policy"), "other responses keep their own headers");
+  const up = httpsRedirect(new Request("http://skydrop.tari.mw/quests?a=1"));
+  ok(up?.status === 301 && up.headers.get("location") === "https://skydrop.tari.mw/quests?a=1", "http goes to https, keeping the address");
+  ok(httpsRedirect(new Request("https://skydrop.tari.mw/")) === null, "https stays");
+  ok(httpsRedirect(new Request("http://localhost:8787/")) === null, "local testing stays on http");
+  ok(httpsRedirect(new Request("https://skydrop.tari.mw/", { headers: { "x-forwarded-proto": "http" } }))?.status === 301, "http behind a proxy is caught too");
+  const conditional = fullPageRequest(new Request("https://a.test/", { headers: { accept: "text/html", "if-none-match": "x" } }));
+  ok(!conditional.headers.has("if-none-match"), "a page is always sent in full, so its policy always matches");
+  const asset = new Request("https://a.test/a.js", { headers: { accept: "*/*", "if-none-match": "x" } });
+  ok(fullPageRequest(asset) === asset, "other files can still use their cache");
+  const post = (body: string) => new Request("https://a.test/", { method: "POST", body });
+  ok((await readCapped(post("hello"), 5)) === "hello", "a body at the limit is read");
+  ok((await readCapped(post("hello!"), 5)) === null, "a longer one is refused");
+  const chunked = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); c.enqueue(new Uint8Array(4)); c.close(); } });
+  ok((await readCapped(new Request("https://a.test/", { method: "POST", body: chunked, duplex: "half" } as RequestInit), 5)) === null, "even if it never stated its length");
+  ok(cleanLabel("Pays \u202e0001\u202c tTARI") === "Pays 0001 tTARI", "direction overrides are removed from names");
+  ok(cleanLabel("a\u200bb\nc") === "a b c", "and invisible characters and line breaks");
+  ok(cleanLabel("空投 Кампания 🎉") === "空投 Кампания 🎉", "real letters of any script stay");
+}
+
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);

@@ -1,9 +1,12 @@
 import { fromMicro } from "../lib/campaign";
+import { poolBar, questArt, ruleChips } from "../lib/art";
+import { ruleIcon } from "../lib/icons";
+import { once, skeleton } from "../lib/motion";
 import { contractsOnNetwork, isPublished } from "../data/deployment";
 import { PLAYBOOKS, type Playbook } from "../data/playbooks";
 import { listCampaigns, phaseOf } from "../lib/chain";
 import { h, pageHead, pill, replace } from "../lib/dom";
-import { exposure, newSpec, QUICK_ACTIONS, QUICK_STARTS, RULES, toMicro, type RuleKind, type Spec } from "../lib/campaign";
+import { exposure, newSpec, QUICK_STARTS, RULES, toMicro, type RuleKind, type Spec } from "../lib/campaign";
 import type { Page } from "../main";
 
 /** Turns a playbook into a starting spec with its targets blank, for the builder. */
@@ -30,7 +33,7 @@ function exposureOf(p: Playbook): "Low" | "Medium" | "High" {
 
 /** Open campaigns made with this contract. Each is read back from the chain, which decides what's real. */
 function liveCampaigns(): HTMLElement {
-  const box = h("div", { style: "margin-top:12px" }, h("p", { class: "muted" }, "Reading the network…"));
+  const box = h("div", { style: "margin-top:12px" }, h("p", { class: "muted" }, "Reading the network…"), skeleton(3));
   if (!isPublished()) {
     replace(box, h("div", { class: "note" }, h("strong", null, "No campaigns can run yet."), " ", contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today."));
     return box;
@@ -39,7 +42,7 @@ function liveCampaigns(): HTMLElement {
     const open = (await listCampaigns()).filter((c) => !c.legacy && phaseOf(c) !== "closed" && c.balance > 0n);
     replace(box, open.length
       ? [
-          h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card", href: `/c/${c.component}` }, h("h3", null, c.name), h("p", null, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`)))),
+          h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card livec", href: `/c/${c.component}` }, questArt(c.name, c.rules), h("div", { class: "livecbody" }, h("h3", null, c.name), h("p", { class: "livecreward" }, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), c.rules.length ? ruleChips(c.rules, (r) => RULES[r.kind]!.name) : null, poolBar(c.paid, c.balance, "tTARI", once(`pool|${c.component}`)), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`))))),
           h("p", { class: "muted small-text" }, "Anyone can create a campaign, so nobody here has vetted these. Their funds and rules are real; their names and links are whatever the creator chose."),
         ]
       : h("div", { class: "note" }, h("strong", null, "No campaigns are open right now."), " Be the first: pick a playbook below."));
@@ -84,7 +87,7 @@ export function campaignsPage(): Page {
         h("h2", { id: "quick", class: "big" }, "Start from a template"),
         h("p", { class: "muted", style: "margin-top:8px" }, "Each opens on the drag-and-drop board, ready for your posts. Add, remove or reorder steps from there."),
         h("div", { class: "quickgrid" }, QUICK_STARTS.map((q) => h("a", { class: "quick", href: `/campaigns/new?do=${q.kinds.join(",")}` },
-          h("span", { class: "icons", "aria-hidden": "true" }, q.kinds.map((k) => QUICK_ACTIONS.find((a) => a.kind === k)!.icon).join(" ")),
+          h("span", { class: "icons rulechips", "aria-hidden": "true" }, q.kinds.map((k) => h("span", { class: "rulechip" }, ruleIcon(k, 16)))),
           h("strong", null, q.name),
           h("span", { class: "muted small-text" }, q.text),
         ))),

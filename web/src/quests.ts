@@ -3,7 +3,9 @@
  * campaigns happens on atproto.tari.mw; both sites share the verifier and the eligibility checks in web-atproto/src/lib.
  */
 import "./quests.css";
-import { questArt } from "../../web-atproto/src/lib/art";
+import { poolBar, questArt, ruleChips } from "../../web-atproto/src/lib/art";
+import { parachute } from "../../web-atproto/src/lib/icons";
+import { celebrate, countUp, initMotion, once, skeleton } from "../../web-atproto/src/lib/motion";
 import { composeUrl, fetchPost, latestPost, resolveActor, targetLink, type Actor } from "../../web-atproto/src/lib/atproto";
 import { afterFee, approxTime, claimFee, decodeSpec, encodeLive, encodeSpec, EPOCHS_PER_DAY, fromMicro, LIVE_PLACEHOLDER, RULES, summarize, type Rule, type Spec } from "../../web-atproto/src/lib/campaign";
 import { checkRule, identity, type Identity, type RuleResult } from "../../web-atproto/src/lib/check";
@@ -20,7 +22,7 @@ import { campaignLink, contractsOnNetwork, DEPLOYMENT, isPublished } from "../..
 
 const unit = "tTARI";
 const CREATOR = "https://atproto.tari.mw";
-const EXPLORER = "https://explorer.tari.mw";
+const EXPLORER = "https://testnet-explorer.tari.mw";
 const QKEY = "skydrop-quests";
 const HKEY = "skydrop-handle";
 /** Campaigns someone removed, so finding their past campaigns doesn't bring them back. */
@@ -198,7 +200,8 @@ function stepLine(s: StepView): HTMLElement {
   const def = RULES[s.rule.kind]!;
   const mark = s.status === "met" ? "✓" : s.covered ? "–" : s.status === "error" ? "!" : "○";
   const cls = s.status === "met" ? "ok" : s.covered ? "skip" : s.status === "error" ? "err" : "todo";
-  return h("li", { class: `qstep ${cls}` },
+  const fresh = s.status === "met" && once(`met|${s.rule.kind}|${s.rule.target}|${s.rule.text ?? ""}`);
+  return h("li", { class: `qstep ${cls}${fresh ? " justmet" : ""}` },
     h("span", { class: "qmark", "aria-hidden": "true" }, mark),
     h("div", { class: "qsteptext" },
       h("span", null, def.name, s.rule.text ? ` saying “${s.rule.text}”` : "", s.rule.kind === 3 ? `: “${s.rule.target}”` : ""),
@@ -322,6 +325,7 @@ function livePanel(t: Tracked): HTMLElement {
                 return;
               }
               await sendAndConfirm(plan.instructions, plan.inputs, status);
+              celebrate(go);
               reset(`Collected ${fromMicro(plan.amount)} ${unit} from “${t.spec.name}”.`);
             } catch (e) {
               status.className = "fielderr";
@@ -493,21 +497,21 @@ function questCard(t: Tracked, a?: Assessment): HTMLElement {
   const liveNow = liveData.get(t.id);
   const shareUrl = (): string => (s.component ? campaignLink(s.component, { allocations: s.allocations, origin: location.origin }) : `${location.origin}/quests#add=${encodeSpec(s)}`);
   return h("article", { class: `questcard qcard${a?.state === "ready" ? " won" : ""}${flashId === t.id ? " qflash" : ""}`, id: `quest-${t.id}` },
-    h("div", { class: "qart" }, questArt(s.name, s.rules, lit), a?.state === "claimed" ? h("span", { class: "qstamp" }, "Collected") : null),
+    h("div", { class: "qart" }, questArt(s.name, s.rules, lit), a?.state === "claimed" ? h("span", { class: `qstamp${once(`stamp|${t.id}`) ? " fresh" : ""}` }, "Collected") : null),
     h("div", { class: "questbody" },
       h("div", { class: "row", style: "justify-content:space-between;gap:6px" },
         h("h3", null, s.name),
-        t.example ? h("span", { class: "pill plain" }, "Example") : liveData.get(t.id)?.c.legacy ? h("span", { class: "pill warn", title: "Made before the latest security fixes" }, "Older contract") : liveData.has(t.id) ? h("span", { class: "pill ok" }, "Live") : s.component ? null : h("span", { class: "pill plain" }, "Preview"),
+        t.example ? h("span", { class: "pill plain" }, "Example") : liveData.get(t.id)?.c.legacy ? h("span", { class: "pill warn", title: "Made before the Ootle 0.50 network upgrade" }, "Retired") : liveData.has(t.id) ? h("span", { class: "pill ok" }, "Live") : s.component ? null : h("span", { class: "pill plain" }, "Preview"),
       ),
       unread ? null : h("p", { class: "questreward" }, s.allocations ? (a && a.perRound > 0n ? `${fromMicro(a.perRound)} ${unit}` : "Listed amounts") : `${fromMicro(s.reward)} ${unit}`, s.rounds > 1 ? h("small", { class: "muted" }, ` per round, ${s.rounds} rounds`) : null),
       unread || (s.allocations && !a?.perRound) ? null : feeLine(a?.perRound ?? BigInt(s.reward), s.rules),
-      liveNow && !finished ? deadlineLine(liveNow.c, a?.perRound || liveNow.c.reward) : null,
+      liveNow && !finished && !liveNow.c.legacy ? deadlineLine(liveNow.c, a?.perRound || liveNow.c.reward) : null,
       s.about ? h("p", { class: "muted small-text" }, s.about) : null,
       liveErrors.has(t.id) ? h("p", { class: "fielderr" }, liveErrors.get(t.id)!) : null,
       a && a.paid > 0n ? h("p", { class: "small-text", style: "margin:0" }, h("strong", null, `Collected ${fromMicro(a.paid)} ${unit}`), a.fullAmount > a.paid ? `, ${fromMicro(a.fullAmount - a.paid)} ${unit} still possible.` : ".") : null,
       a
         ? [
-            finished ? null : flowSteps(t, a) ?? h("div", { class: "meter big", role: "img", "aria-label": `${a.done} of ${a.total} steps done` }, h("i", { style: `width:${a.total ? (a.done / a.total) * 100 : a.state === "ready" ? 100 : 0}%` })),
+            finished ? null : flowSteps(t, a) ?? h("div", { class: "meter big", role: "img", "aria-label": `${a.done} of ${a.total} steps done` }, h("i", { class: once(`meter|${t.id}`) ? "fillin" : null, style: `width:${a.total ? (a.done / a.total) * 100 : a.state === "ready" ? 100 : 0}%` })),
             h("p", { class: "qhead" }, a.headline),
             // Once it's all paid, undoing a step changes nothing, so it isn't worth asking about.
             finished ? null : h("ul", { class: "qsteps" }, a.steps.map(stepLine)),
@@ -631,6 +635,7 @@ async function startLink(): Promise<void> {
           status.textContent = "Checking it will work…";
           await dryRunInstructions(plan.instructions, LINK_MAX_FEE, plan.inputs);
           await sendAndConfirm(plan.instructions, plan.inputs, status);
+          celebrate(go);
           closeLink();
           toast("Wallet linked. First claims no longer need a post.");
           panels.clear();
@@ -770,6 +775,7 @@ async function startBatch(): Promise<void> {
             return;
           }
           await sendAndConfirm(merged.instructions, merged.inputs, status);
+          celebrate(go);
           panels.clear();
           panelStage.clear();
           rechecks.clear();
@@ -845,6 +851,7 @@ function draw(): void {
   if (!list.length) {
     replace(summary);
     replace(board, h("div", { class: "qempty" },
+      h("div", { class: "qemptyart", "aria-hidden": "true" }, parachute(74)),
       h("h2", null, "No quests yet"),
       h("p", { class: "muted" }, "Pick an open campaign below, or open a link someone shared. It'll appear here with what you've done and what's left. Your list stays in this browser."),
       h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn ghost small", type: "button", onclick: () => void addExample() }, "Try a pretend example")),
@@ -871,6 +878,7 @@ function draw(): void {
         ? h("div", { class: "qtile" }, h("span", null, "Collected"), h("strong", null, `${fromMicro(t.collected + bonuses)} ${unit}`), h("small", null, bonuses > 0n ? "including invite bonuses" : "paid to your wallet"))
         : h("div", { class: "qtile" }, h("span", null, "Tracking"), h("strong", null, String(list.length)), h("small", null, t.blockedCount ? `${t.blockedCount} you can't complete yourself` : list.length === 1 ? "campaign" : "campaigns")),
     );
+    for (const figure of summary.querySelectorAll<HTMLElement>(".qtile strong")) countUp(figure, figure.previousElementSibling?.textContent ?? "");
   } else {
     replace(summary);
   }
@@ -963,22 +971,31 @@ function openCard(c: ChainCampaign): HTMLElement {
   });
   const stand = openStand.get(c.component);
   const pay = stand?.perRound || c.reward;
+  const lit = stand ? stand.steps.map((x) => x.status === "met") : [];
   return h("article", { class: "qopen" },
+    h("div", { class: "qopenart" }, questArt(c.name, c.rules, lit)),
+    h("div", { class: "qopenbody" },
     h("h3", null, c.name),
-    c.legacy ? h("span", { class: "pill warn", title: "Made before the latest security fixes" }, "Older contract") : null,
     c.root ? h("span", { class: "pill ok" }, "You're on its list") : stand?.state === "ready" ? h("span", { class: "pill ok" }, "You qualify") : stand && stand.done > 0 ? h("span", { class: "pill info" }, `${stand.done} of ${stand.total} steps done`) : null,
     h("p", { class: "questreward" }, `${fromMicro(pay)} ${unit}`, c.rounds > 1 ? h("small", { class: "muted" }, ` per round, ${c.rounds} rounds`) : null, c.bonus > 0n && c.maxReferrals > 0 ? h("small", { class: "muted" }, ` +${fromMicro(c.bonus)} per invite`) : null),
+    c.rules.length ? ruleChips(c.rules, (r) => RULES[r.kind]!.name) : null,
     h("p", { class: "muted small-text" }, c.rules.length ? `${summarize(c.rules)[0]!.toUpperCase()}${summarize(c.rules).slice(1)}.` : ""),
     feeLine(pay, c.rules),
     deadlineLine(c, pay),
+    poolBar(c.paid, c.balance, unit, once(`pool|${c.component}`)),
     h("p", { class: "muted small-text" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} ${unit} left · `, h("a", { href: `${CREATOR}/c/${c.component}`, target: "_blank", rel: "noopener" }, "Details")),
     add,
+    ),
   );
 }
 
+type OpenSort = "best" | "reward" | "closing";
+const OPEN_SORTS: [OpenSort, string][] = [["best", "Best for you"], ["reward", "Biggest reward"], ["closing", "Closing soon"]];
+let openSort: OpenSort = "best";
+
 function drawOpen(): void {
   if (openCampaigns === null) {
-    replace(openBox, h("section", { class: "qsection" }, h("h2", null, "Open campaigns"), h("p", { class: "muted small-text" }, "Reading the network…")));
+    replace(openBox, h("section", { class: "qsection" }, h("h2", null, "Open campaigns"), h("p", { class: "muted small-text" }, "Reading the network…"), skeleton(2, "skel qskel")));
     return;
   }
   const tracked = new Set(loadTracked().map((t) => t.id));
@@ -990,11 +1007,16 @@ function drawOpen(): void {
   const net = (c: ChainCampaign): bigint => afterFee(openStand.get(c.component)?.perRound || c.reward, c.rules) ?? 0n;
   const fresh = openCampaigns
     .filter((c) => !tracked.has(c.component) && (!c.root || openStand.has(c.component)))
-    .sort((x, y) => score(y) - score(x) || (net(y) > net(x) ? 1 : net(y) < net(x) ? -1 : 0));
+    .sort((x, y) => {
+      if (openSort === "closing") return x.closeEpoch - y.closeEpoch;
+      const byNet = net(y) > net(x) ? 1 : net(y) < net(x) ? -1 : 0;
+      return openSort === "reward" ? byNet : score(y) - score(x) || byNet;
+    });
   replace(openBox, fresh.length
     ? h("section", { class: "qsection" },
         h("h2", null, "Open campaigns", h("span", { class: "qcount" }, String(fresh.length))),
         h("p", { class: "muted small-text" }, "Anyone can create a campaign and nobody has vetted these. Their rewards and rules are real; check a post before you engage with it."),
+        fresh.length > 2 ? h("div", { class: "chips qsort", role: "group", "aria-label": "Sort open campaigns" }, OPEN_SORTS.map(([id, label]) => h("button", { class: "chip", type: "button", "aria-pressed": String(openSort === id), onclick: () => { openSort = id; drawOpen(); } }, label))) : null,
         h("div", { class: "questgrid" }, fresh.map(openCard)))
     : null);
 }
@@ -1071,6 +1093,7 @@ async function checkAll(): Promise<void> {
     return;
   }
   checking = true;
+  document.body.classList.add("busy");
   go.textContent = "Checking…";
   try {
     const checkingFor = actor;
@@ -1103,6 +1126,8 @@ async function checkAll(): Promise<void> {
         const roundsPaid = receipt?.roundsPaid ?? 0;
         const waitEpochs = waitFor(c, receipt);
         a = settle(a, { roundsPaid, rounds: c.rounds, phase, waitEpochs, waitText: approxTime(waitEpochs), funded: a.perRound === 0n || c.balance >= a.perRound, closesIn: Math.max(0, c.closeEpoch - c.epoch), roundEpochs: c.roundEpochs, pool: c.balance });
+        // Its contract no longer loads, so nothing about it can be collected, however its steps stand.
+        if (c.legacy && a.state !== "claimed") a = { ...a, state: "over", headline: "This campaign was made before the Ootle 0.50 network upgrade. Its contract no longer runs, so it can't pay out." };
       }
       assessments.set(t.id, a);
       draw();
@@ -1114,6 +1139,7 @@ async function checkAll(): Promise<void> {
     replace(who, h("p", { class: "fielderr" }, (e as Error).message));
   } finally {
     checking = false;
+    document.body.classList.remove("busy");
     go.textContent = "Refresh";
     draw();
     if (checkAgain) {
@@ -1263,6 +1289,7 @@ append(document.getElementById("app")!, [
     chip,
   )),
   h("main", { class: "wrap qmain", id: "qmain", tabindex: "-1" },
+    h("div", { class: "qsky", "aria-hidden": "true" }, h("i", { class: "cloud c1" }), h("i", { class: "cloud c2" }), h("i", { class: "cloud c3" }), h("div", { class: "qdrop" }, parachute(112))),
     h("span", { class: "kicker" }, "My quests"),
     h("h1", null, "What you've earned, and what's left"),
     lede,
@@ -1288,6 +1315,7 @@ append(document.getElementById("app")!, [
   toastBox,
 ]);
 if (currentLang() === "zh") startChinese();
+initMotion(document.getElementById("app")!);
 
 // A link like /quests#add=<campaign> adds it, then leaves the hash clean. It can also arrive while the page is open.
 function addFromHash(): boolean {

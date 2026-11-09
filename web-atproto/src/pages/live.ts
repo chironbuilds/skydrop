@@ -8,6 +8,7 @@ import { copyButton, h, pageHead, pill, replace } from "../lib/dom";
 import { allocationsFor, rememberAllocations } from "../lib/library";
 import { fetchList, listMatches, saveList } from "../lib/lists";
 import { connectWallet, dryRunInstructions, friendly, onWallet, sendFunded, sendInstructions, walletBalance, type Stage, type WalletState } from "../lib/wallet";
+import { calm, celebrate } from "../lib/motion";
 import type { Page } from "../main";
 
 const unit = "tTARI";
@@ -55,6 +56,8 @@ export function launchBox(spec: Spec): HTMLElement {
       const live = await campaignFromTx(tx);
       if (!live) throw new Error(`It went through, but the campaign couldn't be read back. Check My campaigns. Transaction ${tx}`);
       rememberAllocations(live.component, spec.allocations);
+      celebrate(btn);
+      await new Promise((r) => setTimeout(r, calm() ? 0 : 900));
       location.href = `/c/${live.component}`;
     } catch (e) {
       status.className = "fielderr";
@@ -101,6 +104,7 @@ function ruleRow(c: ChainCampaign, i: number): HTMLElement {
 }
 
 function phaseLine(c: ChainCampaign): string {
+  if (c.legacy) return "This campaign was made before the Ootle 0.50 network upgrade. Its contract no longer runs, so it can't pay out or be closed, and any funds left in it are stuck.";
   const phase = phaseOf(c);
   if (phase === "upcoming") return `Opens at epoch ${c.openEpoch.toLocaleString("en-US")}, in ${approxTime(c.openEpoch - c.epoch)}. Closes at epoch ${c.closeEpoch.toLocaleString("en-US")}.`;
   if (phase === "open") return `Closes at epoch ${c.closeEpoch.toLocaleString("en-US")}, in ${approxTime(c.closeEpoch - c.epoch)}. The network is at epoch ${c.epoch.toLocaleString("en-US")}.`;
@@ -109,6 +113,7 @@ function phaseLine(c: ChainCampaign): string {
 
 /** What the funder can do. Each action is also enforced by the contract, whatever this page shows. */
 function manageBox(c: ChainCampaign, w: WalletState, reload: () => void): HTMLElement {
+  if (c.legacy) return h("p", { class: "muted small-text" }, "Nothing can be changed on this campaign: its contract no longer runs on the network.");
   const status = h("p", { class: "muted small-text", "aria-live": "polite" });
   const fail = (e: unknown) => {
     status.className = "fielderr";

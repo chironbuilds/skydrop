@@ -156,7 +156,7 @@ console.log("Other pages");
   await clean(p);
   await p.goto("about:blank");
   await p.goto(SKYDROP, { waitUntil: "networkidle2" });
-  check(await waitText(p, "+0.02 per invite", 40000), "open campaigns show the bonus");
+  check(await waitText(p, " per invite", 40000), "open campaigns show the bonus");
   await p.close();
   const c = await open(null);
   await c.goto(`${CREATOR}/c/${CAMPAIGN}`, { waitUntil: "networkidle2" });

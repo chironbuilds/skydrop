@@ -230,9 +230,19 @@ export const LINK_LIST_MAX = 25;
 export const encodeLive = (component: string, allocations?: Allocation[]): string => b64url(JSON.stringify({ v: 1, name: "", rules: [], component, ...(allocations && allocations.length <= LINK_LIST_MAX ? { allocations } : {}) }));
 
 /** Parses a shared spec. Treats it as untrusted: everything it holds is shown as text and re-validated. */
+/**
+ * Text anyone can choose, made safe to show beside real figures. Direction overrides and invisible characters can make a
+ * name read as something it isn't, such as a reward that isn't the real one. Letters of every script are kept.
+ */
+export function cleanLabel(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 export function decodeSpec(s: string): Spec {
   const j = JSON.parse(unb64url(s)) as Spec;
   if (j.v !== 1 || typeof j.name !== "string" || !Array.isArray(j.rules)) throw new Error("Not a campaign");
+  j.name = cleanLabel(j.name);
+  if (typeof j.about === "string") j.about = cleanLabel(j.about);
   if (j.component !== undefined) {
     // A live campaign's terms come from its contract. The link names the address and carries any allocation list, and
     // whatever else it says is dropped, so it can't misstate a reward or be refused over terms the chain overrules.

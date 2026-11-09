@@ -8,11 +8,13 @@ import { confetti, copy, h, icons, mount, short, spinnerLabel, stamp, toast } fr
 import { toHex } from "./cbor";
 import * as env from "./envelope";
 import { attachSuggest } from "../../web-atproto/src/lib/suggest";
+import { initMotion } from "../../web-atproto/src/lib/motion";
 import { currentLang, setLang, startChinese } from "./i18n";
 import type { Lang } from "./i18n";
 import * as wallets from "./wallet";
 import type { Wallet } from "./wallet";
 
+initMotion();
 const themeParam = new URLSearchParams(location.search).get("theme");
 const THEME_KEY = "skydrop.theme";
 const storedTheme = (): string | null => {

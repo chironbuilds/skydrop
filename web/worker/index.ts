@@ -7,6 +7,7 @@ import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import { handleGate, liveDeps } from "./gate";
 import { cleanNote, envelopeHash, isCoverId, styleOf, type Style } from "../src/envelope-data";
+import { fullPageRequest, httpsRedirect, readCapped, readCappedBytes, secure } from "../../web-atproto/worker/secure";
 
 interface Env {
   ASSETS: { fetch(r: Request): Promise<Response> };
@@ -122,13 +123,20 @@ ${amount ? `<text x="540" y="${290 + lines.length * 58 + 30}" font-family="Fraun
 
 /** At most `max` calls of `name` per address per hour. KV is eventually consistent, so this is a brake, not a hard cap. */
 async function overLimit(req: Request, env: Env, name: string, max: number): Promise<boolean> {
-  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+  const seen = req.headers.get("cf-connecting-ip") ?? "unknown";
+  // One IPv6 customer holds a whole /64, so counting single addresses would give them billions of allowances.
+  const ip = seen.includes(":") ? seen.split(":").slice(0, 4).join(":") : seen;
   const hour = Math.floor(Date.now() / 3_600_000);
   const rate = `rate:${name}:${hour}:${ip}`;
-  const used = Number(new TextDecoder().decode((await env.COVERS.get(rate, "arrayBuffer")) ?? new ArrayBuffer(0))) || 0;
-  if (used >= max) return true;
-  await env.COVERS.put(rate, new TextEncoder().encode(String(used + 1)).buffer as ArrayBuffer, { expirationTtl: 3700 });
-  return false;
+  try {
+    const used = Number(new TextDecoder().decode((await env.COVERS.get(rate, "arrayBuffer")) ?? new ArrayBuffer(0))) || 0;
+    if (used >= max) return true;
+    await env.COVERS.put(rate, new TextEncoder().encode(String(used + 1)).buffer as ArrayBuffer, { expirationTtl: 3700 });
+    return false;
+  } catch {
+    // The counter's own storage has failed, so whatever this guards can't safely store anything either.
+    return true;
+  }
 }
 
 async function png(url: URL, env: Env, req: Request): Promise<Response> {
@@ -155,10 +163,10 @@ const isJpeg = (b: Uint8Array): boolean => b.length > 4 && b[0] === 0xff && b[1]
 async function saveCover(req: Request, env: Env): Promise<Response> {
   const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
   if (await overLimit(req, env, "cover", 20)) return json({ error: "slow down" }, 429);
-  if (Number(req.headers.get("content-length") ?? 0) > MAX_COVER) return json({ error: "too big" }, 413);
-  const buf = await req.arrayBuffer();
-  if (buf.byteLength > MAX_COVER) return json({ error: "too big" }, 413);
-  if (!isJpeg(new Uint8Array(buf))) return json({ error: "not a jpeg" }, 415);
+  const bytes = await readCappedBytes(req, MAX_COVER);
+  if (!bytes) return json({ error: "too big" }, 413);
+  if (!isJpeg(bytes)) return json({ error: "not a jpeg" }, 415);
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
   const id = [...digest.slice(0, 8)].map((x) => x.toString(16).padStart(2, "0")).join("");
   await env.COVERS.put(id, buf, { expirationTtl: COVER_TTL });
@@ -172,7 +180,8 @@ async function serveCover(url: URL, env: Env): Promise<Response> {
   const id = url.pathname.replace(/^\/c\//, "").replace(/\.jpg$/, "");
   const buf = isCoverId(id) && !(await banned(id, env)) ? await env.COVERS.get(id, "arrayBuffer") : null;
   if (!buf) return new Response("not found", { status: 404 });
-  return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
+  // Pictures are uploaded by strangers, so one opened directly can't do anything but be a picture.
+  return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" } });
 }
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -185,8 +194,8 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 async function saveEnvelope(req: Request, env: Env): Promise<Response> {
   const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
   if (await overLimit(req, env, "envelope", 30)) return json({ error: "slow down" }, 429);
-  const text = await req.text();
-  if (text.length > 600) return json({ error: "too big" }, 413);
+  const text = await readCapped(req, 600);
+  if (text === null) return json({ error: "too big" }, 413);
   let body: { e?: string; m?: string; c?: string };
   try {
     body = JSON.parse(text);
@@ -211,8 +220,7 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
   return new Response(buf, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 
-export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+async function serve(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/api/gate" && req.method === "POST" && (await overLimit(req, env, "gate", 20))) return new Response(JSON.stringify({ error: "Too many locked posts from this address. Try again later." }), { status: 429, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
     const gate = await handleGate(req, liveDeps(env.COVERS as never));
@@ -232,6 +240,18 @@ export default {
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
     if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);
     if (url.pathname.startsWith("/c/")) return serveCover(url, env);
-    return env.ASSETS.fetch(req);
+    return env.ASSETS.fetch(fullPageRequest(req));
+}
+
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const upgrade = httpsRedirect(req);
+    if (upgrade) return upgrade;
+    try {
+      return await secure(await serve(req, env));
+    } catch (e) {
+      console.error(e);
+      return secure(new Response(JSON.stringify({ error: "Something went wrong." }), { status: 500, headers: { "content-type": "application/json", "cache-control": "no-store" } }));
+    }
   },
 };

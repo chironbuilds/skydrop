@@ -409,3 +409,49 @@ input[type="range"] { padding: 0; min-height: 28px; accent-color: var(--accent);
   .paltile, .andline, .grip { min-height: 44px; }
   .grip { min-width: 44px; }
 }
+
+/* ---- richer surfaces ---- */
+.top { transition: box-shadow .2s ease; view-transition-name: site-top; }
+.top.scrolled { box-shadow: 0 8px 26px -18px rgb(20 20 60 / .55); }
+.links:not(.qnav) a { position: relative; transition: color .15s ease, background-color .15s ease; }
+.links:not(.qnav) a::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transform: scaleX(0); transform-origin: left; transition: transform .22s cubic-bezier(.2, .8, .25, 1); }
+.links:not(.qnav) a:hover::after, .links:not(.qnav) a[aria-current]::after { transform: scaleX(1); }
+.brand .dot { animation: ping-accent 2.8s ease-out infinite; }
+@keyframes ping-accent { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); } }
+
+/* the promise, in colour */
+.glow { background: linear-gradient(100deg, var(--accent), var(--accent-2), var(--accent)); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: glow 9s ease-in-out infinite alternate; }
+@keyframes glow { to { background-position: 100% 0; } }
+
+/* a primary button catches the light */
+.top .btn.primary, .hero .btn.primary { position: relative; overflow: hidden; }
+.top .btn.primary::after, .hero .btn.primary::after { content: ""; position: absolute; inset: 0 auto 0 -60%; width: 40%; background: linear-gradient(100deg, transparent, rgb(255 255 255 / .35), transparent); transform: skewX(-18deg); transition: left .55s ease; pointer-events: none; }
+.top .btn.primary:hover::after, .hero .btn.primary:hover::after { left: 125%; }
+
+/* the chain of proof: a signal runs along it, link by link */
+.chain .link { overflow: hidden; transition: background-color .3s ease; }
+.chain .link::before { content: ""; position: absolute; inset: 0 auto auto 0; height: 2px; width: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transform: scaleX(0); transform-origin: left; animation: chainrun 7.5s linear infinite; }
+.chain .link:nth-child(2)::before { animation-delay: 1.5s; }
+.chain .link:nth-child(3)::before { animation-delay: 3s; }
+.chain .link:nth-child(4)::before { animation-delay: 4.5s; }
+.chain .link:nth-child(5)::before { animation-delay: 6s; }
+@keyframes chainrun { 0% { transform: scaleX(0); opacity: 1; } 18% { transform: scaleX(1); opacity: 1; } 30%, 100% { transform: scaleX(1); opacity: 0; } }
+
+/* tags and cards */
+a.card h3, .quick strong { transition: color .15s ease; }
+a.card:hover h3, .quick:hover strong { color: var(--accent); }
+.quick .icons { letter-spacing: 0; margin-bottom: 8px; }
+.card.livec { padding: 0; overflow: hidden; gap: 0; }
+.card.livec .questart { display: block; height: 96px; }
+.livecbody { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px 16px; flex: 1; }
+.card p.livecreward { font: 600 20px var(--display); color: var(--fg); }
+
+/* the love letter at the bottom */
+.ethos .heart { display: inline-block; animation: beat 1.8s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { transform: scale(1); } 12% { transform: scale(1.22); } 24% { transform: scale(1); } 36% { transform: scale(1.12); } 48% { transform: scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .brand .dot, .glow, .chain .link::before, .ethos .heart { animation: none; }
+  .chain .link::before { display: none; }
+  .links:not(.qnav) a::after, .top .btn.primary::after, .hero .btn.primary::after { transition: none; }
+}

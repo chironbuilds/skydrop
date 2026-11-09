@@ -93,7 +93,7 @@ export function homePage(): Page {
     body: h("div", null,
       h("section", { class: "hero" }, h("div", { class: "wrap herogrid" }, h("div", null,
         h("span", { class: "kicker" }, "A trustless identity layer"),
-        h("h1", null, "Contracts that check Bluesky for themselves."),
+        h("h1", null, "Contracts that check Bluesky ", h("span", { class: "glow" }, "for themselves.")),
         h("p", { class: "lede" }, "Create campaigns that reward likes, follows, posts and memberships from a pool nobody can redirect. Participants track their progress and claim on Skydrop, and every claim is proven from the account's own signatures, with no oracle and no one in the middle."),
         h("div", { class: "row" },
           h("a", { class: "btn primary", href: "/campaigns/new" }, "Build a campaign"),
