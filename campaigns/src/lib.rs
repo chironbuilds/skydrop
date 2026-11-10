@@ -238,7 +238,6 @@ mod campaign {
             assert!(reward.is_positive() || !allocation_root.is_empty(), "reward must be positive");
             assert!(rounds >= 1 && rounds <= MAX_ROUNDS, "rounds must be 1-52");
             assert!(rounds == 1 || round_epochs >= 1, "repeating rounds need a spacing");
-            assert!(!referral_bonus.is_negative(), "bonus cannot be negative");
             let now = Consensus::current_epoch();
             assert!(close_epoch > now && close_epoch > open_epoch, "close epoch must be in the future, after opening");
             assert!(close_epoch <= now.saturating_add(MAX_DURATION), "close epoch too far in the future");
