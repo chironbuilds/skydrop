@@ -6,9 +6,12 @@ import { campaignPage } from "./pages/campaign";
 import { campaignsPage } from "./pages/campaigns";
 import { docsPage } from "./pages/docs";
 import { connectWallet, friendly, onWallet, shortAddress, silentConnect } from "./lib/wallet";
+import { watchForMainnet } from "./lib/cutover";
+import { DEPLOYMENT } from "./data/deployment";
 import { homePage } from "./pages/home";
 import { mePage } from "./pages/me";
 import { statusPage } from "./pages/status";
+import { tipsPage } from "./pages/tips";
 import { useCasesPage } from "./pages/usecases";
 import { verifyPage } from "./pages/verify";
 
@@ -17,6 +20,7 @@ export type Page = { title: string; body: Node };
 const NAV = [
   ["/campaigns", "Campaigns"],
   ["/me", "My campaigns"],
+  ["/tips", "Send a gift"],
   ["/verify", "Live proof"],
   ["/use-cases", "Use cases"],
   ["/docs", "Docs"],
@@ -30,6 +34,7 @@ function route(path: string): Page {
   if (p === "/campaigns/new") return builderPage();
   if (p.startsWith("/c/")) return campaignPage(p.slice(3));
   if (p === "/me") return mePage();
+  if (p === "/tips") return tipsPage();
   if (p === "/verify") return verifyPage();
   if (p === "/use-cases") return useCasesPage();
   if (p === "/docs" || p.startsWith("/docs/")) return docsPage(p.slice(6));
@@ -52,6 +57,7 @@ onWallet((w) => {
   }
 });
 void silentConnect();
+watchForMainnet();
 function alertInline(text: string): void {
   const t = h("div", { class: "toast", role: "status" }, text);
   document.body.appendChild(t);
@@ -93,8 +99,8 @@ append(app, [
   )),
   main,
   h("footer", { class: "foot" }, h("div", { class: "wrap footgrid" },
-    h("div", null, h("strong", { class: "mono" }, "atproto · ootle"), h("p", null, "A trustless Bluesky identity layer for the Ootle VM. Testnet only. Reviewed internally; no third-party audit yet.")),
-    h("div", null, h("h2", null, "Run"), h("a", { href: "/campaigns" }, "Playbooks"), h("a", { href: "/campaigns/new" }, "Campaign builder"), h("a", { href: "https://skydrop.tari.mw/quests" }, "Skydrop: track and claim")),
+    h("div", null, h("strong", { class: "mono" }, "atproto · ootle"), h("p", null, `A trustless Bluesky identity layer for the Ootle VM. ${DEPLOYMENT.isMainnet ? "" : "Testnet only. "}Reviewed internally; no third-party audit yet.`)),
+    h("div", null, h("h2", null, "Run"), h("a", { href: "/campaigns" }, "Playbooks"), h("a", { href: "/campaigns/new" }, "Campaign builder"), h("a", { href: "/tips" }, "Send a gift"), h("a", { href: "https://skydrop.tari.mw/quests" }, "Skydrop: track and claim")),
     h("div", null, h("h2", null, "Check"), h("a", { href: "/verify" }, "Live proof"), h("a", { href: "/status" }, "Status and tests"), h("a", { href: "/docs/security" }, "Trust boundaries")),
     h("div", null, h("h2", null, "Build"), h("a", { href: "/use-cases" }, "Use cases"), h("a", { href: "/docs/integrate" }, "Integration guide"), h("a", { href: "/docs/campaign" }, "Campaign reference"), h("a", { href: "https://github.com/chironbuilds/skydrop" }, "Source")),
   )),

@@ -233,7 +233,7 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
   const linkRegistry = `component_${asHex(s[6])}`;
   if (linkRegistry !== (legacy?.linkRegistry ?? DEPLOYMENT.linkRegistry)) throw new Error("That campaign uses a different link registry from these sites, so it isn't shown.");
   const [{ resource, balance }, epoch] = await Promise.all([readVault(vault), currentEpoch()]);
-  if (resource !== TARI_RESOURCE) throw new Error("That campaign pays in a token other than tTARI, so it isn't shown.");
+  if (resource !== TARI_RESOURCE) throw new Error(`That campaign pays in a token other than ${DEPLOYMENT.unit}, so it isn't shown.`);
   return {
     component,
     name: cleanLabel(s[0] as string),
@@ -357,7 +357,7 @@ const REASONS: [RegExp, string][] = [
   [/has not closed yet/i, "This campaign hasn't closed yet, so its funds can't be taken back. If it's due now, try again in a minute or two: the network can lag behind for a moment."],
   [/close epoch can only move later/i, "The close date can only move later."],
   [/close epoch too far/i, "That's further ahead than the contract allows, which is about 833 days from now."],
-  [/insufficient|not enough|exceeds/i, "Your wallet doesn't have enough tTARI for this."],
+  [/insufficient|not enough|exceeds/i, `Your wallet doesn't have enough ${DEPLOYMENT.unit} for this.`],
   [/already exists|duplicate|non.?fungible.*exist/i, "This account has already claimed this."],
 ];
 
@@ -657,3 +657,40 @@ export const bindInstruction = (registry: string, did: string, address: string, 
 
 export const claimRoundInstruction = (component: string, p: ClaimProofs, walletKey: string): Instruction =>
   call(component, "claim_round", [lit(p.did), lit(fromHex(walletKey)), ...proofArgs(p)]);
+
+// ---- Gift (escrow deposit) -----------------------------------------------------------------------------------
+
+/** Epochs after which the sender can reclaim an unclaimed gift (~500 h ≈ 3 weeks). */
+export const GIFT_REFUND_EPOCHS = 500;
+export const GIFT_WORKSPACE = "gift_funds";
+
+/**
+ * The follow-up instruction that escrows the wallet's withdrawn funds as a gift for `recipientDid`.
+ * Requires `giftsDeployed()` from deployment.ts.
+ * The funds come from the wallet's reveal step (workspace slot 1, same layout as campaign funding).
+ */
+export function depositInstruction(
+  recipientDid: string,
+  senderKeyHex: string,
+  refundEpoch: number,
+): Instruction {
+  return call(DEPLOYMENT.escrow, "deposit", [
+    lit(recipientDid),
+    lit(fromHex(senderKeyHex)),
+    lit(refundEpoch),
+    lit(componentArg(DEPLOYMENT.claim)),
+    lit(new Uint8Array(0)), // no window, no hold, no phrase
+    fundsBucket,
+  ]);
+}
+
+/**
+ * Opens the recipient's escrow account if it doesn't exist yet, then deposits.
+ * Always send both — `open_account` is a no-op on a second call, so it's safe to include every time.
+ */
+export function depositInstructions(recipientDid: string, senderKeyHex: string, refundEpoch: number): Instruction[] {
+  return [
+    call(DEPLOYMENT.escrow, "open_account", [lit(recipientDid)]),
+    depositInstruction(recipientDid, senderKeyHex, refundEpoch),
+  ];
+}
