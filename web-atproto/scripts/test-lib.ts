@@ -310,7 +310,7 @@ console.log("what's really left");
 console.log("collecting together");
 {
   const open = openAccountInstruction("did:plc:a");
-  const plan = (n: number): ReadyPlan => ({ kind: "ready", instructions: [open, { CallMethod: { n } }], inputs: [{ substate_id: "shared", version: null }, { substate_id: `own${n}`, version: null }], amount: 1000n, round: 0, bytes: 0, account: "a", referrer: null, linked: true });
+  const plan = (n: number): ReadyPlan => ({ kind: "ready", instructions: [open, { CallMethod: { n } }], inputs: [{ substate_id: "shared", version: null }, { substate_id: `own${n}`, version: null }], amount: 1000n, round: 0, bytes: 0, account: "a", referrer: null, linked: true, bookOps: 0 });
   const m = mergePlans([plan(1), plan(2), plan(3)]);
   ok(m.instructions.length === 4 && JSON.stringify(m.instructions[0]) === JSON.stringify(open), "an account is opened once, before the claims");
   ok(m.inputs.length === 4, "each substate is named once");

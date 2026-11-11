@@ -26,7 +26,6 @@ export function identity(did: string): Promise<Identity> {
       const ops = encodeOps(log);
       const chain = await verifyChain(did, ops);
       if (!chain.ok) throw new Error(`The identity log failed verification: ${explain(chain)}`);
-      if (ops.length > 16) throw new Error(`This account has ${ops.length} identity operations; contracts accept at most 16.`);
       return { did, ops, chain, pds: pdsOf(log) };
     })();
     p.catch(() => identities.delete(did));

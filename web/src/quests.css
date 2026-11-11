@@ -31,8 +31,10 @@ body.busy .airmail::before { animation: airrun 1s linear infinite; }
 .links.qnav a[aria-current="page"] { background: #f6d44c; color: #191730 !important; border-color: var(--fg); }
 /* On a phone the wallet matters more than the page links, which are in the footer too. */
 @media (max-width: 640px) {
-  .qnav a:not([aria-current]) { display: none; }
+  .qnav a:not([aria-current]):not(.keep) { display: none; }
   .brand { font-size: 21px; }
+  .brand-name { display: none; }
+  .wrap.bar { flex-wrap: nowrap; }
   .qnav a { padding: 5px 8px; font-size: 14px; min-height: 44px; display: inline-flex; align-items: center; }
   .btn, .btn.small, .linkbtn, .chipbtn { min-height: 44px; }
   .qmain input { min-height: 44px; font-size: 16px; }

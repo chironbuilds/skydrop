@@ -13,7 +13,7 @@ export const TARI_RESOURCE = "resource_01010101010101010101010101010101010101010
 
 // ---- CBOR, as the engine encodes template arguments and substates -------------------------------------------
 
-class Tagged {
+export class Tagged {
   constructor(readonly tag: number, readonly value: unknown) {}
 }
 
@@ -115,7 +115,7 @@ class Reader {
   }
 }
 
-const decodeB64 = (s: string): unknown => new Reader(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))).read();
+export const decodeB64 = (s: string): unknown => new Reader(Uint8Array.from(atob(s), (c) => c.charCodeAt(0))).read();
 
 const asHex = (v: unknown): string => {
   const x = v instanceof Tagged ? v.value : v;
@@ -163,7 +163,7 @@ async function readComponent(address: string): Promise<{ template: string; state
 }
 
 /** What a fungible vault holds, and how much of it is spendable. Revealed funds are the only kind the Campaign contract holds. */
-async function readVault(vault: string): Promise<{ resource: string; balance: bigint }> {
+export async function readVault(vault: string): Promise<{ resource: string; balance: bigint }> {
   const v = await readSubstate(vault);
   if (!v) throw new Error("The campaign's vault couldn't be read");
   const container = list(list(list(v)[1])[0])[0];
@@ -181,8 +181,12 @@ export interface ChainCampaign {
   vault: string;
   receipts: string;
   linkRegistry: string;
+  /** The ChainBook the campaign reads identity chains from (its template is current), or null: it takes them in each claim. */
+  book: string | null;
   /** Made with a contract from before the 2026-11-07 security fixes. */
   legacy: boolean;
+  /** Built from a template with sponsored claims: the pool can pay a claim's network fee out of its reward. */
+  sponsored: boolean;
   rules: Rule[];
   groups: number[];
   reward: bigint;
@@ -215,8 +219,14 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
   const comp = await readComponent(component);
   if (!comp) throw new Error("There's no campaign at that address.");
   const legacy = DEPLOYMENT.legacy.find((x) => hexOf(x.campaignTemplate) === comp.template);
-  if (comp.template !== hexOf(DEPLOYMENT.campaignTemplate) && !legacy) throw new Error("That address isn't a campaign made with this contract, so it isn't shown.");
-  const s = comp.state;
+  const current = comp.template === hexOf(DEPLOYMENT.campaignTemplate);
+  const previous = DEPLOYMENT.previous.some((x) => hexOf(x.campaignTemplate) === comp.template);
+  if (!current && !previous && !legacy) throw new Error("That address isn't a campaign made with this contract, so it isn't shown.");
+  // The current template stores its ChainBook before the registry, so every later field sits one further on.
+  const off = current && DEPLOYMENT.chainBook ? 1 : 0;
+  const s = [...comp.state.slice(0, 6), ...comp.state.slice(6 + off)];
+  const book = off ? `component_${asHex(comp.state[6])}` : null;
+  if (book && book !== DEPLOYMENT.chainBook) throw new Error("That campaign reads identities from a different chain book than these sites, so it isn't shown.");
   const kinds = list(s[7]).map(asNum);
   const targets = list(s[8]) as string[];
   const snapshots = list(s[9]).map(asNum);
@@ -242,7 +252,9 @@ export async function readCampaign(component: string): Promise<ChainCampaign> {
     vault,
     receipts: asHex(s[4]),
     linkRegistry,
+    book,
     legacy: !!legacy,
+    sponsored: current && DEPLOYMENT.sponsoredCampaigns,
     rules,
     groups,
     reward: asBig(s[12]),
@@ -392,10 +404,39 @@ export async function claimInputs(c: ChainCampaign, dids: string[], receiptDid: 
   return asInputs([
     c.component, c.vault, `resource_${c.receipts}`, mintBadge, await vaultResource(mintBadge),
     ...(await registryInputs(c.linkRegistry, dids)),
+    ...(c.book ? await bookInputs(c.book, dids) : []),
     ...(receiptDid ? [await nftId(c.receipts, receiptDid)] : []),
     ...(referrer ? [await nftId(c.receipts, referrer.did), ...(await accountInputs(referrer.account))] : []),
     ...(payTo ? await accountInputs(payTo, [TARI_RESOURCE, c.receipts]) : []),
   ]);
+}
+
+/** The ChainBook, what recording into it touches, and the records of each account that already has one. */
+export async function bookInputs(book: string, dids: string[]): Promise<string[]> {
+  const b = await readComponent(book);
+  if (!b) throw new Error("The chain book couldn't be read.");
+  // [records, record_badge, record_vault, count, size, full_vaults, accounts]
+  const records = asHex(b.state[0]);
+  const badge = `vault_${asHex(b.state[1])}`;
+  const vault = `vault_${asHex(b.state[2])}`;
+  const existing = await Promise.all(dids.map(async (d) => {
+    const id = await nftId(records, d);
+    return (await readSubstate(id)) ? id : null;
+  }));
+  return [book, badge, vault, `resource_${records}`, await vaultResource(badge), ...existing.filter((x): x is string => !!x)];
+}
+
+/** The ChainBook's record for `did`: how many operations it holds and the hash of each, or null if it has none. */
+export async function readBookRecord(book: string, did: string): Promise<{ len: number; hashes: string[] } | null> {
+  const b = await readComponent(book);
+  if (!b) throw new Error("The chain book couldn't be read.");
+  const v = await readSubstate(await nftId(asHex(b.state[0]), did));
+  if (!v) return null;
+  const nft = list(list(v)[1])[0];
+  const mutable = list(list(nft)[1]);
+  const hashes = asHex(mutable[0]);
+  const len = asHex(mutable[2]).length / 2;
+  return { len, hashes: Array.from({ length: len }, (_, i) => hashes.slice(64 * i, 64 * (i + 1))) };
 }
 
 /** The registry and the records of each account that already has one. */
@@ -498,7 +539,8 @@ async function readEvents(query: string): Promise<ChainEvent[]> {
   return out;
 }
 
-const fromCampaignTemplate = (e: ChainEvent): boolean => e.template === hexOf(DEPLOYMENT.campaignTemplate) || DEPLOYMENT.legacy.some((x) => hexOf(x.campaignTemplate) === e.template);
+const fromCampaignTemplate = (e: ChainEvent): boolean =>
+  e.template === hexOf(DEPLOYMENT.campaignTemplate) || [...DEPLOYMENT.legacy, ...DEPLOYMENT.previous].some((x) => hexOf(x.campaignTemplate) === e.template);
 
 /**
  * Live campaigns, newest first, each read back from its contract. They're found from the creation events the engine
@@ -572,6 +614,7 @@ export function createInstruction(spec: Spec, epoch: number, funderKey: string):
     lit(a.name as string),
     lit(a.info as string),
     lit(fromHex(funderKey)),
+    ...(DEPLOYMENT.chainBook ? [lit(componentArg(DEPLOYMENT.chainBook))] : []),
     lit(componentArg(DEPLOYMENT.linkRegistry)),
     lit(a.kinds as number[]),
     lit(a.targets as string[]),
@@ -621,18 +664,19 @@ export interface ClaimProofs {
   path: string[];
 }
 
-const ruleArgs = (p: Omit<ClaimProofs, "code">): unknown[] => [
-  lit(p.ops),
+/** A campaign reading identity chains from the ChainBook (`book`) takes no chains in its claims. */
+const ruleArgs = (p: Omit<ClaimProofs, "code">, book = false): unknown[] => [
+  ...(book ? [] : [lit(p.ops)]),
   lit(p.proofs.map((x) => x?.commit ?? new Uint8Array())),
   lit(p.proofs.map((x) => x?.nodes ?? [])),
   lit(p.proofs.map((x) => x?.record ?? new Uint8Array())),
   lit(p.proofs.map((x) => x?.rkey ?? "")),
-  lit(p.vouchOps),
+  ...(book ? [] : [lit(p.vouchOps)]),
 ];
 
-function proofArgs(p: ClaimProofs): unknown[] {
+function proofArgs(p: ClaimProofs, book = false): unknown[] {
   return [
-    ...ruleArgs(p),
+    ...ruleArgs(p, book),
     lit(p.code.commit),
     lit(p.code.nodes),
     lit(p.code.record),
@@ -642,21 +686,31 @@ function proofArgs(p: ClaimProofs): unknown[] {
   ];
 }
 
-export const claimInstruction = (component: string, p: ClaimProofs, walletKey: string, account: string, referrer: string | null = null): Instruction => {
-  const a = proofArgs(p);
+export const claimInstruction = (component: string, p: ClaimProofs, walletKey: string, account: string, referrer: string | null = null, book = false): Instruction => {
+  const a = proofArgs(p, book);
   return call(component, "claim", [lit(p.did), lit(fromHex(walletKey)), lit(componentArg(account)), ...a, lit(referrer)]);
 };
 
 /** A first claim paid to the wallet the account has linked. It needs no claim post, and any wallet may submit it. */
-export const claimLinkedInstruction = (component: string, p: Omit<ClaimProofs, "code">, referrer: string | null = null): Instruction =>
-  call(component, "claim_linked", [lit(p.did), ...ruleArgs(p), lit(p.amount), lit(p.path.map((s) => fromHex(s))), lit(referrer)]);
+export const claimLinkedInstruction = (component: string, p: Omit<ClaimProofs, "code">, referrer: string | null = null, book = false): Instruction =>
+  call(component, "claim_linked", [lit(p.did), ...ruleArgs(p, book), lit(p.amount), lit(p.path.map((s) => fromHex(s))), lit(referrer)]);
 
 /** Links an account to a wallet. The authority is the post, so any wallet may submit it. */
 export const bindInstruction = (registry: string, did: string, address: string, ownerKey: string, ops: Uint8Array[], post: RecordProof): Instruction =>
   call(registry, "bind", [lit(did), lit(componentArg(address)), lit(fromHex(ownerKey)), lit(ops), lit(post.commit), lit(post.nodes), lit(post.record), lit(post.rkey)]);
 
-export const claimRoundInstruction = (component: string, p: ClaimProofs, walletKey: string): Instruction =>
-  call(component, "claim_round", [lit(p.did), lit(fromHex(walletKey)), ...proofArgs(p)]);
+export const claimRoundInstruction = (component: string, p: ClaimProofs, walletKey: string, book = false): Instruction =>
+  call(component, "claim_round", [lit(p.did), lit(fromHex(walletKey)), ...proofArgs(p, book)]);
+
+/**
+ * The sponsored twin of a claim instruction (`claim`, `claim_linked` or `claim_round`): same arguments plus the fee,
+ * which the campaign's pool pays out of this claim's reward. It must run in the transaction's fee phase.
+ */
+export function sponsoredInstruction(i: Instruction, fee: bigint): Instruction {
+  const c = (i as { CallMethod?: { call: unknown; method: string; args: unknown[] } }).CallMethod;
+  if (!c || !["claim", "claim_linked", "claim_round"].includes(c.method)) throw new Error("Only a claim can be sponsored.");
+  return { CallMethod: { ...c, method: `${c.method}_sponsored`, args: [...c.args, lit(fee)] } } as Instruction;
+}
 
 // ---- Gift (escrow deposit) -----------------------------------------------------------------------------------
 
@@ -678,19 +732,32 @@ export function depositInstruction(
     lit(recipientDid),
     lit(fromHex(senderKeyHex)),
     lit(refundEpoch),
-    lit(componentArg(DEPLOYMENT.claim)),
+    lit(componentArg(DEPLOYMENT.claim2 || DEPLOYMENT.claim)),
     lit(new Uint8Array(0)), // no window, no hold, no phrase
     fundsBucket,
   ]);
 }
 
+/** Escrow state field holding the ledger resource (one NFT per account). */
+const ESCROW_LEDGERS = 8;
+/** Escrow state field holding the vault with the badge that mints and updates ledgers. */
+const ESCROW_LEDGER_BADGE = 9;
+
 /**
- * Opens the recipient's escrow account if it doesn't exist yet, then deposits.
- * Always send both — `open_account` is a no-op on a second call, so it's safe to include every time.
+ * Opens the recipient's escrow ledger if it doesn't exist yet, then deposits. `open_account` fails when the ledger
+ * already exists, so it's only sent for a recipient's first gift. `related` is every substate the deposit touches
+ * beyond the escrow and its vaults (the ledger resource, and the recipient's ledger once it exists), for the wallet
+ * to declare as inputs.
  */
-export function depositInstructions(recipientDid: string, senderKeyHex: string, refundEpoch: number): Instruction[] {
-  return [
-    call(DEPLOYMENT.escrow, "open_account", [lit(recipientDid)]),
-    depositInstruction(recipientDid, senderKeyHex, refundEpoch),
-  ];
+export async function depositInstructions(recipientDid: string, senderKeyHex: string, refundEpoch: number): Promise<{ instructions: Instruction[]; related: string[] }> {
+  const escrow = await readComponent(DEPLOYMENT.escrow);
+  if (!escrow) throw new Error("The gift escrow couldn't be read.");
+  const ledgers = asHex(escrow.state[ESCROW_LEDGERS]);
+  const ledger = await nftId(ledgers, recipientDid);
+  const [opened, badge] = await Promise.all([readSubstate(ledger).then((v) => v !== null), vaultResource(`vault_${asHex(escrow.state[ESCROW_LEDGER_BADGE])}`)]);
+  return {
+    instructions: [...(opened ? [] : [call(DEPLOYMENT.escrow, "open_account", [lit(recipientDid)])]), depositInstruction(recipientDid, senderKeyHex, refundEpoch)],
+    // The policy is an argument, so the engine loads it; the badge authorizes minting and updating ledgers.
+    related: [DEPLOYMENT.escrow, DEPLOYMENT.claim, `resource_${ledgers}`, badge, ...(opened ? [ledger] : [])],
+  };
 }

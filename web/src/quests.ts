@@ -9,8 +9,11 @@ import { celebrate, countUp, initMotion, once, skeleton } from "../../web-atprot
 import { composeUrl, fetchPost, latestPost, resolveActor, targetLink, type Actor } from "../../web-atproto/src/lib/atproto";
 import { afterFee, approxTime, claimFee, decodeSpec, encodeLive, encodeSpec, EPOCHS_PER_DAY, fromMicro, LIVE_PLACEHOLDER, RULES, summarize, type Rule, type Spec } from "../../web-atproto/src/lib/campaign";
 import { checkRule, identity, type Identity, type RuleResult } from "../../web-atproto/src/lib/check";
-import { currentEpoch, explainChainError, listCampaigns, listMyClaims, phaseOf, readCampaign, readLink, readReceipt, specOf, usableReferrer, waitForOutcome, type ChainCampaign, type Instruction, type MyClaim, type Receipt, type SubstateInput, type WalletLink } from "../../web-atproto/src/lib/chain";
+import { bookInstructions, FEE_PER_BOOK_OP, INLINE_BOOK_OPS } from "../../web-atproto/src/lib/book";
+import { asInputs, bookInputs, currentEpoch, explainChainError, listCampaigns, listMyClaims, phaseOf, readCampaign, readLink, readReceipt, readSubstate, specOf, sponsoredInstruction, usableReferrer, waitForOutcome, type ChainCampaign, type Instruction, type MyClaim, type Receipt, type SubstateInput, type WalletLink } from "../../web-atproto/src/lib/chain";
 import { icons } from "./dom";
+import { deployed } from "./config";
+import { displayAddress, rememberAddress } from "./addrbook";
 import { currentLang, setLang, startChinese } from "./i18n";
 import { BATCH_MAX, batchPostText, CLAIM_MAX_FEE, LINK_FEE, LINK_MAX_FEE, LINKED_CLAIM_SAVING, mergePlans, planClaim, planLink, type ReadyPlan } from "../../web-atproto/src/lib/claim";
 import { append, copyButton, h, replace } from "../../web-atproto/src/lib/dom";
@@ -230,6 +233,40 @@ async function sendAndConfirm(instructions: Instruction[], inputs: SubstateInput
   if (out.state === "pending") throw new Error(`It hasn't confirmed yet. Don't claim again: refresh in a few minutes. Transaction ${tx}`);
 }
 
+// ---- the Skydrop wallet, for sponsored campaigns --------------------------------------------------------------
+
+type SkyWallet = import("./wallet").Wallet;
+let skyWallet: Promise<SkyWallet> | null = null;
+
+/**
+ * The built-in Skydrop wallet (the same one the gifts page keeps in this browser), loaded only when someone picks it.
+ * A sponsored campaign pays its claims' fees out of the reward, but only a wallet that can sign a fee-phase
+ * transaction can claim that way, which Sapient can't yet.
+ */
+function skydropWallet(): Promise<SkyWallet> {
+  skyWallet ??= (async () => {
+    const [chain, wallets] = await Promise.all([import("./chain"), import("./wallet")]);
+    chain.initStorage();
+    const account = chain.openAccount(chain.savedSeed() ?? chain.createSeed());
+    return wallets.builtinWallet(account, () => chain.totalTari(account));
+  })();
+  skyWallet.catch(() => { skyWallet = null; });
+  return skyWallet;
+}
+
+const toHexKey = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/**
+ * The fee a sponsored claim sets aside from the reward. The contract pays the claimer before the network knows the real
+ * cost, so all of it comes off the reward and whatever the network doesn't use goes back to the campaign's pool: keep it
+ * close to the estimate (measured on Esmeralda: a one-step claim with a new account cost 0.033 of a 0.13 offer). Too low
+ * fails the free pre-check, never a paid transaction.
+ */
+const sponsorFeeFor = (rules: Rule[]): bigint => {
+  const fee = (claimFee(rules) * 3n) / 2n + 20_000n;
+  return fee < 2_000_000n ? fee : 2_000_000n;
+};
+
 /** The claim itself: tie the payout to the wallet with one post, then collect. */
 function livePanel(t: Tracked): HTMLElement {
   const existing = panels.get(t.id);
@@ -251,15 +288,31 @@ function livePanel(t: Tracked): HTMLElement {
   let skipInvite = false;
   /** Pay the connected wallet with a post, rather than the linked one. */
   let useThisWallet = false;
+  /** Claim with the built-in Skydrop wallet, the campaign's pool paying the fee (sponsored campaigns only). */
+  let useSkydrop = false;
+  const skydropButton = (): HTMLElement | null =>
+    liveData.get(t.id)?.c.sponsored && !useSkydrop
+      ? h("button", { class: "linkbtn", type: "button", style: "justify-self:start", onclick: () => { useSkydrop = true; shownCode = ""; void begin(); } }, `No ${unit}? Collect with your Skydrop wallet instead: the fee comes out of the reward`)
+      : null;
 
   /** `quiet` looks for the post in the background; `pressed` means someone said they've posted it. */
   let shownCode = "";
   async function begin(quiet = false, pressed = false): Promise<void> {
-    const w = walletState();
+    let w = walletState();
+    if (useSkydrop) {
+      try {
+        const sky = await skydropWallet();
+        w = { ...w, available: true, connected: true, name: "Skydrop wallet", key: toHexKey(sky.publicKey), account: sky.componentAddress, address: sky.walletAddress, network: DEPLOYMENT.walletNetwork };
+      } catch (e) {
+        replace(body, say(friendly(e), "fielderr"));
+        return;
+      }
+    }
     if (!w.available) {
-      replace(body, say("You need the Sapient wallet to collect."), h("a", { class: "btn small ghost", href: "https://sapient.tari.mw", target: "_blank", rel: "noopener noreferrer" }, "Get Sapient"));
+      replace(body, say("You need the Sapient wallet to collect."), h("a", { class: "btn small ghost", href: "https://sapient.tari.mw", target: "_blank", rel: "noopener noreferrer" }, "Get Sapient"), skydropButton());
       return;
     }
+    rememberAddress(w.account, w.address);
     if (!w.connected || !w.key || !w.account) {
       try {
         await connectWallet();
@@ -279,7 +332,8 @@ function livePanel(t: Tracked): HTMLElement {
     if (!quiet) replace(body, say("Checking your records and the campaign…"));
     try {
       const c = await readCampaign(live.c.component);
-      const plan = await planClaim(c, actor.did, w.key, w.account, { allocations: t.spec.allocations, ref: skipInvite ? null : refFor(t.id), ignoreLink: useThisWallet });
+      // The Skydrop wallet is paid with a post: a sponsored linked claim would need the linked wallet's own signature.
+      const plan = await planClaim(c, actor.did, w.key, w.account, { allocations: t.spec.allocations, ref: skipInvite ? null : refFor(t.id), ignoreLink: useThisWallet || useSkydrop });
       if (quiet && !rechecks.has(t.id)) return;
       rechecks.delete(t.id);
       const stage = plan.kind === "ready" ? 3 : 2;
@@ -300,7 +354,8 @@ function livePanel(t: Tracked): HTMLElement {
             h("div", { class: "row" }, h("a", { class: "btn small ghost", href: composeUrl(plan.text), target: "_blank", rel: "noopener noreferrer" }, "Post on Bluesky"), copyButton(() => plan.text), again),
             pressed ? say("That post isn't showing yet. It has to come from this account and include the whole code. It can take a few seconds, and this page keeps looking.", "fielderr") : null,
             say("This page checks for it by itself. You can delete the post after you've collected."),
-            plan.receipt && plan.receipt.account !== w.account ? say(`This round pays ${shortAddress(plan.receipt.account)}, the wallet that collected the first round, not the one connected here.`) : null,
+            useSkydrop ? say(`This ties the reward to your Skydrop wallet (${displayAddress(w.account)}), kept in this browser. Back it up from the wallet menu on the Skydrop home page.`) : skydropButton(),
+            plan.receipt && plan.receipt.account !== w.account ? say(`This round pays ${displayAddress(plan.receipt.account)}, the wallet that collected the first round, not the one connected here.`) : null,
             plan.round === 0 && !myLink?.active ? h("button", { class: "linkbtn", type: "button", style: "justify-self:start", onclick: () => void startLink() }, "Link your wallet to skip this") : null,
           );
           break;
@@ -311,6 +366,18 @@ function livePanel(t: Tracked): HTMLElement {
           go.addEventListener("click", async () => {
             go.disabled = true;
             status.className = "muted small-text";
+            if (useSkydrop) {
+              try {
+                await collectSponsored(c, plan, w.key!, w.account!, status);
+                celebrate(go);
+                reset(`Collected ${fromMicro(plan.amount - sponsorFeeFor(c.rules))} ${unit} from “${t.spec.name}”.`);
+              } catch (e) {
+                status.className = "fielderr";
+                status.textContent = explainChainError(friendly(e));
+                go.disabled = false;
+              }
+              return;
+            }
             try {
               status.textContent = "Checking it will work…";
               try {
@@ -337,16 +404,53 @@ function livePanel(t: Tracked): HTMLElement {
             }
           });
           const funds = h("div");
-          const fee = claimFee(c.rules) - (plan.linked ? LINKED_CLAIM_SAVING : 0n);
+          if (useSkydrop) {
+            const offer = sponsorFeeFor(c.rules);
+            replace(body, say("Your post is there. Last step:"), go,
+              say(`No ${unit} needed: the campaign pays the network fee out of your reward. ${fromMicro(offer)} ${unit} is set aside for it (any part the network doesn't use goes back to the campaign), so you receive ${fromMicro(plan.amount > offer ? plan.amount - offer : 0n)} ${unit} in your Skydrop wallet.`),
+              status);
+            break;
+          }
+          const fee = claimFee(c.rules) - (plan.linked ? LINKED_CLAIM_SAVING : 0n) + FEE_PER_BOOK_OP * BigInt(plan.bookOps);
           const net = plan.amount > fee ? plan.amount - fee : null;
           const elsewhere = plan.account !== w.account;
           replace(body, say(plan.linked ? "Your wallet is linked, so no post is needed." : "Your post is there. Last step:"), go,
             plan.linked && !plan.referrer && liveData.get(t.id)?.inviter ? say("Your invite only counts if the linked wallet sends this claim. Connect that wallet to count it.") : null,
-            elsewhere ? say(plan.linked ? `It pays your linked wallet, ${shortAddress(plan.account)}, not the one connected here.` : `This round pays ${shortAddress(plan.account)}, the wallet that collected the first round, not the one connected here.`) : null,
+            elsewhere ? say(plan.linked ? `It pays your linked wallet, ${displayAddress(plan.account)}, not the one connected here.` : `This round pays ${displayAddress(plan.account)}, the wallet that collected the first round, not the one connected here.`) : null,
             elsewhere && plan.linked ? h("button", { class: "linkbtn", type: "button", style: "justify-self:start", onclick: () => { useThisWallet = true; void begin(); } }, "Pay this wallet instead, with a post") : null, say(`Your wallet pays a network fee of about ${fromMicro(fee)} ${unit}${net ? `, so you end up about ${fromMicro(net)} ${unit} better off` : ", which may be more than this reward"}. Only the real cost is charged.`), funds, status);
           void walletBalance().then((have) => {
-            if (have !== null && have < fee) replace(funds, h("p", { class: "note warn", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, which may not cover the fee. Add some first.`));
+            if (have === null || have >= fee) return;
+            // A linked claim needs no signature, so Skydrop's relay can send it and pay the fee for an empty wallet.
+            if (plan.linked && !plan.referrer && c.reward > fee * 2n + 50_000n && actor) {
+              const did = actor.did;
+              const free = h("button", { class: "btn small ghost", type: "button" }, "Collect free: Skydrop pays the fee");
+              free.addEventListener("click", () => void relayClaim(c, did, free, status, () => {
+                celebrate(go);
+                reset(`Collected ${fromMicro(plan.amount)} ${unit} from “${t.spec.name}”.`);
+              }));
+              replace(funds, h("p", { class: "note", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, not enough for the fee. Your wallet is linked, so Skydrop can pay the fee for you.`), free);
+              return;
+            }
+            replace(funds, h("p", { class: "note warn", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, which may not cover the fee. Add some first.`));
           });
+          break;
+        }
+        case "record": {
+          // Long identity histories (old accounts) are recorded in the ChainBook once before claiming: by the connected
+          // wallet if it has TARI for it (about 0.01 an operation), otherwise by Skydrop's bot.
+          const balance = !useSkydrop && w.connected ? await walletBalance().catch(() => null) : null;
+          const own = balance !== null && balance >= BigInt(plan.missing) * FEE_PER_BOOK_OP + 100_000n;
+          const status = say(own
+            ? `Your account's identity history (${plan.missing} operations) has to be recorded on-chain once before claiming. Your wallet pays about ${fromMicro(BigInt(plan.missing) * FEE_PER_BOOK_OP)} ${unit}; approve each part in your wallet.`
+            : `Your account's identity history (${plan.missing} operations) is being recorded on-chain first. It's free and happens once. This takes up to a minute…`);
+          replace(body, status);
+          try {
+            if (own) await recordWithWallet(c, plan.dids, status);
+            else await recordFirst(c, plan.dids);
+            void begin(true);
+          } catch (e) {
+            replace(body, say(e instanceof Error ? e.message : String(e), "fielderr"));
+          }
           break;
         }
         case "steps":
@@ -542,11 +646,11 @@ function drawLink(): void {
   }
   const w = walletState();
   if (myLink?.next) {
-    replace(linkBox, h("p", { class: "muted small-text" }, h("strong", null, "New wallet linked. "), `${shortAddress(myLink.next.account)} takes over in about an hour or more.`));
+    replace(linkBox, h("p", { class: "muted small-text" }, h("strong", null, "New wallet linked. "), `${displayAddress(myLink.next.account)} takes over in about an hour or more.`));
   } else if (myLink?.active) {
     const other = w.connected && w.account && w.account !== myLink.active;
     replace(linkBox,
-      h("p", { class: "muted small-text" }, h("strong", null, "Wallet linked. "), `First claims need no post and pay ${shortAddress(myLink.active)}.`, " "),
+      h("p", { class: "muted small-text" }, h("strong", null, "Wallet linked. "), `First claims need no post and pay ${displayAddress(myLink.active)}.`, " "),
       other ? h("button", { class: "linkbtn", type: "button", onclick: () => void startLink() }, "Link the connected wallet instead") : null,
     );
   } else {
@@ -602,6 +706,7 @@ async function startLink(): Promise<void> {
   const did = actor.did;
   const key = w.key;
   const account = w.account;
+  rememberAddress(account, w.address);
   let shown = false;
   const check = async (quiet = false, pressed = false): Promise<void> => {
     if (linkFlow !== box || actor?.did !== did) return;
@@ -615,7 +720,7 @@ async function startLink(): Promise<void> {
         if (!shown) postAskedAt = Date.now();
         shown = true;
         replace(box,
-          h("p", { class: "small-text", style: "margin:0" }, h("strong", null, "Post this to link your wallet. "), `It proves this Bluesky account chose ${shortAddress(account)}. The network fee is about ${fromMicro(LINK_FEE)} ${unit}.`),
+          h("p", { class: "small-text", style: "margin:0" }, h("strong", null, "Post this to link your wallet. "), `It proves this Bluesky account chose ${displayAddress(account)}. The network fee is about ${fromMicro(LINK_FEE)} ${unit}.`),
           h("pre", { style: "white-space:pre-wrap;word-break:break-all;margin:0" }, plan.text),
           h("div", { class: "row" },
             h("a", { class: "btn small ghost", href: composeUrl(plan.text), target: "_blank", rel: "noopener noreferrer" }, "Post on Bluesky"),
@@ -652,13 +757,166 @@ async function startLink(): Promise<void> {
           go.disabled = false;
         }
       });
-      replace(box, say("Your post is there. Last step:"), h("div", { class: "row" }, go, notNow()), status);
+      const free = h("div");
+      replace(box, say("Your post is there. Last step:"), h("div", { class: "row" }, go, notNow()), free, status);
+      // A wallet with no TARI can't pay to link (or even have an account yet): Skydrop's relay can do both for it.
+      void walletBalance().then((have) => {
+        if (have === null || have >= LINK_FEE * 2n || linkFlow !== box) return;
+        const btn = h("button", { class: "btn small ghost", type: "button" }, "Link free: Skydrop pays the fee") as HTMLButtonElement;
+        btn.addEventListener("click", () => void relayLink(did, account, key, btn, status, async () => {
+          celebrate(go);
+          closeLink();
+          toast("Wallet linked. First claims no longer need a post.");
+          panels.clear();
+          panelStage.clear();
+          rechecks.clear();
+          await refreshLink(did);
+          void checkAll();
+        }));
+        replace(free, h("p", { class: "note", style: "margin:0" }, `Your wallet has ${fromMicro(have)} ${unit}, not enough for the fee. Skydrop can link it for you, and set up the wallet's account if it doesn't have one yet.`), btn);
+      });
     } catch (e) {
       if (quiet) return;
       replace(box, say(explainChainError(friendly(e)), "fielderr"), h("div", { class: "row" }, h("button", { class: "btn small ghost", type: "button", onclick: () => void check() }, "Try again"), notNow()));
     }
   };
   await check();
+}
+
+/**
+ * A sponsored claim with the Skydrop wallet, in one fee-phase transaction: create the wallet's account if it has none
+ * (CreateAccount does nothing for an existing one), open any registry records the claim reads, then the claim's
+ * sponsored twin, which pays the fee from the pool and the rest of the reward to the wallet.
+ */
+async function collectSponsored(c: ChainCampaign, plan: ReadyPlan, key: string, account: string, status: HTMLElement): Promise<void> {
+  const fee = sponsorFeeFor(c.rules);
+  if (plan.amount <= fee) throw new Error("This reward is too small to pay its own network fee. Collect it with a wallet that has some TARI.");
+  const [chain, sky] = await Promise.all([import("./chain"), skydropWallet()]);
+  // An old account has more identity history to record than the fee step can carry: Skydrop's bot records it first.
+  if (c.book && actor) {
+    const did = actor.did;
+    const left = async () => (await bookInstructions(c.book!, did, (await identity(did)).ops)).missing;
+    if ((await left()) > chain.FEE_PHASE_BOOK_OPS) {
+      if (c.reward < 500_000n) throw new Error(`Your account's identity history has to be recorded on-chain first, which Skydrop only does for free for rewards of 0.5 ${unit} or more. Collect with a wallet that has some ${unit} instead.`);
+      status.textContent = "Recording your account's identity history on-chain first (once, free). This takes up to a minute…";
+      const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "record", did, campaign: c.component }) });
+      if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "Skydrop couldn't record your account's history. Collect with a wallet that has some TARI instead.");
+      for (let i = 0; ; i++) {
+        if (i >= 18) throw new Error("Recording your account's history is taking too long. Try again in a few minutes.");
+        await new Promise((res) => setTimeout(res, 10_000));
+        if ((await left().catch(() => Infinity)) <= chain.FEE_PHASE_BOOK_OPS) break;
+      }
+      throw new Error("Your account's history is recorded now. Press the button again to collect.");
+    }
+  }
+  const exists = (await readSubstate(account)) !== null;
+  const claim = plan.instructions[plan.instructions.length - 1]!;
+  const instructions = [
+    { CreateAccount: { owner_public_key: key, owner_rule: null, access_rules: null, bucket_workspace_id: null } },
+    ...plan.instructions.slice(0, -1),
+    sponsoredInstruction(claim, fee),
+  ];
+  // A brand-new wallet's account doesn't exist yet, so it can't be named as an input: the transaction creates it.
+  const inputs = plan.inputs.map((x) => x.substate_id).filter((id) => exists || id !== account);
+  await chain.sendFeePhase(sky, instructions, inputs, (s) => { status.textContent = s; });
+}
+
+/** Records these accounts' identity histories in the ChainBook with the connected wallet, up to 24 operations a
+ *  transaction (each one waits for the last to land, since it names that one's last operation). */
+async function recordWithWallet(c: ChainCampaign, dids: string[], status: HTMLElement): Promise<void> {
+  if (!c.book) return;
+  for (const did of dids) {
+    const ops = (await identity(did)).ops;
+    for (let round = 0; round < 50; round++) {
+      const { missing, instructions } = await bookInstructions(c.book, did, ops);
+      if (!instructions.length) break;
+      const first = instructions.slice(0, (instructions[0] as { CallMethod: { method: string } }).CallMethod.method === "open_account" ? 2 : 1);
+      const n = Math.min(missing, 24);
+      status.textContent = `Recording your account's identity history on-chain (${n} of ${missing} operations). Approve it in your wallet…`;
+      await sendInstructions(first, 20_000n + FEE_PER_BOOK_OP * BigInt(n), undefined, asInputs(await bookInputs(c.book, [did])));
+      for (let i = 0; i < 15 && (await bookInstructions(c.book, did, ops)).missing === missing; i++) await new Promise((r) => setTimeout(r, 2_000));
+    }
+  }
+}
+
+/** Asks Skydrop's bot to record these accounts' identity histories for `c`, and waits until a claim can carry the rest. */
+async function recordFirst(c: ChainCampaign, dids: string[]): Promise<void> {
+  if (!c.book) return;
+  // The bot records histories for free only for rewards of at least this much (its RECORD_MIN_GIFTS).
+  if (c.reward < 500_000n) throw new Error(`This account's identity history is long, and has to be recorded on-chain before it can claim. Skydrop only does that for free for rewards of 0.5 ${unit} or more, so collect with a wallet that has about 0.2 ${unit} to record it.`);
+  for (const did of dids) {
+    const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "record", did, campaign: c.component }) });
+    if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? "Skydrop couldn't record the identity history. Try again later.");
+  }
+  const left = async (): Promise<number> => {
+    let n = 0;
+    for (const did of dids) n += (await bookInstructions(c.book!, did, (await identity(did)).ops)).missing;
+    return n;
+  };
+  for (let i = 0; i < 24; i++) {
+    await new Promise((res) => setTimeout(res, 10_000));
+    if ((await left().catch(() => Infinity)) <= INLINE_BOOK_OPS) return;
+  }
+  throw new Error("Recording the identity history is taking too long. Try again in a few minutes.");
+}
+
+// ---- the relay pays the fee ----------------------------------------------------------------------------------
+
+/**
+ * Asks Skydrop's relay to send a linked claim and pay its fee, then waits for the receipt to appear on-chain. The relay
+ * checks everything itself (the account is linked, its wallet is empty, the reward is more than the fee) and pays the
+ * reward to the linked wallet, so this page only asks and watches.
+ */
+async function relayClaim(c: ChainCampaign, did: string, btn: HTMLButtonElement, status: HTMLElement, done: () => void): Promise<void> {
+  btn.disabled = true;
+  status.className = "muted small-text";
+  status.textContent = "Asking Skydrop to send your claim…";
+  try {
+    const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ campaign: c.component, did }) });
+    if (!r.ok) throw new Error(((await r.json().catch(() => null)) as { error?: string } | null)?.error ?? `The relay answered ${r.status}.`);
+    status.textContent = "Queued. Skydrop is checking and sending your claim. This usually takes under two minutes…";
+    const until = Date.now() + 4 * 60_000;
+    while (Date.now() < until) {
+      await new Promise((res) => setTimeout(res, 6000));
+      if (await readReceipt(c, did).catch(() => null)) {
+        status.textContent = "";
+        done();
+        return;
+      }
+    }
+    throw new Error("Skydrop couldn't send this claim. Add a little TARI to your wallet and collect it yourself.");
+  } catch (e) {
+    status.className = "fielderr";
+    status.textContent = e instanceof Error ? e.message : String(e);
+    btn.disabled = false;
+  }
+}
+
+/** Asks Skydrop's relay to link `account` (creating it if needed) from the bind post, then waits for the link. */
+async function relayLink(did: string, account: string, key: string, btn: HTMLButtonElement, status: HTMLElement, done: () => Promise<void>): Promise<void> {
+  btn.disabled = true;
+  status.className = "muted small-text";
+  status.textContent = "Asking Skydrop to link your wallet…";
+  try {
+    const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "link", did, account, owner: key }) });
+    if (!r.ok) throw new Error(((await r.json().catch(() => null)) as { error?: string } | null)?.error ?? `The relay answered ${r.status}.`);
+    status.textContent = "Queued. Skydrop is checking your post and linking your wallet. This usually takes under two minutes…";
+    const until = Date.now() + 4 * 60_000;
+    while (Date.now() < until) {
+      await new Promise((res) => setTimeout(res, 6000));
+      const link = await readLink(did, await currentEpoch(), DEPLOYMENT.linkRegistry).catch(() => null);
+      if (link?.active === account) {
+        status.textContent = "";
+        await done();
+        return;
+      }
+    }
+    throw new Error("Skydrop couldn't link this wallet. Add a little TARI to it and link it yourself.");
+  } catch (e) {
+    status.className = "fielderr";
+    status.textContent = e instanceof Error ? e.message : String(e);
+    btn.disabled = false;
+  }
 }
 
 // ---- collecting several at once --------------------------------------------------------------------------------
@@ -719,6 +977,7 @@ async function startBatch(): Promise<void> {
   const did = actor.did;
   const key = w.key;
   const account = w.account;
+  rememberAddress(account, w.address);
   const chosen = readyLive(loadTracked()).slice(0, BATCH_MAX);
 
   let shownText = "";
@@ -731,6 +990,15 @@ async function startBatch(): Promise<void> {
         return { t, c, plan: await planClaim(c, did, key, account, { allocations: t.spec.allocations, ref: refFor(t.id) }) };
       }));
       if (batchFlow !== box) return;
+      // An old account's identity history has to be recorded on-chain once before any of these can be claimed; that's
+      // done from a single campaign (by the wallet or by Skydrop), after which collecting together works.
+      if (planned.some((x) => x.plan.kind === "record")) {
+        replace(box,
+          say("Your account's identity history has to be recorded on-chain once before collecting. Collect one of these campaigns on its own first (it records the history), then collecting together works."),
+          h("div", { class: "row" }, notNow()),
+        );
+        return;
+      }
       const posts = planned.flatMap((x) => (x.plan.kind === "post" ? [x.plan.code] : []));
       if (posts.length) {
         const text = batchPostText(posts);
@@ -761,7 +1029,7 @@ async function startBatch(): Promise<void> {
         return;
       }
       const merged = mergePlans(ready.map((x) => x.plan));
-      const fee = ready.reduce((n, x) => n + claimFee(x.c.rules) - (x.plan.linked ? LINKED_CLAIM_SAVING : 0n), 0n);
+      const fee = ready.reduce((n, x) => n + claimFee(x.c.rules) - (x.plan.linked ? LINKED_CLAIM_SAVING : 0n) + FEE_PER_BOOK_OP * BigInt(x.plan.bookOps), 0n);
       const status = say("");
       const go = h("button", { class: "btn small primary", type: "button" }, `Collect ${fromMicro(merged.amount)} ${unit}`);
       go.addEventListener("click", async () => {
@@ -792,7 +1060,7 @@ async function startBatch(): Promise<void> {
         }
       });
       replace(box,
-        h("ul", { class: "qbatchlist" }, ready.map((x) => h("li", null, `${x.c.name}: ${fromMicro(x.plan.amount)} ${unit}`, x.plan.account !== account ? h("small", { class: "muted" }, `, paid to ${shortAddress(x.plan.account)}`) : null))),
+        h("ul", { class: "qbatchlist" }, ready.map((x) => h("li", null, `${x.c.name}: ${fromMicro(x.plan.amount)} ${unit}`, x.plan.account !== account ? h("small", { class: "muted" }, `, paid to ${displayAddress(x.plan.account)}`) : null))),
         h("div", { class: "row" }, go, notNow()),
         say(`Your wallet pays a network fee of about ${fromMicro(fee)} ${unit} in total. Only the real cost is charged.`),
         status,
@@ -1253,6 +1521,7 @@ function themePicker(): HTMLElement {
 const chip = h("div", { class: "walletchip" });
 onWallet((w) => {
   drawLink();
+  if (w.connected) rememberAddress(w.account, w.address);
   if (w.connected) replace(chip, h("span", { class: "chipbtn on", title: w.address ?? "" }, h("span", { class: "dot2", "aria-hidden": "true" }), shortAddress(w.address ?? w.account ?? "").slice(0, 16)));
   else if (w.available) replace(chip, h("button", { class: "chipbtn", type: "button", onclick: async () => { try { await connectWallet(); } catch (e) { replace(who, h("p", { class: "fielderr" }, friendly(e))); } } }, `Connect ${w.name}`));
   else replace(chip);
@@ -1289,7 +1558,7 @@ append(document.getElementById("app")!, [
   h("a", { class: "skip", href: "#qmain" }, "Skip to content"),
   h("header", { class: "top" }, h("div", { class: "wrap bar" },
     h("a", { class: "brand", href: "/" }, h("span", { class: "logo" }, icons.drop(20)), h("span", { class: "brand-name" }, "Skydrop")),
-    h("nav", { class: "links qnav", "aria-label": "Main" }, h("a", { href: "/quests", "aria-current": "page" }, "My quests"), h("a", { href: "/#/how" }, "How it works"), h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign")),
+    h("nav", { class: "links qnav", "aria-label": "Main" }, ...(deployed() ? [h("a", { href: "/#/send", class: "keep" }, "Send"), h("a", { href: "/#/claim", class: "keep" }, "Collect")] : []), h("a", { href: "/quests", "aria-current": "page" }, "My quests"), h("a", { href: "/#/how" }, "How it works"), h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign")),
     chip,
   )),
   h("main", { class: "wrap qmain", id: "qmain", tabindex: "-1" },

@@ -3,12 +3,15 @@ import {
   componentAddressFromWalletAddress,
   configureOotleStorage,
   extractMissingSubstateAddress,
+  forgetKnownVersions,
   inMemoryAdapter,
   localStorageAdapter,
   resolveInputsWithRetry,
   toOotleNetwork,
+  type NetworkName,
 } from "@chironbuilder/ootle-sdk";
 import {
+  Network,
   TARI_RESOURCE_ADDRESS,
   TransactionBuilder,
   amountLiteral,
@@ -21,10 +24,24 @@ import type { IndexerProvider } from "@tari-project/ootle-indexer";
 import { CONFIG, deployed } from "./config";
 import { parseOotleAddress } from "@tari-project/ootle-wasm";
 import { fromHex, lit, toHex } from "./cbor";
+import { decodeB64, Tagged } from "../../web-atproto/src/lib/chain";
 import type { ClaimProof } from "./bsky";
-import type { Wallet } from "./wallet";
+import { plcLog } from "./bsky";
+import { BOOK_MAX_ADVANCE, opHashHex, signerHints } from "./chainbook";
+import * as dagCbor from "@ipld/dag-cbor";
+import { pinInput, refusedStale, staleInput, type Wallet } from "./wallet";
 
 const SEED_KEY = "skydrop.seed.v1";
+
+/** Maps config network string to Ootle Network enum, supporting mainnet. */
+function configNetwork(): Network {
+  if (CONFIG.network === "mainnet") return Network.MainNet;
+  return toOotleNetwork(CONFIG.network as NetworkName);
+}
+/** Maps config network string to SDK NetworkName, supporting mainnet as "esmeralda" fallback for OotleAccount. */
+function sdkNetworkName(): NetworkName | "mainnet" {
+  return CONFIG.network as NetworkName | "mainnet";
+}
 
 /** Browser: persist in localStorage. Anything else (tests): memory. */
 export function initStorage(): void {
@@ -57,7 +74,25 @@ export function forgetSeed(): void {
 }
 
 export function openAccount(seedHex: string): OotleAccount {
-  return OotleAccount.fromSeed(fromHex(seedHex), 0, CONFIG.network);
+  return OotleAccount.fromSeed(fromHex(seedHex), 0, sdkNetworkName() as NetworkName);
+}
+
+/**
+ * Finds this account's private TARI outputs on-chain and returns their unspent total. Private fees can only spend
+ * outputs the SDK has recorded, and a process with in-memory storage starts with none.
+ */
+export async function scanPrivateTari(account: OotleAccount): Promise<bigint> {
+  const full = !scannedOnce.has(account.ledgerId);
+  await account.scanForOwnedUtxos(TARI_RESOURCE_ADDRESS, CONFIG.indexer, full ? { maxPages: 200 } : { mode: "delta" });
+  scannedOnce.add(account.ledgerId);
+  return (await account.listUnspentShieldedOutputs(TARI_RESOURCE_ADDRESS)).reduce((n, o) => n + BigInt(o.amount), 0n);
+}
+const scannedOnce = new Set<string>();
+
+/** Public plus private TARI: what the built-in wallet can spend. */
+export async function totalTari(account: OotleAccount): Promise<bigint> {
+  const [pub, priv] = await Promise.all([tariBalance(account), scanPrivateTari(account).catch(() => 0n)]);
+  return pub + priv;
 }
 
 export async function tariBalance(account: OotleAccount): Promise<bigint> {
@@ -72,16 +107,32 @@ export async function tariBalance(account: OotleAccount): Promise<bigint> {
 // ---- reading the contract stack ------------------------------------------------------------------------
 //
 // Component state arrives as the struct's fields in declaration order. These indexes mirror the templates:
-//   Escrow       [vault, badge_vault, policy_badge, min_deposit, admin, policies, next_badge, deposits, fee_vault, owed, returned]
-//   ClaimPolicy  [escrow, badge_vault, pending, known_len, claim_text, held, link_registry, sponsored, delivered]
-//   LinkRegistry [bindings, bind_proof, last_bind, known_len, bind_delay]
-//   TipPolicy    [escrow, claim_policy, badge_vault, budget_vault, bot_did, budgets, last_tip]
-// An escrow deposit is (sender, amount, refund epoch, governing policy, metadata, epoch it was made).
+//   Escrow       [vault, badge_vault, policy_badge, min_deposit, admin, policies, next_badge, fee_vault, ledgers,
+//                 ledger_badge, ledger_vault, count, size, full_vaults, accounts]
+//   ClaimPolicy  [escrow, badge_vault, link_registry, records, record_badge, record_vault, count, size, full_vaults, accounts]
+//   LinkRegistry [bind_delay, records, record_badge, record_vault, count, size, full_vaults, accounts]
+//   TipPolicy    [escrow, claim_policy, badge_vault, budget_vault, bot_did, budgets, last_tip, link_registry]
+//   ClaimPolicyV2 [escrow, badge_vault, link_registry, chain_book, records, record_badge, record_vault, count, size,
+//                  full_vaults, accounts]
+//   TipPolicyV2  [escrow, claim_policy, badge_vault, budget_vault, bot_did, budgets, last_tip, link_registry, chain_book]
+//   ChainBook    [records, record_badge, record_vault, count, size, full_vaults, accounts]
+// Each account's data is its own NFT (id sha256 of the DID) in the component's records resource, with the DID as its
+// immutable data. Mutable data:
+//   Escrow ledger  (deposits, owed); a deposit is (sender, amount, refund epoch, governing policy, metadata, epoch made).
+//                  A deposit returned to its sender is governed by the escrow itself.
+//   ClaimPolicy    (pending, known_len, claim_text, held, sponsored, delivered)
+//   ClaimPolicyV2  (pending, claim_text, held, sponsored, delivered)
+//   ChainBook      (hashes 32B each, digests 32B each, signers 1B each, repo key 34B or empty, epochs 8B each)
+//   LinkRegistry   (binding, bind proof, last bind rkey, pin = (chain length, tip))
+// A record that doesn't exist fails any call that reads it, so a transaction opens missing ones first.
 
-const ESCROW = { deposits: 7, feeVault: 8, returned: 10 } as const;
-const CLAIM = { pending: 2, claimText: 4, held: 5, delivered: 8 } as const;
-const LINK = { bindings: 0, bindProof: 1, knownLen: 3 } as const;
+const ESCROW = { feeVault: 7, records: 8, recordBadge: 9, recordVault: 10, fullVaults: 13 } as const;
+const CLAIM = { records: 3, recordBadge: 4, recordVault: 5, fullVaults: 8 } as const;
+const CLAIM2 = { records: 4, recordBadge: 5, recordVault: 6, fullVaults: 9 } as const;
+const BOOK = { records: 0, recordBadge: 1, recordVault: 2, fullVaults: 5 } as const;
+const LINK = { records: 1, recordVault: 3, fullVaults: 6 } as const;
 const TIP = { budgets: 5 } as const;
+type Books = { records: number; recordVault: number; fullVaults: number };
 
 type Cbor = unknown;
 const bytesHex = (v: Cbor): string => (v as { hex: string }).hex;
@@ -97,11 +148,110 @@ function requireDeployed(): void {
   if (!deployed()) throw new ChainError("Skydrop isn't deployed on this network yet.");
 }
 
-async function stateOf(provider: IndexerProvider, component: string): Promise<Cbor[]> {
-  const sub = await provider.getSubstate(component);
-  const comp = (sub.substate as { Component?: { body: { state: Cbor[] } } }).Component;
-  if (!comp) throw new Error("A Skydrop contract could not be read");
-  return comp.body.state;
+/** The indexer serves substates as CBOR; the readers below were written against its old JSON shape, so convert to that. */
+function legacy(v: unknown): Cbor {
+  if (v instanceof Uint8Array) return { hex: toHex(v) };
+  if (v instanceof Tagged) return { tag: v.tag, value: legacy(v.value) };
+  if (v instanceof Map) return Object.fromEntries([...v].map(([k, x]) => [k instanceof Uint8Array ? toHex(k) : String(k), legacy(x)]));
+  if (Array.isArray(v)) return v.map(legacy);
+  return v;
+}
+
+/** A substate's decoded value, or null if it doesn't exist. */
+async function fetchValue(id: string): Promise<unknown[] | null> {
+  const r = await fetch(`${CONFIG.indexer}/substates/${id}`, { signal: AbortSignal.timeout(20_000) });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`The network answered ${r.status}`);
+  const up = (await r.json())?.state?.up?.substate;
+  return typeof up === "string" ? (decodeB64(up) as unknown[]) : null;
+}
+
+/** The inner value of a component, vault or NFT substate. */
+const inner = (v: unknown[]): unknown[] => (v[1] as unknown[])[0] as unknown[];
+
+/** The hex of a reference field (resource or vault). */
+const refHex = (v: Cbor): string => bytesHex((v as { value: Cbor }).value);
+
+async function stateOf(component: string): Promise<Cbor[]> {
+  const v = await fetchValue(component);
+  const state = v ? (inner(v)[1] as unknown[] | undefined)?.[0] : undefined;
+  if (!Array.isArray(state)) throw new Error("A Skydrop contract could not be read");
+  return legacy(state) as Cbor[];
+}
+
+const sha256Hex = async (s: string): Promise<string> => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))));
+const recordAddress = async (resourceHex: string, did: string): Promise<string> => `nft_${resourceHex}_uuid_${await sha256Hex(did)}`;
+
+/** The record resources never change once the components exist. */
+type Resources = { escrow: string; claim: string; link: string; claim2: string; chain: string };
+let resourcesOnce: Promise<Resources> | null = null;
+function recordResources(): Promise<Resources> {
+  resourcesOnce ??= Promise.all([stateOf(CONFIG.escrow), stateOf(CONFIG.claim), stateOf(CONFIG.link), stateOf(CONFIG.claim2), stateOf(CONFIG.chainBook)])
+    .then(([e, c, l, c2, b]) => ({
+      escrow: refHex(e[ESCROW.records]),
+      claim: refHex(c[CLAIM.records]),
+      link: refHex(l[LINK.records]),
+      claim2: refHex(c2[CLAIM2.records]),
+      chain: refHex(b[BOOK.records]),
+    }))
+    .catch((e) => {
+      resourcesOnce = null;
+      throw e;
+    });
+  return resourcesOnce;
+}
+
+type Book = "escrow" | "claim" | "link" | "claim2" | "chain";
+
+// ---- which ClaimPolicy an account's claim goes through --------------------------------------------------------
+//
+// Gifts made before v2 stay governed by ClaimPolicy v1, and only v1 can pay them. An account with any of those (or a
+// claim in progress under v1) finishes them through v1 first; everything else goes through v2. `readEscrow` decides
+// and remembers it here, and every claim-side call below follows it.
+const claimVersion = new Map<string, 1 | 2>();
+/** The ClaimPolicy component `did`'s claim goes through (v2 unless `readEscrow` found v1 work to finish). */
+export const claimComponentFor = (did: string): string => ((claimVersion.get(did) ?? 2) === 1 ? CONFIG.claim : CONFIG.claim2);
+const isV2 = (did: string): boolean => (claimVersion.get(did) ?? 2) === 2;
+const claimBook = (did: string): Book => (isV2(did) ? "claim2" : "claim");
+
+/** One account's record in `book`, as its mutable fields, or null if it was never opened. */
+async function readRecord(book: Book, did: string): Promise<Cbor[] | null> {
+  const v = await fetchValue(await recordAddress((await recordResources())[book], did));
+  return v ? (legacy(inner(v)[1]) as Cbor[]) : null;
+}
+
+/** The NFT ids (hex) a records vault holds. */
+async function vaultIds(vaultHex: string): Promise<string[]> {
+  const v = await fetchValue(`vault_${vaultHex}`);
+  if (!v) return [];
+  const ids = ((inner(v)[0] as unknown[])[1] as unknown[])[1] as unknown[] | undefined;
+  return (ids ?? []).map((x) => toHex(((x as unknown[])[1] as unknown[])[0] as Uint8Array));
+}
+
+/** Every record of a component, by DID. For the relay bot; a page reads one account's records. */
+async function allRecords(state: Cbor[], books: Books): Promise<Record<string, Cbor[]>> {
+  const resource = refHex(state[books.records]);
+  const vaults = [refHex(state[books.recordVault]), ...((state[books.fullVaults] ?? []) as Cbor[]).map(refHex)];
+  const ids = (await Promise.all(vaults.map(vaultIds))).flat();
+  const out: Record<string, Cbor[]> = {};
+  for (let i = 0; i < ids.length; i += 16) {
+    await Promise.all(
+      ids.slice(i, i + 16).map(async (id) => {
+        const v = await fetchValue(`nft_${resource}_uuid_${id}`);
+        if (!v) return;
+        const [did, data] = inner(v);
+        if (typeof did === "string") out[did] = legacy(data) as Cbor[];
+      }),
+    );
+  }
+  return out;
+}
+
+/** `open_account` calls for whichever of `books` `did` has no record in yet. */
+async function openMissing(did: string, books: Book[]): Promise<unknown[]> {
+  const component = { escrow: CONFIG.escrow, claim: CONFIG.claim, link: CONFIG.link, claim2: CONFIG.claim2, chain: CONFIG.chainBook };
+  const missing = await Promise.all(books.map(async (b) => ((await readRecord(b, did)) ? null : b)));
+  return missing.filter((b): b is Book => !!b).map((b) => call(component[b], "open_account", [lit(did)]));
 }
 
 /** ClaimPolicy deposit metadata: window (8 BE) ++ hold (8 BE) ++ envelope flag ++ envelope (32, if flagged) ++ phrase. */
@@ -165,6 +315,13 @@ export interface Pending {
 
 export interface Escrow {
   epoch: number;
+  /** v1 gifts this account can never collect: v1 verifies at most 16 identity operations and it has more. Their senders
+   *  can take them back after the refund date and send them again (they then go through v2). */
+  stuckV1: Deposit[];
+  /** Which ClaimPolicy this account's claim goes through now (1 until its v1 gifts are done). */
+  version: 1 | 2;
+  /** Gifts waiting under the other version, after this one's are done (shown, not claimable yet). */
+  laterDeposits: Deposit[];
   /** The ClaimPolicy deposits waiting for this account. */
   deposits: Deposit[];
   pending: Pending | null;
@@ -199,45 +356,80 @@ function depositOf(d: Cbor[], index: number): Deposit {
   };
 }
 
-/** Every ClaimPolicy deposit escrowed for `did`, with its position in the escrow's list. */
-function claimDeposits(escrowState: Cbor[], did: string): Deposit[] {
-  const rows = (escrowState[ESCROW.deposits] as Record<string, Cbor[][]> | undefined)?.[did] ?? [];
-  return rows.map((d, i) => ({ d, i })).filter(({ d }) => addressText(d[3]) === CONFIG.claim).map(({ d, i }) => depositOf(d, i));
+/** The deposits in an escrow ledger governed by `policy` (ClaimPolicy v1 or v2), with their positions in the ledger. */
+function claimDeposits(ledger: Cbor[] | null, policy: string): Deposit[] {
+  const rows = (ledger?.[0] ?? []) as Cbor[][];
+  return rows.map((d, i) => ({ d, i })).filter(({ d }) => addressText(d[3]) === policy).map(({ d, i }) => depositOf(d, i));
+}
+
+/** Every deposit waiting under either ClaimPolicy version. */
+const allClaimDeposits = (ledger: Cbor[] | null): Deposit[] => [...claimDeposits(ledger, CONFIG.claim), ...claimDeposits(ledger, CONFIG.claim2)];
+
+/** A ClaimPolicy record's fields by version: v1 stores (pending, known_len, text, held, ...), v2 drops known_len. */
+const claimFields = (r: Cbor[] | null | undefined, v: 1 | 2) => {
+  const o = v === 1 ? 1 : 0;
+  return { pending: r?.[0] as Cbor[] | null | undefined, text: r?.[1 + o], held: r?.[2 + o], delivered: (r?.[4 + o] ?? []) as Cbor[][] };
+};
+
+/** The most identity operations ClaimPolicy v1 verifies (its MAX_OPS). */
+const V1_MAX_OPS = 16;
+const opCounts = new Map<string, { n: number; at: number }>();
+/** How many operations `did`'s identity history has (cached for ten minutes; it rarely changes). */
+async function opCount(did: string): Promise<number> {
+  const hit = opCounts.get(did);
+  if (hit && Date.now() - hit.at < 600_000) return hit.n;
+  const n = (await plcLog(did)).length;
+  opCounts.set(did, { n, at: Date.now() });
+  return n;
 }
 
 export async function readEscrow(provider: IndexerProvider, did: string): Promise<Escrow> {
   requireDeployed();
-  const [epoch, escrow, claim, link] = await Promise.all([
+  const [epoch, ledger, claim1, claim2, link] = await Promise.all([
     provider.getCurrentEpoch(),
-    stateOf(provider, CONFIG.escrow),
-    stateOf(provider, CONFIG.claim),
-    stateOf(provider, CONFIG.link),
+    readRecord("escrow", did),
+    readRecord("claim", did),
+    readRecord("claim2", did),
+    readRecord("link", did),
   ]);
-  const pend = (claim[CLAIM.pending] as Record<string, Cbor[]> | undefined)?.[did];
+  const v1 = claimDeposits(ledger, CONFIG.claim);
+  const v2 = claimDeposits(ledger, CONFIG.claim2);
+  // Finish v1 work first: its gifts can only be paid through v1, and its claim record holds any claim in progress. An
+  // account v1 can't verify (more than 16 identity operations) can never do that, so it goes straight to v2.
+  const v1Work = !!(v1.length || claimFields(claim1, 1).pending);
+  // If the directory can't be read just now, assume v1 can verify it: the page still works, as it did before v2.
+  const v1Blind = v1Work && !claimFields(claim1, 1).pending && (await opCount(did).catch(() => 0)) > V1_MAX_OPS;
+  const version: 1 | 2 = v1Work && !v1Blind ? 1 : 2;
+  claimVersion.set(did, version);
+  const f = version === 1 ? claimFields(claim1, 1) : claimFields(claim2, 2);
+  const pend = f.pending;
+  const binding = (link?.[0] ?? null) as Cbor[] | null;
   return {
     epoch,
+    version,
+    stuckV1: v1Blind ? v1 : [],
+    laterDeposits: version === 1 ? v2 : [],
     maxWindow: CONFIG.maxWindow,
-    deposits: claimDeposits(escrow, did),
+    deposits: version === 1 ? v1 : v2,
     pending: pend ? { claimant: bytesHex(pend[0]), start: Number(pend[1]), len: Number(pend[3]) } : null,
-    claimText: String((claim[CLAIM.claimText] as Record<string, string> | undefined)?.[did] ?? ""),
-    binding: bindingOf(link[LINK.bindings], did, epoch),
-    bindingOwner: bindingOwnerOf(link[LINK.bindings], did, epoch),
-    bindingPending: pendingBindingOf(link[LINK.bindings], did, epoch),
-    held: heldOf(claim[CLAIM.held], did),
+    claimText: String(f.text ?? ""),
+    binding: bindingOf(binding, epoch),
+    bindingOwner: bindingOwnerOf(binding, epoch),
+    bindingPending: pendingBindingOf(binding, epoch),
+    held: heldOf(f.held),
   };
 }
 
-/** ClaimPolicy held: DID -> [rkey of the claim post, epoch it was last proven, snapshot µs at the start, latest snapshot µs]. */
-function heldOf(map: Cbor, did: string): { rkey: string; epoch: number; startRev: number; rev: number } | null {
-  const h = (map as Record<string, Cbor[]> | undefined)?.[did];
-  return h ? { rkey: String(h[0]), epoch: Number(h[1]), startRev: Number(h[2]), rev: Number(h[3]) } : null;
+/** ClaimPolicy held: [rkey of the claim post, epoch it was last proven, snapshot µs at the start, latest snapshot µs]. */
+function heldOf(h: Cbor): { rkey: string; epoch: number; startRev: number; rev: number } | null {
+  const t = h as Cbor[] | null | undefined;
+  return t ? { rkey: String(t[0]), epoch: Number(t[1]), startRev: Number(t[2]), rev: Number(t[3]) } : null;
 }
 
-// LinkRegistry bindings: DID -> [account, epoch it takes effect, the account it replaces (the registry itself for a
-// first link), owner key of the new binding, owner key of the one it replaces].
+// LinkRegistry binding: [account, epoch it takes effect, the account it replaces (the registry itself for a first
+// link), owner key of the new binding, owner key of the one it replaces].
 
-function bindingOf(map: Cbor, did: string, epoch: number): string | null {
-  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+function bindingOf(b: Cbor[] | null, epoch: number): string | null {
   if (!b) return null;
   if (epoch >= Number(b[1])) return addressText(b[0]);
   // before it takes effect, a replaced binding still applies; a first one (which "replaces" the registry) means nothing yet
@@ -245,15 +437,13 @@ function bindingOf(map: Cbor, did: string, epoch: number): string | null {
   return old === CONFIG.link ? null : old;
 }
 
-function bindingOwnerOf(map: Cbor, did: string, epoch: number): string | null {
-  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+function bindingOwnerOf(b: Cbor[] | null, epoch: number): string | null {
   if (!b) return null;
   if (epoch >= Number(b[1])) return bytesHex(b[3]);
   return addressText(b[2]) === CONFIG.link ? null : bytesHex(b[4]);
 }
 
-function pendingBindingOf(map: Cbor, did: string, epoch: number): { address: string; epoch: number } | null {
-  const b = (map as Record<string, Cbor[]> | undefined)?.[did];
+function pendingBindingOf(b: Cbor[] | null, epoch: number): { address: string; epoch: number } | null {
   return b && epoch < Number(b[1]) ? { address: addressText(b[0]), epoch: Number(b[1]) } : null;
 }
 
@@ -276,50 +466,69 @@ export interface StackSnapshot {
 
 export async function readStack(provider: IndexerProvider): Promise<StackSnapshot> {
   requireDeployed();
-  const [epoch, escrow, claim, link, tip] = await Promise.all([
+  const [epoch, escrowState, claimState, claim2State, linkState, tip, tip2] = await Promise.all([
     provider.getCurrentEpoch(),
-    stateOf(provider, CONFIG.escrow),
-    stateOf(provider, CONFIG.claim),
-    stateOf(provider, CONFIG.link),
-    stateOf(provider, CONFIG.tip),
+    stateOf(CONFIG.escrow),
+    stateOf(CONFIG.claim),
+    stateOf(CONFIG.claim2),
+    stateOf(CONFIG.link),
+    stateOf(CONFIG.tip),
+    stateOf(CONFIG.tip2),
+  ]);
+  const [ledgers, claims, claims2, links] = await Promise.all([
+    allRecords(escrowState, ESCROW),
+    allRecords(claimState, CLAIM),
+    allRecords(claim2State, CLAIM2),
+    allRecords(linkState, LINK),
   ]);
   const deposits: StackSnapshot["deposits"] = {};
-  for (const did of Object.keys((escrow[ESCROW.deposits] ?? {}) as Record<string, unknown>)) {
-    const list = claimDeposits(escrow, did);
+  for (const [did, ledger] of Object.entries(ledgers)) {
+    const list = allClaimDeposits(ledger);
     if (list.length) deposits[did] = list;
   }
   const pending: StackSnapshot["pending"] = {};
-  for (const [did, p] of Object.entries((claim[CLAIM.pending] ?? {}) as Record<string, Cbor[]>)) {
-    pending[did] = { claimant: bytesHex(p[0]), start: Number(p[1]), tipHex: bytesHex(p[2]), len: Number(p[3]) };
-  }
   const delivered: StackSnapshot["delivered"] = {};
-  for (const [did, list] of Object.entries((claim[CLAIM.delivered] ?? {}) as Record<string, Cbor[][]>)) {
-    delivered[did] = list.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), epoch: Number(d[2]) }));
+  for (const [v, records] of [[1, claims], [2, claims2]] as const) {
+    for (const [did, r] of Object.entries(records)) {
+      const f = claimFields(r, v);
+      const p = f.pending;
+      if (p) pending[did] = { claimant: bytesHex(p[0]), start: Number(p[1]), tipHex: bytesHex(p[2]), len: Number(p[3]) };
+      if (f.delivered.length) delivered[did] = [...(delivered[did] ?? []), ...f.delivered.map((d) => ({ sender: bytesHex(d[0]), amount: BigInt(d[1] as number), epoch: Number(d[2]) }))];
+    }
   }
-  const proofs = (link[LINK.bindProof] ?? {}) as Record<string, Cbor[]>;
   const bindings: StackSnapshot["bindings"] = {};
-  for (const [did, b] of Object.entries((link[LINK.bindings] ?? {}) as Record<string, Cbor[]>)) {
-    const pr = proofs[did];
-    bindings[did] = { effective: Number(b[1]), tipHex: pr ? bytesHex(pr[0]) : null, len: pr ? Number(pr[1]) : 0 };
+  const chainFloor: StackSnapshot["chainFloor"] = {};
+  for (const [did, r] of Object.entries(links)) {
+    const b = r[0] as Cbor[] | null;
+    const pr = r[1] as Cbor[] | null;
+    if (b) bindings[did] = { effective: Number(b[1]), tipHex: pr ? bytesHex(pr[0]) : null, len: pr ? Number(pr[1]) : 0 };
+    const pin = r[3] as Cbor[] | undefined;
+    if (pin && Number(pin[0])) chainFloor[did] = Number(pin[0]);
   }
-  const chainFloor = Object.fromEntries(Object.entries((link[LINK.knownLen] ?? {}) as Record<string, number>).map(([d, n]) => [d, Number(n)]));
-  const budgetDids = [...new Set(Object.keys((tip[TIP.budgets] ?? {}) as Record<string, unknown>).map((k) => k.slice(0, k.lastIndexOf(":"))))];
+  const budgetKeys = [...Object.keys((tip[TIP.budgets] ?? {}) as Record<string, unknown>), ...Object.keys((tip2[TIP.budgets] ?? {}) as Record<string, unknown>)];
+  const budgetDids = [...new Set(budgetKeys.map((k) => k.slice(0, k.lastIndexOf(":"))))];
   return { epoch, deposits, pending, delivered, bindings, chainFloor, budgetDids };
 }
 
 /** The account `did` has linked, if any. */
 export async function readBinding(provider: IndexerProvider, did: string): Promise<string | null> {
   requireDeployed();
-  const [epoch, link] = await Promise.all([provider.getCurrentEpoch(), stateOf(provider, CONFIG.link)]);
-  return bindingOf(link[LINK.bindings], did, epoch);
+  const [epoch, link] = await Promise.all([provider.getCurrentEpoch(), readRecord("link", did)]);
+  return bindingOf((link?.[0] ?? null) as Cbor[] | null, epoch);
 }
+
+/** The most identity operations the LinkRegistry verifies (it predates the ChainBook and keeps v1's limit). */
+const LINK_MAX_OPS = 16;
+const LINK_TOO_LONG = "Linking a wallet isn't available yet for accounts with more than 16 identity operations (the link registry's limit). You can still collect gifts and rewards with a claim post.";
 
 /** Links the Bluesky account in `proof` to `address`: the proof is a post that carries the bind code for that address. */
 export async function bindAccount(wallet: Wallet, proof: ClaimProof, address: string, owner: Uint8Array, onStage?: (s: string) => void): Promise<TxOutcome> {
+  if (proof.ops.length > LINK_MAX_OPS) throw new ChainError(LINK_TOO_LONG);
   const instructions = [
+    ...(await openMissing(proof.did, ["link"])),
     call(CONFIG.link, "bind", [lit(proof.did), componentAddressLiteral(address as never), lit(owner), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
   ];
-  return run(wallet, instructions, 120_000n, onStage);
+  return run(wallet, instructions, 120_000n, onStage, false, await linkRelated(proof.did, [address]));
 }
 
 /** What is payable right now to a claim that started at `start` (mirrors ClaimPolicy's `payable`). */
@@ -356,13 +565,11 @@ const metadataInRange = (d: Deposit): boolean =>
 /** TARI left in the escrow's vault that pays claimants' network fees. */
 export async function readSponsorBalance(provider: IndexerProvider): Promise<bigint> {
   try {
-    const state = (await stateOf(provider, CONFIG.escrow)) as { value?: { hex: string } }[];
-    const vaultId = state[ESCROW.feeVault]?.value?.hex;
-    if (!vaultId) return 0n;
-    const v = await provider.getSubstate(`vault_${vaultId}`);
-    const rc = (v.substate as { Vault: { resource_container: Record<string, { revealed_amount?: string; amount?: string }> } }).Vault.resource_container;
-    const inner = Object.values(rc)[0];
-    return BigInt(inner?.revealed_amount ?? inner?.amount ?? 0);
+    const state = await stateOf(CONFIG.escrow);
+    const v = await fetchValue(`vault_${refHex(state[ESCROW.feeVault])}`);
+    if (!v) return 0n;
+    const container = inner(v)[0] as unknown[];
+    return BigInt((container[1] as unknown[])[1] as number | bigint);
   } catch {
     return 0n;
   }
@@ -374,9 +581,24 @@ export const total = (ds: Deposit[]): bigint => ds.reduce((n, d) => n + d.amount
 
 export class ChainError extends Error {}
 
+/** A fee-only rejection prints `[stateDiff, reason]`; the diff is huge and hides the reason, so keep only the reason. */
+function rejectReason(m: string): string {
+  const i = m.indexOf("rejected the rest: ");
+  if (i < 0) return m;
+  const head = m.slice(0, i) + "rejected the rest: ";
+  try {
+    const parts = JSON.parse(m.slice(i + 19)) as unknown[];
+    const r = parts[parts.length - 1];
+    return head + (typeof r === "string" ? r : JSON.stringify(r));
+  } catch {
+    // truncated or not JSON: the reason is usually the tail
+    return head + m.slice(-300);
+  }
+}
+
 /** Turns the engine's raw rejection text into something a person can act on. */
 export function friendly(e: unknown): string {
-  const m = e instanceof Error ? e.message : String(e);
+  const m = rejectReason(e instanceof Error ? e.message : String(e));
   const rules: [RegExp, string][] = [
     [/isn't deployed on this network/i, "Skydrop isn't running on this network yet. Check back soon."],
     [/does not contain the claim code/i, "Your post doesn't contain the claim code. Post the exact text shown, then try again."],
@@ -385,7 +607,7 @@ export function friendly(e: unknown): string {
     [/stale operation chain/i, "A newer version of this account's identity history exists. Refresh and try again."],
     [/no deposits for this account under this policy|no pending claim/i, "Nothing is waiting for this account."],
     [/window is still open|nothing payable yet|nothing is payable yet/i, "The network hasn't caught up to your claim yet. Wait a minute and press Collect again."],
-    [/not enough|insufficient/i, "This wallet doesn't have enough tTARI to cover the amount plus network fees."],
+    [/not enough|insufficient/i, `This wallet doesn't have enough ${CONFIG.symbol} to cover the amount plus network fees.`],
     [/already claimed/i, "This wallet already used the faucet."],
     [/deposit below the minimum/i, `The smallest amount you can send is ${Number(CONFIG.minDeposit) / Number(CONFIG.unit)} ${CONFIG.symbol}.`],
     [/required phrase was not posted/i, "The challenge phrase wasn't in your claim post. Post it together with the claim code and try again."],
@@ -398,17 +620,25 @@ export function friendly(e: unknown): string {
     [/a claim for this account is in progress/i, "A claim for this account is in progress, so nothing can be returned right now."],
     [/nothing has been returned to you/i, "Nothing has been returned to you."],
     [/older than one already proven/i, "Bluesky gave an older snapshot of your account than one already proven. Wait a moment and try again."],
-    [/escrow is too small to cover more sponsored fees/i, "This gift is too small to cover more free network fees. Your wallet needs a little tTARI for the fee."],
+    [/escrow is too small to cover more sponsored fees/i, `This gift is too small to cover more free network fees. Your wallet needs a little ${CONFIG.symbol} for the fee.`],
     [/already used to bind/i, "That link post was already used. Make a new post to link again."],
     [/no such deposit/i, "That gift is no longer there. It may already have been collected, declined or returned."],
     [/no deposits for this account/i, "Nothing is waiting for this account any more."],
     [/not refundable yet/i, "This gift can't be taken back yet. Check Your sends for when."],
     [/already in effect/i, "That link is already in effect."],
-    [/has used its sponsored/i, "The free network fees for this account have been used. Your wallet needs a little tTARI for the fee."],
+    [/has used its sponsored/i, `The free network fees for this account have been used. Your wallet needs a little ${CONFIG.symbol} for the fee.`],
+    [/identity chain isn't recorded yet/i, "This account's identity history isn't on-chain yet. Try again: it's recorded as part of the claim."],
+    [/newer identity chain has been seen/i, "This account changed its identity (a key or handle) since it was recorded on-chain. Try again: the change is recorded first."],
+    [/has no repo key/i, "This account has been deleted or has no signing key, so its posts can't be verified."],
+    [/differs from the directory's/i, "This account's identity history on-chain differs from Bluesky's directory (an undone change). It needs the account's recovery key to fix."],
+    [/isn't the recorded operation|nothing is recorded before genesis/i, "Someone else updated this account's on-chain history at the same moment. Try again."],
+    [/that is the chain the claim already relies on/i, "Nothing has changed in this account's identity, so the claim can't be challenged."],
+    [/needs recording first/i, "This account's identity history has to be recorded on-chain first."],
+    [/too many blocks/i, "This account's identity history is too long for the contract these gifts were sent with."],
     [/Timed out/i, "The network is slow right now. Please try again."],
   ];
   for (const [re, text] of rules) if (re.test(m)) return text;
-  return m.length > 220 ? `${m.slice(0, 220)}…` : m;
+  return m.length > 400 ? `${m.slice(0, 400)}…` : m;
 }
 
 /** The contract refused a payout because, as far as the checking node knows, the safety window is still open. */
@@ -433,28 +663,97 @@ export interface TxOutcome {
   transactionId: string;
 }
 
+/** The version the indexer reports for a substate now, or null if it can't say. */
+async function latestVersion(id: string): Promise<number | null> {
+  try {
+    const r = await fetch(`${CONFIG.indexer}/substates/${id}`, { signal: AbortSignal.timeout(15_000) });
+    if (!r.ok) return null;
+    const v = (await r.json())?.version;
+    return typeof v === "number" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pins every input to the version the indexer reports now. Left unpinned, the SDK fills a version in from its own cache
+ * of what this browser's past transactions saw, which goes stale as soon as anyone else's transaction moves a shared
+ * substate on (a registry's records resource changes whenever any account opens a record): the send is then refused
+ * with "Input substate X (vN) is down", every time. The SDK only uses its cache over a pinned version that's older.
+ */
+async function pinLatest(ids: string[]): Promise<string[]> {
+  return Promise.all(ids.map(async (s) => {
+    if (s.includes("@")) return s;
+    const v = await latestVersion(s);
+    return v === null ? s : `${s}@${v}`;
+  }));
+}
+
+/** After "X (vN) is down": forget the SDK's cached version of X and pin the newest the indexer knows (at least N+1). */
+async function repin(inputs: string[], stale: { id: string; next: number }): Promise<string[]> {
+  await forgetKnownVersions([stale.id], configNetwork()).catch(() => undefined);
+  return pinInput(inputs, stale.id, Math.max(stale.next, (await latestVersion(stale.id)) ?? 0));
+}
+
 async function run(
   wallet: Wallet,
   instructions: unknown[],
   maxFee: bigint,
   onStage?: (s: string) => void,
   tolerateEpochLag = false,
+  related: string[] = [],
 ): Promise<TxOutcome> {
   requireDeployed();
   onStage?.("Checking it works…");
-  try {
-    const dry = await wallet.execute(instructions, { dryRun: true, maxFee });
-    assertAccepted(dry);
-  } catch (e) {
-    // The pre-check runs against the previous epoch, so it can call a payout "too early" that the real
-    // transaction (executed in the current epoch) accepts. Only for payouts the caller already knows are due.
-    if (!tolerateEpochLag || !isWindowOpen(e)) throw e;
-    onStage?.("The pre-check is one epoch behind. Sending anyway…");
+  // A failed real transaction still pays its whole fee, so every input it needs is found by dry runs first and the
+  // real send carries exactly that list.
+  let inputs = await pinLatest([...new Set(related)]);
+  for (let i = 0; ; i++) {
+    try {
+      assertAccepted(await wallet.execute(instructions, { dryRun: true, maxFee, inputs }));
+      break;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Another transaction spent an input since we read it: ask for the next version, not the indexer's lagging one.
+      const stale = staleInput(msg);
+      if (stale && i < 16) {
+        inputs = await repin(inputs, stale);
+        continue;
+      }
+      const missing = extractMissingSubstateAddress(msg);
+      if (missing && !inputs.includes(missing) && i < 16) {
+        inputs.push(missing);
+        continue;
+      }
+      // The pre-check runs against the previous epoch, so it can call a payout "too early" that the real
+      // transaction (executed in the current epoch) accepts. Only for payouts the caller already knows are due.
+      if (!tolerateEpochLag || !isWindowOpen(e)) throw e;
+      onStage?.("The pre-check is one epoch behind. Sending anyway…");
+      break;
+    }
   }
   onStage?.("Sending to the network…");
-  const res = (await wallet.execute(instructions, { maxFee })) as { transaction_id?: unknown; transactionId?: unknown };
+  // Another transaction can update an input between the check and the send (a record or resource changing): the
+  // indexer refuses the send before broadcasting it, nothing is charged, and it's sent again with the newer version.
+  let res: { transaction_id?: unknown; transactionId?: unknown };
+  for (let i = 0; ; i++) {
+    try {
+      res = (await wallet.execute(instructions, { maxFee, inputs })) as typeof res;
+      break;
+    } catch (e) {
+      const stale = refusedStale(e);
+      if (!stale || i >= 4) throw e;
+      inputs = await repin(inputs, stale);
+      onStage?.("Something changed on the network a moment ago. Sending again…");
+    }
+  }
   assertAccepted(res);
   return { transactionId: String(res.transaction_id ?? res.transactionId ?? "") };
+}
+
+/** Submits someone else's ready-made instructions (a campaign's linked claim), the relay wallet paying the fee. */
+export async function relayInstructions(wallet: Wallet, instructions: unknown[], inputs: string[], maxFee: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  return run(wallet, instructions, maxFee, onStage, false, inputs);
 }
 
 /**
@@ -468,30 +767,210 @@ export async function sendTip(
   linked: boolean,
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
-  const owner = wallet.componentAddress;
   const pk = wallet.publicKey;
-  const withdraw = call(owner, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]);
   const plain = !p.window && !p.challenge && !p.hold && !p.envelope;
+  const direct = linked && plain;
+  const open = await openMissing(p.did, direct ? ["claim2"] : ["escrow"]);
   const give =
-    linked && plain
-      ? call(CONFIG.claim, "pay_linked", [lit(p.did), lit(pk), workspace0])
+    direct
+      ? call(CONFIG.claim2, "pay_linked", [lit(p.did), lit(pk), fundsBucket])
       : call(CONFIG.escrow, "deposit", [
           lit(p.did),
           lit(pk),
           lit(epoch + CONFIG.refundAfterEpochs),
-          componentAddressLiteral(CONFIG.claim as never),
+          componentAddressLiteral(CONFIG.claim2 as never),
           lit(encodeMetadata({ window: p.window, hold: p.hold, envelope: p.envelope, challenge: p.challenge })),
-          workspace0,
+          fundsBucket,
         ]);
-  return run(wallet, [withdraw, toWorkspace, give], 30_000n, onStage);
+  const related = direct ? await directRelated(p.did, epoch) : await depositRelated(p.did);
+  return runFunded(wallet, p.amount, [...open, give], related, 30_000n, onStage);
+}
+
+/** Where a funded call finds the TARI it was given: the wallet's funded-call path leaves it at workspace id 1. */
+const fundsBucket = { Workspace: { id: 1, offset: null } };
+
+/** The resource a vault holds (badge resources are only named in their vaults). */
+async function vaultResource(vaultHex: string): Promise<string> {
+  const v = await fetchValue(`vault_${vaultHex}`);
+  if (!v) throw new Error("A Skydrop vault could not be read");
+  const r = ((inner(v)[0] as unknown[])[1] as unknown[])[0];
+  return `resource_${toHex((r instanceof Tagged ? r.value : r) as Uint8Array)}`;
+}
+
+/** Everything an escrow deposit for `did` touches besides the escrow's own vaults. */
+async function depositRelated(did: string): Promise<string[]> {
+  const [res, escrow] = await Promise.all([recordResources(), stateOf(CONFIG.escrow)]);
+  const ledger = await recordAddress(res.escrow, did);
+  const [badge, exists] = await Promise.all([vaultResource(refHex(escrow[ESCROW.recordBadge])), fetchValue(ledger)]);
+  return [CONFIG.escrow, CONFIG.claim2, `resource_${res.escrow}`, badge, ...(exists ? [ledger] : [])];
+}
+
+/** ClaimPolicy's badge_vault (its PolicyBadge, shown to the escrow) and LinkRegistry's record_badge field indexes. */
+const CLAIM_POLICY_BADGE = 1;
+const LINK_RECORD_BADGE = 2;
+/** The escrow's main vault, holding every gift. */
+const ESCROW_VAULT = 0;
+
+/**
+ * Everything a claim-side call for `did` can touch across ClaimPolicy, the escrow and the registry: the three
+ * components, their record resources, the badges they present to each other, and `did`'s existing records.
+ * Resources and NFTs aren't found by the engine on its own, so a cross-template call without them fails NotFound.
+ */
+export async function claimRelated(did: string): Promise<string[]> {
+  const v2 = isV2(did);
+  const claimC = v2 ? CONFIG.claim2 : CONFIG.claim;
+  const [res, escrow, claim, link, book] = await Promise.all([recordResources(), stateOf(CONFIG.escrow), stateOf(claimC), stateOf(CONFIG.link), v2 ? stateOf(CONFIG.chainBook) : Promise.resolve(null)]);
+  const C = v2 ? CLAIM2 : CLAIM;
+  const badgeVaults = [claim[CLAIM_POLICY_BADGE], claim[C.recordBadge], escrow[ESCROW.recordBadge], link[LINK_RECORD_BADGE], ...(book ? [book[BOOK.recordBadge]] : [])];
+  const books = (v2 ? ["escrow", "claim2", "link", "chain"] : ["escrow", "claim", "link"]) as Book[];
+  const [badges, records] = await Promise.all([
+    Promise.all(badgeVaults.map((v) => vaultResource(refHex(v)))),
+    Promise.all(books.map(async (b) => {
+      const a = await recordAddress(res[b], did);
+      return (await fetchValue(a)) ? a : null;
+    })),
+  ]);
+  // Vaults aren't found on their own either: the badge vaults, the escrow's gift and fee vaults, and the vault a new
+  // record is minted into, only where `did` has no record yet. Every claim that lists a vault locks it, so a vault
+  // nothing writes stays out: listing them all made unrelated claims (and the bot) collide on stale versions.
+  const mintVault: Partial<Record<Book, Cbor>> = { escrow: escrow[ESCROW.recordVault], [v2 ? "claim2" : "claim"]: claim[C.recordVault], link: link[LINK.recordVault], ...(book ? { chain: book[BOOK.recordVault] } : {}) };
+  const vaults = [
+    ...badgeVaults.map(refHex),
+    refHex(escrow[ESCROW_VAULT]), refHex(escrow[ESCROW.feeVault]),
+    ...books.filter((_, i) => !records[i]).map((b) => refHex(mintVault[b]!)),
+  ].map((h) => `vault_${h}`);
+  // One list with no duplicates: a duplicate input makes the transaction unparseable.
+  return [...new Set([
+    CONFIG.escrow, claimC, CONFIG.link, ...(v2 ? [CONFIG.chainBook] : []),
+    `resource_${res.escrow}`, `resource_${v2 ? res.claim2 : res.claim}`, `resource_${res.link}`, ...(v2 ? [`resource_${res.chain}`] : []),
+    ...new Set([...badges, ...vaults]),
+    ...records.filter((a): a is string => !!a),
+  ])];
+}
+
+/**
+ * What linking (or showing the registry a newer chain) touches: the registry, its record resource, the badge it updates
+ * records with, and `did`'s record (or the vault a new one is minted into). Nothing else: listing a substate other
+ * transactions keep changing (the escrow's fee vault, say) only gets a link refused for a version it never needed.
+ */
+async function linkRelated(did: string, extra: string[] = []): Promise<string[]> {
+  const [res, link] = await Promise.all([recordResources(), stateOf(CONFIG.link)]);
+  const badgeVault = refHex(link[LINK_RECORD_BADGE]);
+  const record = await recordAddress(res.link, did);
+  const exists = await fetchValue(record);
+  return [...new Set([CONFIG.link, `resource_${res.link}`, `vault_${badgeVault}`, await vaultResource(badgeVault), exists ? record : `vault_${refHex(link[LINK.recordVault])}`, ...extra])];
+}
+
+/** What recording into the ChainBook touches: the book, its record resource and badge, and `did`'s record (or mint vault). */
+async function bookRelated(did: string): Promise<string[]> {
+  const [res, book] = await Promise.all([recordResources(), stateOf(CONFIG.chainBook)]);
+  const badgeVault = refHex(book[BOOK.recordBadge]);
+  const record = await recordAddress(res.chain, did);
+  const exists = await fetchValue(record);
+  return [...new Set([CONFIG.chainBook, `resource_${res.chain}`, `vault_${badgeVault}`, await vaultResource(badgeVault), exists ? record : `vault_${refHex(book[BOOK.recordVault])}`])];
+}
+
+/** Everything a direct delivery to `did`'s linked wallet touches. */
+async function directRelated(did: string, epoch: number): Promise<string[]> {
+  const [res, claim] = await Promise.all([recordResources(), stateOf(CONFIG.claim2)]);
+  const [claimRecord, linkRecord] = await Promise.all([recordAddress(res.claim2, did), recordAddress(res.link, did)]);
+  const [badge, claimExists, link] = await Promise.all([vaultResource(refHex(claim[CLAIM2.recordBadge])), fetchValue(claimRecord), readRecord("link", did)]);
+  const to = bindingOf((link?.[0] ?? null) as Cbor[] | null, epoch);
+  return [CONFIG.claim2, CONFIG.link, `resource_${res.claim2}`, badge, linkRecord, ...(claimExists ? [claimRecord] : []), ...(to ? [to] : [])];
+}
+
+// ---- recording identity chains in the ChainBook (v2) -----------------------------------------------------------
+
+/** The operations of `did`'s identity history the ChainBook hasn't recorded yet, and the calls that record them. */
+export async function bookSteps(did: string): Promise<{ missing: number; instructions: unknown[] }> {
+  const [log, rec] = await Promise.all([plcLog(did), readRecord("chain", did)]);
+  const n = rec ? (bytesHex(rec[2]) ?? "").length / 2 : 0;
+  if (n > log.length) throw new ChainError("The identity history recorded on-chain is longer than the one the directory shows. Try again later.");
+  if (n > 0) {
+    // The book must hold the directory's history so far; a different branch can't be extended (only replaced by PLC's rules).
+    const recorded = bytesHex(rec![0]).slice(64 * (n - 1), 64 * n);
+    if ((await opHashHex(log[n - 1]!)) !== recorded) throw new ChainError("This account's identity history recorded on-chain differs from the directory's. It can't be extended until that's resolved.");
+  }
+  const open = rec ? [] : [call(CONFIG.chainBook, "open_account", [lit(did)])];
+  if (n >= log.length) return { missing: 0, instructions: open };
+  const hints = signerHints(log);
+  const enc = log.map((o) => dagCbor.encode(o));
+  const steps: unknown[] = [...open];
+  for (let at = n; at < log.length; at += BOOK_MAX_ADVANCE) {
+    const end = Math.min(log.length, at + BOOK_MAX_ADVANCE);
+    steps.push(call(CONFIG.chainBook, "advance", [lit(did), lit(at === 0 ? null : enc[at - 1]!), lit(enc.slice(at, end)), lit(Uint8Array.from(hints.slice(at, end)))]));
+  }
+  return { missing: log.length - n, instructions: steps };
+}
+
+/**
+ * Operations a sponsored (fee-phase) claim can record itself. The fee phase has 32M points of compute credit; one
+ * operation is ~8M and the claim ~10-15M, so two would leave too little room. More must be recorded beforehand.
+ */
+export const FEE_PHASE_BOOK_OPS = 1;
+/** Operations a paid claim records in its own transaction; more are recorded first, in transactions of their own. */
+export const INLINE_BOOK_OPS = 12;
+/** What recording one operation can cost in fees (uT): ~8M points is ~0.008 TARI, with room to spare. */
+const FEE_PER_BOOK_OP = 9_000n;
+
+/**
+ * Records the rest of `did`'s identity history in the ChainBook, paid by `wallet`: up to 24 operations a transaction
+ * (one transaction may use at most 250M points; 24 operations measured 171M), each sent once the last has landed.
+ */
+export async function recordChain(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome | null> {
+  let last: TxOutcome | null = null;
+  for (let round = 0; round < 50; round++) {
+    const { missing, instructions } = await bookSteps(did);
+    if (!instructions.length) return last;
+    // An open (if needed) and the first `advance`: the next chunk names this one's last operation, so it waits.
+    const first = instructions.slice(0, (instructions[0] as { CallMethod: { method: string } }).CallMethod.method === "open_account" ? 2 : 1);
+    const ops = Math.min(missing, BOOK_MAX_ADVANCE);
+    onStage?.(`Recording your account's identity history on-chain (${ops} of ${missing} operations)`);
+    last = await run(wallet, first, 20_000n + FEE_PER_BOOK_OP * BigInt(ops), onStage, false, await bookRelated(did));
+    // Wait for the indexer to show it before working out the next chunk from it.
+    for (let i = 0; i < 15 && (await bookSteps(did)).missing === missing; i++) await new Promise((r) => setTimeout(r, 2_000));
+  }
+  return last;
+}
+
+/**
+ * The calls that bring the book up to date before a v2 call for `did` (none for v1), and what they add to the fee. A
+ * long history is recorded first in transactions of its own (paid by `wallet`), so the call itself stays small.
+ */
+async function bookFirst(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<{ steps: unknown[]; fee: bigint }> {
+  if (!isV2(did)) return { steps: [], fee: 0n };
+  const { missing, instructions } = await bookSteps(did);
+  if (missing > INLINE_BOOK_OPS) {
+    await recordChain(wallet, did, onStage);
+    return { steps: [], fee: 0n };
+  }
+  return { steps: instructions, fee: FEE_PER_BOOK_OP * BigInt(missing) };
+}
+
+/** v1 calls carry the identity chain; v2 calls read it from the ChainBook instead. */
+const chainArg = (did: string, ops: Uint8Array[]): unknown[] => (isV2(did) ? [] : [lit(ops)]);
+
+/** Like `run`, for a transaction that spends `amount` of the wallet's TARI. */
+async function runFunded(wallet: Wallet, amount: bigint, followUp: unknown[], related: string[], maxFee: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  requireDeployed();
+  onStage?.("Checking it works…");
+  assertAccepted(await wallet.executeFunded(amount, followUp, related, { maxFee, dryRun: true }));
+  onStage?.("Sending to the network…");
+  const res = (await wallet.executeFunded(amount, followUp, related, { maxFee })) as { transaction_id?: unknown; transactionId?: unknown };
+  assertAccepted(res);
+  return { transactionId: String(res.transactionId ?? res.transaction_id ?? "") };
 }
 
 export async function startClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
   const pk = wallet.publicKey;
+  const did = proof.did;
+  const book = await bookFirst(wallet, did, onStage);
   const instructions = [
-    call(CONFIG.claim, "start_claim", [lit(proof.did), lit(pk), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
+    ...(await openMissing(did, [claimBook(did), "link"])),
+    ...book.steps,
+    call(claimComponentFor(did), "start_claim", [lit(did), lit(pk), ...chainArg(did, proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
   ];
-  return run(wallet, instructions, 120_000n, onStage);
+  return run(wallet, instructions, 120_000n + book.fee, onStage, false, await claimRelated(did));
 }
 
 /**
@@ -499,58 +978,82 @@ export async function startClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s
  * that just says the sender's phrase), because the payout can only go to the linked wallet. Anyone may submit it.
  */
 export async function startLinkedClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const did = proof.did;
+  const book = await bookFirst(wallet, did, onStage);
   const instructions = [
-    call(CONFIG.claim, "start_linked_claim", [lit(proof.did), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
+    ...(await openMissing(did, [claimBook(did)])),
+    ...book.steps,
+    call(claimComponentFor(did), "start_linked_claim", [lit(did), ...chainArg(did, proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)]),
   ];
-  return run(wallet, instructions, 120_000n, onStage);
+  return run(wallet, instructions, 120_000n + book.fee, onStage, false, await claimRelated(proof.did));
 }
 
 /** Pays a linked account's payable gifts into its linked wallet. Anyone may call it: the destination is fixed. */
 export async function finalizeToLinked(wallet: Wallet, did: string, onStage?: (s: string) => void, payableByEpoch = false): Promise<TxOutcome> {
-  return run(wallet, [call(CONFIG.claim, "finalize_to_linked", [lit(did)])], 60_000n, onStage, payableByEpoch);
+  return run(wallet, [call(claimComponentFor(did), "finalize_to_linked", [lit(did)])], 60_000n, onStage, payableByEpoch, await claimRelated(did));
 }
 
 export async function finalizeClaim(wallet: Wallet, did: string, onStage?: (s: string) => void, payableByEpoch = false): Promise<TxOutcome> {
   const owner = wallet.componentAddress;
-  const instructions = [call(CONFIG.claim, "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
-  return run(wallet, instructions, 30_000n, onStage, payableByEpoch);
+  const instructions = [call(claimComponentFor(did), "finalize_claim", [lit(did)]), toWorkspace, call(owner, "deposit", [workspace0])];
+  return run(wallet, instructions, 30_000n, onStage, payableByEpoch, await claimRelated(did));
 }
 
 /** The owner key inside a wallet address (otl_…). */
 export const ownerOf = (walletAddress: string): Uint8Array => new Uint8Array(parseOotleAddress(walletAddress).owner_key);
 
-/** Gifts returned to `keyHex` (declined or swept) and waiting to be taken back. */
-export async function readReturnedFor(provider: IndexerProvider, keyHex: string): Promise<bigint> {
-  requireDeployed();
-  const state = await stateOf(provider, CONFIG.escrow);
-  const map = (state[ESCROW.returned] ?? {}) as Record<string, number>;
-  return BigInt(map[keyHex] ?? 0);
+/** Every escrow ledger, by DID. */
+async function allLedgers(): Promise<Record<string, Cbor[]>> {
+  return allRecords(await stateOf(CONFIG.escrow), ESCROW);
 }
 
-/** Takes back everything that was returned to this wallet. */
+/** Gifts returned to `keyHex` (declined or swept): [did, position in its ledger, amount]. The escrow governs them now. */
+async function returnedTo(keyHex: string): Promise<[string, number, bigint][]> {
+  const out: [string, number, bigint][] = [];
+  for (const [did, ledger] of Object.entries(await allLedgers())) {
+    ((ledger[0] ?? []) as Cbor[][]).forEach((d, i) => {
+      if (addressText(d[3]) === CONFIG.escrow && bytesHex(d[0]) === keyHex) out.push([did, i, BigInt(d[1] as number)]);
+    });
+  }
+  return out;
+}
+
+/** Gifts returned to `keyHex` (declined or swept) and waiting to be taken back. */
+export async function readReturnedFor(_provider: IndexerProvider, keyHex: string): Promise<bigint> {
+  requireDeployed();
+  return (await returnedTo(keyHex)).reduce((n, [, , a]) => n + a, 0n);
+}
+
+/** Takes back everything that was returned to this wallet: a `refund` of each, refundable at once. */
 export async function takeReturned(wallet: Wallet, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const instructions = [call(CONFIG.escrow, "take_returned", [lit(wallet.publicKey)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];
-  return run(wallet, instructions, 40_000n, onStage);
+  requireDeployed();
+  // Highest position first within a ledger, so earlier removals don't shift the later ones.
+  const items = (await returnedTo(toHex(wallet.publicKey))).sort((a, b) => (a[0] === b[0] ? b[1] - a[1] : a[0] < b[0] ? -1 : 1)).slice(0, 8);
+  if (!items.length) throw new ChainError("nothing has been returned to you");
+  const instructions = items.flatMap(([did, index]) => [call(CONFIG.escrow, "refund", [lit(did), lit(index)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])]);
+  return run(wallet, instructions, 40_000n * BigInt(items.length), onStage, false, [...new Set((await Promise.all(items.map(([did]) => claimRelated(did)))).flat())]);
 }
 
 /** Declines a waiting gift (from the linked wallet). It goes back to its sender. */
 export async function declineDeposit(wallet: Wallet, did: string, d: Deposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const args = [lit(did), lit(fromHex(d.sender)), amountLiteral(d.amount), lit(d.refundEpoch)];
-  return run(wallet, [call(CONFIG.claim, "decline", args)], 60_000n, onStage);
+  return run(wallet, [call(claimComponentFor(did), "decline", args)], 60_000n, onStage, false, await claimRelated(did));
 }
 
 export async function declineDepositSponsored(wallet: Wallet, did: string, d: Deposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const account = builtinOnly(wallet);
   return sendSponsored(
     account,
-    (b) => b.addFeeInstruction(call(CONFIG.claim, "decline_sponsored", [lit(did), lit(fromHex(d.sender)), amountLiteral(d.amount), lit(d.refundEpoch), amountLiteral(SPONSOR_FEE)])),
+    (b) => b.addFeeInstruction(call(claimComponentFor(did), "decline_sponsored", [lit(did), lit(fromHex(d.sender)), amountLiteral(d.amount), lit(d.refundEpoch), amountLiteral(SPONSOR_FEE)])),
     onStage,
+    false,
+    did,
   );
 }
 
 /** Sends gifts that can no longer pay (phrase gifts nobody answered for about three days) back to their senders. Anyone may do it. */
 export async function sweepDeposits(wallet: Wallet, did: string, onStage?: (s: string) => void): Promise<TxOutcome> {
-  return run(wallet, [call(CONFIG.claim, "sweep", [lit(did)])], 60_000n, onStage);
+  return run(wallet, [call(claimComponentFor(did), "sweep", [lit(did)])], 60_000n, onStage, false, await claimRelated(did));
 }
 
 /** The account component behind a wallet address (otl_…). */
@@ -558,23 +1061,29 @@ export const accountOf = (walletAddress: string): string => componentAddressFrom
 
 /** Proves again that the claim post is still up, once a deposit's hold time has passed. */
 export async function confirmClaim(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const instructions = [call(CONFIG.claim, "confirm_claim", [lit(proof.did), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)])];
-  return run(wallet, instructions, 120_000n, onStage);
+  const did = proof.did;
+  const book = await bookFirst(wallet, did, onStage);
+  const instructions = [...book.steps, call(claimComponentFor(did), "confirm_claim", [lit(did), ...chainArg(did, proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)])];
+  return run(wallet, instructions, 120_000n + book.fee, onStage, false, await claimRelated(proof.did));
 }
 
 /** Shows the registry an account's current operation chain, so proofs made with an older one are refused from then on. */
 export async function observeChain(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
-  return run(wallet, [call(CONFIG.link, "observe_chain", [lit(did), lit(ops)])], 120_000n, onStage);
+  if (ops.length > LINK_MAX_OPS) throw new ChainError("The link registry keeps at most 16 identity operations.");
+  return run(wallet, [...(await openMissing(did, ["link"])), call(CONFIG.link, "observe_chain", [lit(did), lit(ops)])], 120_000n, onStage, false, await linkRelated(did));
 }
 
-/** Cancels a pending claim by presenting the account's newer operation chain (during its challenge window). */
+/** Cancels a pending claim by presenting the account's newer operation chain (during its challenge window). Under v2 the
+ *  newer chain is recorded in the ChainBook first, and the challenge reads it from there. */
 export async function challengeClaim(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
-  return run(wallet, [call(CONFIG.claim, "challenge", [lit(did), lit(ops)])], 120_000n, onStage);
+  const book = await bookFirst(wallet, did, onStage);
+  const instructions = [...book.steps, call(claimComponentFor(did), "challenge", [lit(did), ...chainArg(did, ops)])];
+  return run(wallet, instructions, 120_000n + book.fee, onStage, false, await claimRelated(did));
 }
 
 /** Cancels a link that hasn't taken effect yet by presenting the account's newer operation chain. */
 export async function challengeBind(wallet: Wallet, did: string, ops: Uint8Array[], onStage?: (s: string) => void): Promise<TxOutcome> {
-  return run(wallet, [call(CONFIG.link, "challenge_bind", [lit(did), lit(ops)])], 120_000n, onStage);
+  return run(wallet, [call(CONFIG.link, "challenge_bind", [lit(did), lit(ops)])], 120_000n, onStage, false, await linkRelated(did));
 }
 
 /** Why `address` can't be paid from `own` (a wallet address on the same network), or null when it can. */
@@ -585,7 +1094,8 @@ export function addressProblem(address: string, own: string): string | null {
   } catch {
     return "That doesn't look like a Tari address. It should start with otl_.";
   }
-  const net = (a: string) => a.split("_").slice(0, 2).join("_");
+  // The network is everything before the last "_": "otl" on mainnet (otl_1…), "otl_esm" on Esmeralda (otl_esm_1…).
+  const net = (a: string) => a.slice(0, a.lastIndexOf("_"));
   if (net(address) !== net(own)) return "That address is for a different Tari network.";
   if (address === own) return "That's this wallet's own address.";
   return null;
@@ -616,11 +1126,10 @@ export interface SentDeposit {
 /** Every ClaimPolicy deposit whose sender is `keyHex`, across all accounts. */
 export async function readSentBy(provider: IndexerProvider, keyHex: string): Promise<{ epoch: number; items: SentDeposit[] }> {
   requireDeployed();
-  const [epoch, escrow] = await Promise.all([provider.getCurrentEpoch(), stateOf(provider, CONFIG.escrow)]);
-  const all = (escrow[ESCROW.deposits] ?? {}) as Record<string, Cbor[][]>;
+  const [epoch, ledgers] = await Promise.all([provider.getCurrentEpoch(), allLedgers()]);
   const items: SentDeposit[] = [];
-  for (const did of Object.keys(all)) {
-    for (const d of claimDeposits(escrow, did)) {
+  for (const [did, ledger] of Object.entries(ledgers)) {
+    for (const d of allClaimDeposits(ledger)) {
       if (d.sender === keyHex) items.push({ did, amount: d.amount, refundEpoch: d.refundEpoch, window: d.window, challenge: d.challenge, hold: d.hold, envelope: d.envelope, created: d.created });
     }
   }
@@ -634,13 +1143,14 @@ export interface Delivered {
 }
 
 /** Gifts this wallet sent that went straight to a linked wallet, newest first (ClaimPolicy's delivery log). */
-export async function readDeliveredBy(provider: IndexerProvider, keyHex: string): Promise<Delivered[]> {
+export async function readDeliveredBy(_provider: IndexerProvider, keyHex: string): Promise<Delivered[]> {
   requireDeployed();
-  const claim = await stateOf(provider, CONFIG.claim);
-  const all = (claim[CLAIM.delivered] ?? {}) as Record<string, Cbor[][]>;
+  const [r1, r2] = await Promise.all([allRecords(await stateOf(CONFIG.claim), CLAIM), allRecords(await stateOf(CONFIG.claim2), CLAIM2)]);
   const out: Delivered[] = [];
-  for (const [did, list] of Object.entries(all)) {
-    for (const d of list) if (bytesHex(d[0]) === keyHex) out.push({ did, amount: BigInt(d[1] as number), epoch: Number(d[2]) });
+  for (const [v, records] of [[1, r1], [2, r2]] as const) {
+    for (const [did, r] of Object.entries(records)) {
+      for (const d of claimFields(r, v).delivered) if (bytesHex(d[0]) === keyHex) out.push({ did, amount: BigInt(d[1] as number), epoch: Number(d[2]) });
+    }
   }
   return out.sort((a, b) => b.epoch - a.epoch);
 }
@@ -649,11 +1159,11 @@ export async function readDeliveredBy(provider: IndexerProvider, keyHex: string)
 export async function refundDeposit(wallet: Wallet, provider: IndexerProvider, d: SentDeposit, onStage?: (s: string) => void): Promise<TxOutcome> {
   const esc = await readEscrow(provider, d.did);
   const mine = toHex(wallet.publicKey);
-  const found = esc.deposits.find((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.created === d.created && x.challenge === d.challenge);
+  const found = [...esc.deposits, ...esc.laterDeposits].find((x) => x.sender === mine && x.amount === d.amount && x.refundEpoch === d.refundEpoch && x.created === d.created && x.challenge === d.challenge);
   if (!found) throw new ChainError("That deposit was already collected or taken back.");
   if (esc.epoch < d.refundEpoch) throw new ChainError("It can't be taken back yet.");
   const instructions = [call(CONFIG.escrow, "refund", [lit(d.did), lit(found.index)]), toWorkspace, call(wallet.componentAddress, "deposit", [workspace0])];
-  return run(wallet, instructions, 30_000n, onStage);
+  return run(wallet, instructions, 30_000n, onStage, false, await claimRelated(d.did));
 }
 
 // ---- tip budgets (TipPolicy) ----------------------------------------------------------------------------
@@ -668,11 +1178,18 @@ export interface Budget {
 const budgetOf = (b: Cbor[]): Budget => ({ balance: BigInt(b[0] as number), window: Number(b[1]), refundAfter: Number(b[2]), maxTip: BigInt(b[3] as number) });
 
 /** The budget this wallet key funded for `did`, if any. TipPolicy budgets: "did:ownerKeyHex" -> tuple. */
-export async function readBudget(provider: IndexerProvider, did: string, ownerKeyHex: string): Promise<Budget | null> {
+/** Which TipPolicy holds (did, owner)'s budget: v2 if it has one there, else v1 if it has one there, else null. */
+async function budgetHome(did: string, ownerKeyHex: string): Promise<{ tip: string; budget: Budget } | null> {
+  for (const tip of [CONFIG.tip2, CONFIG.tip]) {
+    const b = ((await stateOf(tip))[TIP.budgets] as Record<string, Cbor[]> | undefined)?.[`${did}:${ownerKeyHex}`];
+    if (b) return { tip, budget: budgetOf(b) };
+  }
+  return null;
+}
+
+export async function readBudget(_provider: IndexerProvider, did: string, ownerKeyHex: string): Promise<Budget | null> {
   requireDeployed();
-  const tip = await stateOf(provider, CONFIG.tip);
-  const b = (tip[TIP.budgets] as Record<string, Cbor[]> | undefined)?.[`${did}:${ownerKeyHex}`];
-  return b ? budgetOf(b) : null;
+  return (await budgetHome(did, ownerKeyHex))?.budget ?? null;
 }
 
 export async function openBudget(
@@ -680,17 +1197,42 @@ export async function openBudget(
   p: { did: string; amount: bigint; window: number; refundAfter: number; maxTip: bigint },
   onStage?: (s: string) => void,
 ): Promise<TxOutcome> {
-  const instructions = [
-    call(wallet.componentAddress, "withdraw", [resourceAddressLiteral(TARI_RESOURCE_ADDRESS), amountLiteral(p.amount)]),
-    toWorkspace,
-    call(CONFIG.tip, "open_budget", [lit(p.did), lit(wallet.publicKey), lit(p.window), lit(p.refundAfter), amountLiteral(p.maxTip), workspace0]),
-  ];
-  return run(wallet, instructions, 40_000n, onStage);
+  // An existing v1 budget is topped up where it is; anything new is a v2 budget.
+  const tip = (await budgetHome(p.did, toHex(wallet.publicKey)))?.tip ?? CONFIG.tip2;
+  const instructions = [call(tip, "open_budget", [lit(p.did), lit(wallet.publicKey), lit(p.window), lit(p.refundAfter), amountLiteral(p.maxTip), fundsBucket])];
+  return runFunded(wallet, p.amount, instructions, [tip], 40_000n, onStage);
+}
+
+/**
+ * Sends `amount` TARI from the relay wallet into the account of the wallet at `address`, as public TARI it can pay
+ * fees with, creating that account if it doesn't exist yet (anyone may create an account for a key).
+ */
+export async function floatFee(wallet: Wallet, address: string, amount: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = accountOf(address);
+  const exists = (await fetchValue(account)) !== null;
+  const follow = exists
+    ? [call(account, "deposit", [fundsBucket])]
+    : [{ CreateAccount: { owner_public_key: toHex(ownerOf(address)), owner_rule: null, access_rules: null, bucket_workspace_id: { id: 1, offset: null } } }];
+  return runFunded(wallet, amount, follow, exists ? [account] : [], 40_000n, onStage);
+}
+
+/** Whether a sponsored call failed only because its proof check is too big for the fee phase's compute allowance. */
+export const isFeePhaseTooBig = (e: unknown): boolean => /fee intent exceeded|compute credit/i.test(e instanceof Error ? e.message : String(e));
+
+/** Tops up the escrow's fee vault, which pays network fees for claimers who hold no TARI. The escrow books each
+ *  sponsored fee against the claimer's own gifts and takes it back out of what they're paid. Anyone may fund it. */
+export async function fundSponsor(wallet: Wallet, amount: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const instructions = [call(CONFIG.escrow, "fund", [fundsBucket])];
+  // The funded call adds every vault of each component it's given, so naming the fee vault too would list it twice,
+  // and a transaction with a duplicate input doesn't even parse.
+  return runFunded(wallet, amount, instructions, [CONFIG.escrow], 30_000n, onStage);
 }
 
 export async function closeBudget(wallet: Wallet, did: string, amount: bigint, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const tip = (await budgetHome(did, toHex(wallet.publicKey)))?.tip;
+  if (!tip) throw new ChainError("no such budget");
   const instructions = [
-    call(CONFIG.tip, "close_budget", [lit(did), lit(wallet.publicKey), amountLiteral(amount)]),
+    call(tip, "close_budget", [lit(did), lit(wallet.publicKey), amountLiteral(amount)]),
     toWorkspace,
     call(wallet.componentAddress, "deposit", [workspace0]),
   ];
@@ -698,16 +1240,38 @@ export async function closeBudget(wallet: Wallet, did: string, amount: bigint, o
 }
 
 /** Relays someone's tip post to TipPolicy. Anyone can do this: the post's signature is the authority; the relayer pays the fee. */
-export async function relayTip(wallet: Wallet, proof: ClaimProof, ownerKey: Uint8Array, onStage?: (s: string) => void): Promise<TxOutcome> {
-  const instructions = [call(CONFIG.tip, "tip", [lit(proof.did), lit(ownerKey), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)])];
-  return run(wallet, instructions, 120_000n, onStage);
+export async function relayTip(wallet: Wallet, proof: ClaimProof, ownerKey: Uint8Array, recipientDid: string, onStage?: (s: string) => void): Promise<TxOutcome> {
+  const home = await budgetHome(proof.did, toHex(ownerKey));
+  if (!home) throw new ChainError("no such budget");
+  const v2 = home.tip === CONFIG.tip2;
+  // v2 reads the tipper's key from the ChainBook (brought up to date here); v1 takes the chain in the call.
+  let bookFee = 0n;
+  let book: unknown[] = [];
+  if (v2) {
+    const st = await bookSteps(proof.did);
+    if (st.missing > INLINE_BOOK_OPS) await recordChain(wallet, proof.did, onStage);
+    else [book, bookFee] = [st.instructions, FEE_PER_BOOK_OP * BigInt(st.missing)];
+  }
+  const [tipper, recipient] = await Promise.all([openMissing(proof.did, ["link"]), openMissing(recipientDid, ["escrow"])]);
+  const chain = v2 ? [] : [lit(proof.ops)];
+  const instructions = [...tipper, ...recipient, ...book, call(home.tip, "tip", [lit(proof.did), lit(ownerKey), ...chain, lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey)])];
+  // The tip lands under the tip policy's own ClaimPolicy, so the recipient's side is looked up as that version.
+  const was = claimVersion.get(recipientDid);
+  claimVersion.set(recipientDid, v2 ? 2 : 1);
+  try {
+    const related = [...new Set([...(await claimRelated(proof.did)), ...(await claimRelated(recipientDid)), home.tip, ...(v2 ? [CONFIG.chainBook] : [])])];
+    return await run(wallet, instructions, 120_000n + bookFee, onStage, false, related);
+  } finally {
+    if (was) claimVersion.set(recipientDid, was);
+    else claimVersion.delete(recipientDid);
+  }
 }
 
 /** Every budget funded for `did`, by any owner: [ownerKeyHex, budget]. */
-export async function readBudgetsFor(provider: IndexerProvider, did: string): Promise<[string, Budget][]> {
+export async function readBudgetsFor(_provider: IndexerProvider, did: string): Promise<[string, Budget][]> {
   requireDeployed();
-  const tip = await stateOf(provider, CONFIG.tip);
-  const map = (tip[TIP.budgets] ?? {}) as Record<string, Cbor[]>;
+  const [t1, t2] = await Promise.all([stateOf(CONFIG.tip), stateOf(CONFIG.tip2)]);
+  const map = { ...((t1[TIP.budgets] ?? {}) as Record<string, Cbor[]>), ...((t2[TIP.budgets] ?? {}) as Record<string, Cbor[]>) };
   return Object.entries(map)
     .filter(([k]) => k.startsWith(`${did}:`))
     .map(([k, b]) => [k.slice(did.length + 1), budgetOf(b)]);
@@ -717,6 +1281,18 @@ export async function readBudgetsFor(provider: IndexerProvider, did: string): Pr
 
 /** Fee ceiling offered per sponsored call (µT). The escrow caps it too, and refunds what isn't used. */
 export const SPONSOR_FEE = 60_000n;
+
+/** The ChainBook calls a sponsored v2 call can carry in its fee phase. More operations than that would overrun the fee
+ *  phase's compute allowance, so they must be recorded first (`recordChain`, or the bot for wallets with no TARI). */
+async function sponsoredBookSteps(did: string): Promise<unknown[]> {
+  if (!isV2(did)) return [];
+  const { missing, instructions } = await bookSteps(did);
+  if (missing > FEE_PHASE_BOOK_OPS) throw new ChainError(`needs recording first: ${missing} identity operations`);
+  return instructions;
+}
+
+/** A sponsored call was refused because the account's identity history has to be recorded in the ChainBook first. */
+export const needsRecording = (e: unknown): boolean => /needs recording first/.test(e instanceof Error ? e.message : String(e));
 
 /** Sponsored (fee-phase) transactions need the signing key, which only the built-in wallet exposes to us. */
 function builtinOnly(w: Wallet): OotleAccount {
@@ -731,27 +1307,30 @@ async function sendSponsored(
   fill: (b: Raw) => void,
   onStage?: (s: string) => void,
   tolerateEpochLag = false,
+  did?: string,
+  only?: string[],
 ): Promise<TxOutcome> {
-  requireDeployed();
+  if (!only) requireDeployed();
   const provider = await account.getProvider();
-  const network = toOotleNetwork(CONFIG.network);
+  const network = configNetwork();
+  // A Set: claimRelated already names the fee vault, and a duplicate input makes the transaction unparseable.
+  const related = only
+    ? [...new Set(only)]
+    : [...new Set([...(did ? await claimRelated(did) : [CONFIG.claim2, CONFIG.escrow]), `vault_${refHex((await stateOf(CONFIG.escrow))[ESCROW.feeVault])}`])];
   const signer = (account as unknown as { signer: Parameters<typeof sendTransaction>[1] }).signer;
   const dryRun = (account as unknown as {
     submitDryRun(p: IndexerProvider, tx: unknown, extra: unknown[]): Promise<unknown>;
   }).submitDryRun.bind(account);
   const maxEpoch = await resolveMaxEpoch(provider);
-  let inputs = await resolveInputsWithRetry(provider, [
-    { substate_id: CONFIG.claim, version: null },
-    { substate_id: CONFIG.escrow, version: null },
-  ]);
+  let inputs = await resolveInputsWithRetry(provider, related.map((substate_id) => ({ substate_id, version: null })));
   const seen = new Set<string>();
+  const build = () => {
+    const b = TransactionBuilder.new(network, maxEpoch);
+    fill(b as unknown as Raw);
+    b.withInputs(inputs);
+    return b.buildUnsignedTransaction();
+  };
   for (let attempt = 0; ; attempt++) {
-    const build = () => {
-      const b = TransactionBuilder.new(network, maxEpoch);
-      fill(b as unknown as Raw);
-      b.withInputs(inputs);
-      return b.buildUnsignedTransaction();
-    };
     try {
       onStage?.("Checking it works…");
       try {
@@ -761,12 +1340,16 @@ async function sendSponsored(
         if (!tolerateEpochLag || !isWindowOpen(e)) throw e;
         onStage?.("The pre-check is one epoch behind. Sending anyway…");
       }
-      onStage?.("Sending to the network…");
-      const res = (await sendTransaction(provider, signer, build())) as unknown as { transaction_id?: unknown };
-      assertAccepted(res);
-      return { transactionId: String(res.transaction_id ?? "") };
+      break;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      const stale = staleInput(msg);
+      if (stale && attempt < 14) {
+        await forgetKnownVersions([stale.id], network).catch(() => undefined);
+        const v = Math.max(stale.next, (await latestVersion(stale.id)) ?? 0);
+        inputs = [...inputs.filter((x) => x.substate_id !== stale.id), { substate_id: stale.id, version: v }] as typeof inputs;
+        continue;
+      }
       const missing = extractMissingSubstateAddress(msg);
       if (!missing || seen.has(missing) || attempt >= 14) throw e;
       seen.add(missing);
@@ -774,30 +1357,73 @@ async function sendSponsored(
       inputs = [...inputs, resolved!];
     }
   }
+  // Sent once, with exactly the inputs the pre-check settled on: a failed real send has already paid its fee, so
+  // it is never retried here.
+  onStage?.("Sending to the network…");
+  let res: { transaction_id?: unknown } | undefined;
+  for (let i = 0; ; i++) {
+    try {
+      res = (await sendTransaction(provider, signer, build())) as unknown as { transaction_id?: unknown };
+      break;
+    } catch (e) {
+      // Refused before broadcast because an input moved on since the check: nothing charged, send with the newer one.
+      const stale = refusedStale(e);
+      if (!stale || i >= 4) throw e;
+      await forgetKnownVersions([stale.id], network).catch(() => undefined);
+      const v = Math.max(stale.next, (await latestVersion(stale.id)) ?? 0);
+      inputs = [...inputs.filter((x) => x.substate_id !== stale.id), { substate_id: stale.id, version: v }] as typeof inputs;
+      onStage?.("Something changed on the network a moment ago. Sending again…");
+    }
+  }
+  assertAccepted(res);
+  return { transactionId: String(res.transaction_id ?? "") };
+}
+
+/**
+ * Sends `instructions` entirely in the fee phase, signed by the built-in wallet, for a contract that pays the fee
+ * itself (a sponsored campaign claim). `inputs` are the substates it touches; the pre-check finds any it missed.
+ */
+export async function sendFeePhase(wallet: Wallet, instructions: unknown[], inputs: string[], onStage?: (s: string) => void): Promise<TxOutcome> {
+  const account = builtinOnly(wallet);
+  return sendSponsored(account, (b) => { for (const i of instructions) b.addFeeInstruction(i); }, onStage, false, undefined, inputs);
 }
 
 export async function confirmClaimSponsored(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
   const account = builtinOnly(wallet);
+  const did = proof.did;
+  const book = await sponsoredBookSteps(did);
   return sendSponsored(
     account,
-    (b) =>
+    (b) => {
+      for (const i of book) b.addFeeInstruction(i);
       b.addFeeInstruction(
-        call(CONFIG.claim, "confirm_claim_sponsored", [lit(proof.did), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey), amountLiteral(SPONSOR_FEE)]),
-      ),
+        call(claimComponentFor(did), "confirm_claim_sponsored", [lit(did), ...chainArg(did, proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey), amountLiteral(SPONSOR_FEE)]),
+      );
+    },
     onStage,
+    false,
+    proof.did,
   );
 }
 
 export async function startClaimSponsored(wallet: Wallet, proof: ClaimProof, onStage?: (s: string) => void): Promise<TxOutcome> {
   const account = builtinOnly(wallet);
   const pk = wallet.publicKey;
+  // The sponsored call reads the records in the fee phase, so missing ones are opened (and the ChainBook brought up to
+  // date) there first.
+  const did = proof.did;
+  const open = [...(await openMissing(did, [claimBook(did), "link"])), ...(await sponsoredBookSteps(did))];
   return sendSponsored(
     account,
-    (b) =>
+    (b) => {
+      for (const i of open) b.addFeeInstruction(i);
       b.addFeeInstruction(
-        call(CONFIG.claim, "start_claim_sponsored", [lit(proof.did), lit(pk), lit(proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey), amountLiteral(SPONSOR_FEE)]),
-      ),
+        call(claimComponentFor(did), "start_claim_sponsored", [lit(did), lit(pk), ...chainArg(did, proof.ops), lit(proof.commit), lit(proof.nodes), lit(proof.record), lit(proof.rkey), amountLiteral(SPONSOR_FEE)]),
+      );
+    },
     onStage,
+    false,
+    proof.did,
   );
 }
 
@@ -808,13 +1434,14 @@ export async function finalizeClaimSponsored(wallet: Wallet, did: string, onStag
   return sendSponsored(
     account,
     (b) => {
-      b.addFeeInstruction(call(CONFIG.claim, "sponsor_finalize", [lit(did), amountLiteral(SPONSOR_FEE)]));
-      b.addInstruction(call(CONFIG.claim, "finalize_claim", [lit(did)]));
+      b.addFeeInstruction(call(claimComponentFor(did), "sponsor_finalize", [lit(did), amountLiteral(SPONSOR_FEE)]));
+      b.addInstruction(call(claimComponentFor(did), "finalize_claim", [lit(did)]));
       b.addInstruction(toWorkspace);
       b.addInstruction({ CreateAccount: { owner_public_key: toHex(pk), owner_rule: null, access_rules: null, bucket_workspace_id: { id: 0, offset: null } } });
     },
     onStage,
     payableByEpoch,
+    did,
   );
 }
 

@@ -211,6 +211,37 @@ async function serveCover(url: URL, env: Env): Promise<Response> {
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 /**
+ * Who a gift says it's from: the sender types a Bluesky account (optional; empty means anonymous) and the page records it
+ * here before sending, keyed by the recipient, the sending wallet's key and the amount. Nothing checks the name here; the
+ * bot names it as the sender's own word unless that account's linked wallet is the one that sent the gift. The first
+ * record wins, so nobody can swap the name once the sender has set it.
+ */
+async function giftFrom(req: Request, url: URL, env: Env): Promise<Response> {
+  const json = (o: unknown, status = 200): Response => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  const ok = (did: string, sender: string, amount: string) => /^did:plc:[a-z2-7]{24}$/.test(did) && /^[0-9a-f]{64}$/.test(sender) && /^[1-9][0-9]{0,18}$/.test(amount);
+  if (req.method === "GET") {
+    const [did, sender, amount] = ["did", "sender", "amount"].map((k) => url.searchParams.get(k) ?? "");
+    if (!ok(did!, sender!, amount!)) return json({ error: "bad request" }, 400);
+    return json({ from: await env.COVERS.get(`from:${did}:${sender}:${amount}`) });
+  }
+  if (req.method !== "POST") return json({ error: "GET or POST" }, 405);
+  if (await overLimit(req, env, "from", 30)) return json({ error: "slow down" }, 429);
+  const text = await readCapped(req, 400);
+  if (text === null) return json({ error: "too big" }, 413);
+  let body: { did?: string; sender?: string; amount?: string; from?: string };
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const [did, sender, amount, from] = [body.did ?? "", body.sender ?? "", String(body.amount ?? ""), body.from ?? ""];
+  if (!ok(did, sender, amount) || !/^did:plc:[a-z2-7]{24}$/.test(from)) return json({ error: "bad request" }, 400);
+  const key = `from:${did}:${sender}:${amount}`;
+  if (!(await env.COVERS.get(key))) await env.COVERS.put(key, from, { expirationTtl: 60 * 60 * 24 * 30 });
+  return json({ ok: true });
+}
+
+/**
  * Remembers which envelope went with a deposit, keyed by the deposit's fingerprint (sender key, amount, refund
  * epoch, window), so the bot's mention and the sender's "Remind them" link can show the same card. The first
  * write wins, so nobody can swap the envelope of a deposit after its sender registered it.
@@ -244,12 +275,69 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
   return new Response(buf, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 
+/**
+ * A queue of campaign claims waiting for the bot to pay their network fee (accounts whose linked wallet holds no TARI).
+ * It holds only public facts (a campaign address and a DID), so it needs no secret: the bot checks every entry on-chain
+ * before paying anything, and an entry it can't use costs it nothing. Entries expire on their own.
+ */
+async function relayQueue(req: Request, url: URL, env: Env, mainnet: boolean): Promise<Response> {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", "access-control-allow-origin": "*" } });
+  const kv = env.LAUNCH_STATE;
+  if (!kv) return json({ error: "Relaying isn't available here." }, 503);
+  const prefix = `relayq:${mainnet ? "mainnet" : "testnet"}:`;
+  if (url.pathname === "/api/relay-queue") {
+    const listed = await kv.list({ prefix, limit: 200 });
+    const items = listed.keys.map((k) => {
+      const parts = k.name.slice(prefix.length).split("|");
+      if (parts[0] === "float") return { kind: "float", did: parts[1], address: parts[2] };
+      if (parts[0] === "record") return { kind: "record", did: parts[1], ...(parts[2] ? { campaign: parts[2] } : {}) };
+      return parts[0] === "link" ? { kind: "link", did: parts[1], account: parts[2], owner: parts[3] } : { kind: "claim", campaign: parts[0], did: parts[1] };
+    });
+    return json({ items });
+  }
+  if (req.method !== "POST") return json({ error: "POST a campaign and a DID." }, 405);
+  if (await overLimit(req, env, "relay", 30)) return json({ error: "Too many requests from this address. Try again later." }, 429);
+  let body: { kind?: unknown; campaign?: unknown; did?: unknown; account?: unknown; owner?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return json({ error: "Send JSON." }, 400);
+  }
+  const did = String(body.did ?? "");
+  // Linking a wallet that holds no TARI: the bot creates the account if needed and submits the bind post.
+  if (body.kind === "link") {
+    const account = String(body.account ?? "");
+    const owner = String(body.owner ?? "");
+    if (!/^did:plc:[a-z2-7]{24}$/.test(did) || !/^component_[0-9a-f]{64}$/.test(account) || !/^[0-9a-f]{64}$/.test(owner)) return json({ error: "That isn't a did:plc, an account and a key." }, 400);
+    await kv.put(`${prefix}link|${did}|${account}|${owner}`, String(Date.now()), { expirationTtl: 1800 });
+    return json({ queued: true }, 202);
+  }
+  // An old account's identity history, recorded in the ChainBook so its free (sponsored) v2 claim fits.
+  if (body.kind === "record") {
+    const campaign = String(body.campaign ?? "");
+    if (!/^did:plc:[a-z2-7]{24}$/.test(did) || (campaign && !/^component_[0-9a-f]{64}$/.test(campaign))) return json({ error: "That isn't a did:plc (and a campaign)." }, 400);
+    await kv.put(`${prefix}record|${did}${campaign ? `|${campaign}` : ""}`, String(Date.now()), { expirationTtl: 1800 });
+    return json({ queued: true }, 202);
+  }
+  // A gift claim whose proof is too big to be sponsored: the bot sends the wallet enough TARI to pay the fee itself.
+  if (body.kind === "float") {
+    const address = String((body as { address?: unknown }).address ?? "");
+    if (!/^did:plc:[a-z2-7]{24}$/.test(did) || !/^otl_[a-z0-9_]{20,200}$/.test(address)) return json({ error: "That isn't a did:plc and a wallet address." }, 400);
+    await kv.put(`${prefix}float|${did}|${address}`, String(Date.now()), { expirationTtl: 1800 });
+    return json({ queued: true }, 202);
+  }
+  const campaign = String(body.campaign ?? "");
+  if (!/^component_[0-9a-f]{64}$/.test(campaign) || !/^did:plc:[a-z2-7]{24}$/.test(did)) return json({ error: "That isn't a campaign address and a did:plc." }, 400);
+  await kv.put(`${prefix}${campaign}|${did}`, String(Date.now()), { expirationTtl: 1800 });
+  return json({ queued: true }, 202);
+}
+
 async function serve(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const mainnet = await onMainnet();
     if (url.pathname === "/__network") return networkResponse();
-    // The older gift app and locked posts are testnet-only.
-    if (mainnet && (url.pathname === "/" || url.pathname === "/index.html" || url.pathname.startsWith("/e/"))) return new Response(null, { status: 302, headers: { location: "/quests" } });
+    // Locked posts are testnet-only.
     if (!mainnet && url.pathname === "/api/gate" && req.method === "POST" && (await overLimit(req, env, "gate", 20))) return new Response(JSON.stringify({ error: "Too many locked posts from this address. Try again later." }), { status: 429, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
     if (!mainnet) {
       const gate = await handleGate(req, liveDeps(env.COVERS as never));
@@ -265,12 +353,15 @@ async function serve(req: Request, env: Env): Promise<Response> {
       },
     });
     if (share) return share;
+    if (url.pathname === "/api/relay-claim" || url.pathname === "/api/relay-queue") return relayQueue(req, url, env, mainnet);
+    if (url.pathname === "/api/from") return giftFrom(req, url, env);
     if (url.pathname.startsWith("/e/")) return page(url);
     if (url.pathname === "/og") return png(url, env, req);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
     if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);
     if (url.pathname.startsWith("/c/")) return serveCover(url, env);
-    const targetReq = fullPageRequest(mainnet && url.pathname === "/quests" ? atPath(req, "/mainnet/quests") : req);
+    const mainnetPage = url.pathname === "/quests" ? "/mainnet/quests" : url.pathname === "/" || url.pathname === "/index.html" ? "/mainnet/" : null;
+    const targetReq = fullPageRequest(mainnet && mainnetPage ? atPath(req, mainnetPage) : req);
     const assetRes = await env.ASSETS.fetch(targetReq);
     if (mainnet && !/\.[a-z0-9]+$/i.test(url.pathname)) {
       const addrs = await getAddresses(env.LAUNCH_STATE);

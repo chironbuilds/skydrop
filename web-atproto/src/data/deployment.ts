@@ -30,15 +30,25 @@ const MAINNET = {
   unit: "TARI",
   ootle: "0.50.1",
   indexer: "https://indexer-a.ootle.tari.com",
-  campaignTemplate: "",
-  linkRegistry: "",
-  verifier: "",
-  /** Gift stack. Fill in after running scripts/deploy-gifts.mjs. */
-  escrow: "",
-  claim: "",
-  tip: "",
+  /** Campaign v3 (2026-11-12): identity chains from the ChainBook, sponsored claims. */
+  campaignTemplate: "template_fea387ae896b72b9be93426ffa34da7498336f81c023fc2a65e556cfc13fba75",
+  linkRegistry: "component_3ccfa2673b89234858a5b1c27d3efe2066953e1ea7cf001a018d3e3121912712",
+  /** Where the current campaign template (and the v2 gift policies) read identity chains. Empty: not deployed. */
+  chainBook: "component_3141639f2389e9f320fcc3e4ca491d599950c387a552f7f793e11f1c93f334e1",
+  verifier: "template_8e7168dd2ed24e1f0b6344fc92ac00f8da6fbd7ee801cc3a7713f85b229cadc6",
+  /** Gift stack. Deployed 2026-11-11. */
+  escrow: "component_b51d366c73d397f5c094039db95de00423a123af998d46d5a5f6a88fe69b14c5",
+  claim: "component_9fe4d780b732ed626a623d78959119c32bd6176e4e8f0b96789aa1fc4d6636bd",
+  tip: "component_2a651c5accdfc5c27e3e8081ad90c759e451f62f875b7e403e0cedb2e2410c1b",
+  /** v2 gift policies: new gifts go here; v1 (`claim`, `tip`) keeps paying what was sent before. */
+  claim2: "component_78a6976c6e0487243df617c843d43a8894533a965422f812de854ba6c9c4f887",
+  tip2: "component_eec24fcf6e580fe8e6ffc8ff894b830082d82a8651718d067c4b014045e24cda",
   live: [] as LiveCampaign[],
   legacy: [] as { campaignTemplate: string; linkRegistry: string }[],
+  /** Older Campaign templates whose campaigns still run and pay out, but without sponsored claims. */
+  previous: [{ campaignTemplate: "template_280624a46133dd0391663a07736319f63c650240a404933443a276253e2a40c5" }] as { campaignTemplate: string }[],
+  /** Whether `campaignTemplate` has the `_sponsored` claim functions (the pool pays the fee out of the reward). */
+  sponsoredCampaigns: true,
   skydrop: "https://skydrop.tari.mw",
   creator: "https://atproto.tari.mw",
   explorer: "https://explorer.tari.mw",
@@ -56,11 +66,16 @@ const TESTNET: typeof MAINNET = {
   indexer: "https://ootle-indexer-a.tari.com",
   campaignTemplate: "template_458f453db349adef15c5ed113f5df6291f8b74c7f5ece155c38575e49600b36f",
   linkRegistry: "component_c69b5699aeeb7292468b988a34bfd0947694d19514a1fb0762cd0542bcc21dce",
+  chainBook: "",
   verifier: "template_17c2c32b010972b85f8822509b1e921910a54e63bd9b4a9b29b6af78d0681824",
   escrow: "",
   claim: "",
   tip: "",
+  claim2: "",
+  tip2: "",
   live: [],
+  previous: [],
+  sponsoredCampaigns: false,
   /** Campaigns made before Ootle 0.50. Their state can still be read, but the engine no longer loads their code, so they can't pay out or be closed. */
   legacy: [
     { campaignTemplate: "template_40d3f8b2cbb33fc5110ee8fe05c8a66d9238898f08c1a8ba96b3568809a93b72", linkRegistry: "component_aba7f01482dfc95a2c84ca120a96959923f34e95e7715bb96dd805e2c3726371" },

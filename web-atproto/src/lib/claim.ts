@@ -3,6 +3,7 @@
 import { parseAtUri } from "./atproto";
 import { bindCode, buildAllocationTree, claimCode, fromHex, RULES, type Allocation, type Rule } from "./campaign";
 import { checkRule, identity, type RuleResult } from "./check";
+import { bookInstructions, INLINE_BOOK_OPS } from "./book";
 import { asInputs, bindInstruction, claimInputs, claimInstruction, claimLinkedInstruction, claimRoundInstruction, hasRegistryRecord, linkInputs, openAccountInstruction, phaseOf, readLink, readReceipt, usableReferrer, type ChainCampaign, type ClaimProofs, type Instruction, type Receipt, type RecordProof, type SubstateInput } from "./chain";
 
 export type ClaimPlan =
@@ -15,7 +16,9 @@ export type ClaimPlan =
   | { kind: "bad-list" }
   | { kind: "steps"; results: RuleResult[] }
   | { kind: "post"; code: string; text: string; round: number; receipt: Receipt | null }
-  | { kind: "ready"; instructions: Instruction[]; inputs: SubstateInput[]; amount: bigint; round: number; bytes: number; account: string; referrer: string | null; linked: boolean };
+  | { kind: "ready"; instructions: Instruction[]; inputs: SubstateInput[]; amount: bigint; round: number; bytes: number; account: string; referrer: string | null; linked: boolean; bookOps: number }
+  /** The identity histories this claim reads need recording in the ChainBook first: too many operations for one claim. */
+  | { kind: "record"; missing: number; dids: string[] };
 
 /** Who a rule's proof comes from, if not the claimant: the voucher whose identity log has to come with it. */
 function voucherOf(rule: Rule): string | null {
@@ -61,6 +64,8 @@ export async function planClaim(c: ChainCampaign, did: string, walletKey: string
   if (c.balance < pay) return { kind: "empty" };
 
   const me = await identity(did);
+  // Campaigns made before the ChainBook take the whole chain in the claim, and refuse more than 16 operations.
+  if (!c.book && me.ops.length > 16) throw new Error(`This account has ${me.ops.length} identity operations; this campaign's contract accepts at most 16.`);
   const results = await Promise.all(c.rules.map((r) => checkRule(r, me)));
   // One proof per requirement: the first met member of an either/or group, nothing for the rest.
   const usedGroups = new Set<number>();
@@ -82,8 +87,23 @@ export async function planClaim(c: ChainCampaign, did: string, walletKey: string
     vouchOps.push((await identity(voucher)).ops);
     dids.add(voucher);
   }
+  // A campaign reading the ChainBook needs each account's chain recorded there (the claimant's and vouchers'). A few
+  // operations are recorded in the claim itself; a long history first, on its own.
+  let bookOps = 0;
+  const bookSteps: Instruction[] = [];
+  if (c.book) {
+    for (const d of dids) {
+      const b = await bookInstructions(c.book, d, (await identity(d)).ops);
+      bookOps += b.missing;
+      bookSteps.push(...b.instructions);
+    }
+    if (bookOps > INLINE_BOOK_OPS) return { kind: "record", missing: bookOps, dids: [...dids] };
+  }
   // Claims read each account's record in the registry, which has no "if it exists" check, so missing ones are opened first.
-  const opens = async (): Promise<Instruction[]> => (await Promise.all([...dids].map(async (d) => ((await hasRegistryRecord(d, c.linkRegistry)) ? null : openAccountInstruction(d, c.linkRegistry))))).filter((x): x is Instruction => !!x);
+  const opens = async (): Promise<Instruction[]> => [
+    ...(await Promise.all([...dids].map(async (d) => ((await hasRegistryRecord(d, c.linkRegistry)) ? null : openAccountInstruction(d, c.linkRegistry))))).filter((x): x is Instruction => !!x),
+    ...bookSteps,
+  ];
   const ruleProofs = { did, ops: me.ops, proofs: chosen.map((r) => (r ? asProof(r) : null)), vouchOps, amount, path };
   const ruleBytes = chosen.reduce((n, r) => n + (r?.bytes ?? 0), 0);
 
@@ -96,9 +116,9 @@ export async function planClaim(c: ChainCampaign, did: string, walletKey: string
       const referrer = link.owner === walletKey ? await usableReferrer(c, did, ref, pay) : null;
       return {
         kind: "ready",
-        instructions: [...(await opens()), claimLinkedInstruction(c.component, ruleProofs, referrer?.did ?? null)],
+        instructions: [...(await opens()), claimLinkedInstruction(c.component, ruleProofs, referrer?.did ?? null, !!c.book)],
         inputs: await claimInputs(c, [...dids], null, referrer, linked),
-        amount: pay, round: 0, bytes: ruleBytes, account: linked, referrer: referrer?.did ?? null, linked: true,
+        amount: pay, round: 0, bytes: ruleBytes, account: linked, referrer: referrer?.did ?? null, linked: true, bookOps,
       };
     }
   }
@@ -113,10 +133,10 @@ export async function planClaim(c: ChainCampaign, did: string, walletKey: string
   const proofs: ClaimProofs = { ...ruleProofs, code: asProof(posted) };
   // Only a first claim can name a referrer: later rounds have already been counted.
   const referrer = receipt ? null : await usableReferrer(c, did, ref, pay);
-  const claim = receipt ? claimRoundInstruction(c.component, proofs, walletKey) : claimInstruction(c.component, proofs, walletKey, walletAccount, referrer?.did ?? null);
+  const claim = receipt ? claimRoundInstruction(c.component, proofs, walletKey, !!c.book) : claimInstruction(c.component, proofs, walletKey, walletAccount, referrer?.did ?? null, !!c.book);
   // A later round pays the account on the receipt, which needn't be the connected wallet's, so it's named up front.
   const inputs = await claimInputs(c, [...dids], receipt ? did : null, referrer, receipt?.account ?? null);
-  return { kind: "ready", instructions: [...(await opens()), claim], inputs, amount: pay, round, bytes: ruleBytes + (posted.bytes ?? 0), account: receipt?.account ?? walletAccount, referrer: referrer?.did ?? null, linked: false };
+  return { kind: "ready", instructions: [...(await opens()), claim], inputs, amount: pay, round, bytes: ruleBytes + (posted.bytes ?? 0), account: receipt?.account ?? walletAccount, referrer: referrer?.did ?? null, linked: false, bookOps };
 }
 
 export type ReadyPlan = Extract<ClaimPlan, { kind: "ready" }>;
@@ -150,6 +170,8 @@ export type LinkPlan =
 export async function planLink(did: string, walletKey: string, walletAccount: string, registry: string): Promise<LinkPlan> {
   const code = await bindCode(registry, did, walletAccount, fromHex(walletKey));
   const me = await identity(did);
+  // The registry predates the ChainBook and still verifies at most 16 identity operations.
+  if (me.ops.length > 16) throw new Error("Linking a wallet isn't available yet for accounts with more than 16 identity operations (the link registry's limit). You can still collect gifts and rewards with a claim post.");
   const posted = await checkRule({ kind: 3, target: code }, me);
   if (posted.status !== "met") return { kind: "post", code, text: `Linking my wallet for Skydrop rewards. ${code}` };
   const bind = bindInstruction(registry, did, walletAccount, walletKey, me.ops, asProof(posted));

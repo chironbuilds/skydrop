@@ -22,9 +22,7 @@ const NAV = [
   ["/me", "My campaigns"],
   ["/tips", "Send a gift"],
   ["/verify", "Live proof"],
-  ["/use-cases", "Use cases"],
   ["/docs", "Docs"],
-  ["/status", "Status"],
 ] as const;
 
 function route(path: string): Page {

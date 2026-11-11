@@ -29,7 +29,7 @@ export async function lookupProfile(input: string): Promise<Profile> {
   if (!r.ok) throw new Error(r.status === 400 ? `No Bluesky account found for @${actor}` : `Bluesky lookup failed (${r.status})`);
   const p = (await r.json()) as { did: string; handle: string; displayName?: string; avatar?: string; description?: string };
   if (!p.did.startsWith("did:plc:")) {
-    throw new Error("This account uses a did:web identity, which isn't supported yet. did:plc accounts (almost everyone) work.");
+    throw new Error("This account uses a did:web identity. Skydrop only works with did:plc accounts, which is almost everyone.");
   }
   return { did: p.did, handle: p.handle, displayName: p.displayName || p.handle, avatar: p.avatar, description: p.description };
 }
@@ -92,7 +92,7 @@ export interface ClaimProof {
   text: string;
 }
 
-async function plcLog(did: string): Promise<Record<string, unknown>[]> {
+export async function plcLog(did: string): Promise<Record<string, unknown>[]> {
   const r = await fetch(`${CONFIG.plcDirectory}/${did}/log`);
   if (!r.ok) throw new Error(`Couldn't read the account's identity log (${r.status})`);
   return (await r.json()) as Record<string, unknown>[];

@@ -108,11 +108,12 @@ function detect(timeoutMs = 1200): Promise<void> {
   return ready;
 }
 
+/** For the wallet's own refusals. A failed transaction's error is shown as it is: chain errors say "locked" and "rejected" too. */
 export function friendly(err: unknown): string {
   const msg = String((err as Error)?.message ?? err ?? "");
-  if (/locked/i.test(msg)) return "Your wallet is locked. Unlock it, then try again.";
+  if (/wallet is locked|unlock/i.test(msg)) return "Your wallet is locked. Unlock it, then try again.";
   if (/not connected|requestAccounts first/i.test(msg)) return "This site isn't connected to your wallet yet.";
-  if (/reject|denied|declined|cancel/i.test(msg)) return "You declined the request in your wallet.";
+  if (/^rejected$|user rejected|denied|declined|cancel/i.test(msg)) return "You declined the request in your wallet.";
   if (/No wallet set up/i.test(msg)) return "Set up your wallet first, then come back.";
   if (/timed out/i.test(msg)) return "The wallet didn't respond in time. Open it and check for a pending request.";
   return msg || "Something went wrong in the wallet.";
@@ -212,7 +213,7 @@ async function submitRequest(params: Record<string, unknown>, onStage?: (s: Stag
     await new Promise((r) => setTimeout(r, 1000));
   }
   if (record.status === "rejected") throw new Error(friendly("rejected"));
-  if (record.status === "failed") throw new Error(friendly(record.error ?? "The wallet reported an error."));
+  if (record.status === "failed") throw new Error(record.error || "The wallet reported an error.");
   onStage?.("send");
   const result = (record.status === "submitted" ? record.result : await wallet.request({ method: "tari_submitTransactionRequest", params: { requestId } })) as { transactionId?: string; transaction_id?: string };
   const id = result?.transactionId ?? result?.transaction_id;

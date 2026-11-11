@@ -589,7 +589,7 @@ export function builderPage(): Page {
           h("span", { class: "tag" }, "what people will see"),
           h("h3", null, spec.name || "Your campaign"),
           h("p", { class: "questreward" }, spec.root ? "Listed amounts" : `${fromMicro(proj?.perClaimant ?? 0n)} ${unit}`),
-          spec.root || !spec.rules.length ? null : h("p", { class: "muted small-text" }, `Claimers pay a network fee of about ${fromMicro(claimFee(spec.rules))} ${unit} to collect.`),
+          spec.root || !spec.rules.length ? null : h("p", { class: "muted small-text" }, DEPLOYMENT.sponsoredCampaigns ? `Claimers need no ${unit}: about ${fromMicro(claimFee(spec.rules))} ${unit} of each reward pays the network fee when they collect with a Skydrop wallet.` : `Claimers pay a network fee of about ${fromMicro(claimFee(spec.rules))} ${unit} to collect.`),
           h("p", { class: "muted small-text" }, spec.rules.length ? `${summarize(spec.rules)[0]!.toUpperCase()}${summarize(spec.rules).slice(1)}.` : "Add steps to see them here."),
         ),
       ),

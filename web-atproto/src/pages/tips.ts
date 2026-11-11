@@ -89,10 +89,10 @@ export function tipsPage(): Page {
       const epoch = await currentEpoch();
       const refundEpoch = epoch + GIFT_REFUND_EPOCHS;
 
-      const followUp: Instruction[] = depositInstructions(actor.did, ws.key, refundEpoch);
+      const { instructions: followUp, related } = await depositInstructions(actor.did, ws.key, refundEpoch);
 
       btn.textContent = "Waiting for wallet…";
-      const txId = await sendFunded(amountMicro, "resource_0101010101010101010101010101010101010101010101010101010101010101", GIFT_WORKSPACE, followUp, [DEPLOYMENT.escrow, DEPLOYMENT.claim], 60_000n,
+      const txId = await sendFunded(amountMicro, "resource_0101010101010101010101010101010101010101010101010101010101010101", GIFT_WORKSPACE, followUp, related, 60_000n,
         (stage) => { btn.textContent = stage === "approve" ? "Approve in wallet…" : "Sending…"; });
 
       const shareUrl = giftLink(actor.handle, { amount: `${fromMicro(amountMicro)} ${DEPLOYMENT.unit}`, note: noteStr || undefined });
