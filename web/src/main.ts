@@ -1277,7 +1277,7 @@ function renderLink(prefill?: string, flow = false): void {
       }
       return;
     }
-    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin") return;
+    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin" || needsFunds()) return;
     try {
       if (await bsky.findClaimPost(profile.did, code)) void runBind();
     } catch {
@@ -1298,6 +1298,8 @@ function renderLink(prefill?: string, flow = false): void {
       return;
     }
     const where = target === wallet.componentAddress ? "this wallet" : displayAddress(target);
+    // name the address too, so "this wallet" is never a mystery
+    const whereFull = target === wallet.componentAddress ? `this wallet (${short(target, 10, 6)})` : where;
     if (current === mine()) {
       mount(stepsEl, flow ? flowBar(2) : null, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, flow ? "Next: post the phrase" : "Collect what's waiting")), profileCard(p)), changer);
       return;
@@ -1307,17 +1309,19 @@ function renderLink(prefill?: string, flow = false): void {
       flow ? flowBar(1) : null,
       current ? h("div", { class: "note warn" }, `@${p.handle} is currently linked to ${displayAddress(current)}. Linking ${where} instead takes effect after a short wait (about ${eta(CONFIG.bindDelayEpochs)}); until then the old one keeps receiving.`) : null,
       changing
-        ? h("div", { class: "stack" }, h("div", { class: "note" }, `Linking ${where}.`), changer)
-        : h("div", { class: "note linkrow" }, h("span", null, `Linking ${where}.`), changer),
+        ? h("div", { class: "stack" }, h("div", { class: "note" }, `Linking ${whereFull}.`), changer)
+        : h("div", { class: "note linkrow" }, h("span", null, `Linking ${whereFull}.`), changer),
       h(
         "div",
         { class: "steps", style: "margin-top:8px" },
         h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "a" : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
-        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
+        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), needsFunds() ? h("div", { style: "margin:0 0 12px" }, h("p", null, "Linking costs a tiny network fee. Your post can wait while you add some."), fundsNote()) : h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", disabled: needsFunds(), onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
       ),
     );
   };
 
+  // funds arriving turns step 2 back on
+  onBalance(() => { if (!busy) draw(); });
   mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
   layout("link", h("h1", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
   if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
@@ -1958,10 +1962,10 @@ function renderHow(): void {
         "ol",
         { class: "how", style: "padding-left:20px;margin:0" },
         h("li", null, h("b", null, "You send."), ` The ${CONFIG.symbol} moves into an escrow contract, filed under the recipient's permanent Bluesky ID (not their handle, which can change hands).`),
-        h("li", null, h("b", null, "They post a code."), " The code is a hash of their wallet's key, so the post can only ever pay out to the wallet that asked."),
+        h("li", null, h("b", null, "They post a code."), " One short post from their account. The code is made from their wallet's key, so that post can only ever pay out to the wallet that asked."),
         h("li", null, h("b", null, "The contract checks the math."), " Bluesky accounts are cryptographic identities. The contract verifies the account's identity history, the signature on their repository and the path to the post. No server is asked."),
         h("li", null, h("b", null, "They collect."), " After the safety window you chose, the escrow pays out to their wallet."),
-        h("li", null, h("b", null, "Or they link a wallet once."), " With one signed post, an account can link an Ootle address (", h("a", { href: "#/link" }, "Link wallet"), "). After that, gifts with no safety window and no phrase are paid there instantly, and anything collected goes there too. Changing the address later takes about an epoch to apply."),
+        h("li", null, h("b", null, "Or they link a wallet once."), " With one signed post, an account can link an Ootle address (", h("a", { href: "#/link" }, "Link wallet"), `). After that, gifts with no safety window and no phrase are paid there instantly, and anything collected goes there too. Changing the address later takes about ${eta(CONFIG.bindDelayEpochs)} to apply`),
       ),
     ),
     h("details", null, h("summary", null, "What's the safety window for?"), h("p", null, "A proof can show an account's history is valid, but not that it's complete. If someone stole a Bluesky signing key and the real owner had already rotated it, the thief could present the old history. The window lets anyone submit the owner's rotation and cancel the claim. Small tips can skip it. Large transfers should use it.")),
