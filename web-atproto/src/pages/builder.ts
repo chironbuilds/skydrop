@@ -29,7 +29,7 @@ export function parseAllocationLines(text: string): { who: string; amount: bigin
   return out;
 }
 
-const unit = "tTARI";
+const unit = DEPLOYMENT.unit;
 const row = (k: string, v: string): HTMLElement => h("div", null, h("dt", null, k), h("dd", null, v));
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "campaign";
 const iconOf = (kind: number): string => PALETTE.find((p) => p.kind === kind)?.icon ?? "•";
@@ -320,7 +320,7 @@ export function builderPage(): Page {
   }
 
   // ---- describe it in words ----------------------------------------------------------------------------
-  const magicInput = h("textarea", { rows: "2", class: "magic", "aria-label": "Describe your campaign", placeholder: "Like, repost and comment on <post link>, 5 tTARI each, pool 500, for 7 days" });
+  const magicInput = h("textarea", { rows: "2", class: "magic", "aria-label": "Describe your campaign", placeholder: `Like, repost and comment on <post link>, 5 ${unit} each, pool 500, for 7 days` });
   const magicOut = h("div", { class: "small-text", "aria-live": "polite" });
   async function buildFromWords(text: string): Promise<void> {
     const c = compose(text);

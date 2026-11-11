@@ -1,0 +1,20 @@
+{
+  "name": "skydrop-launcher",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "npx wrangler deploy",
+    "dev": "npx wrangler dev",
+    "arm": "npx wrangler dev --test-scheduled"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.99.0"
+  },
+  "allowScripts": {
+    "esbuild@0.17.19": true,
+    "sharp@0.33.5": true,
+    "workerd@1.20250718.0": true
+  }
+}

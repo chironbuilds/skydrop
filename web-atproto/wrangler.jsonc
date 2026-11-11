@@ -3,5 +3,15 @@
   "compatibility_date": "2026-10-01",
   "main": "./worker/index.ts",
   "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": true },
-  "routes": [{ "pattern": "atproto.tari.mw", "custom_domain": true }]
+  "kv_namespaces": [{ "binding": "LAUNCH_STATE", "id": "58ad9c6377eb450bbccac4b9ef8448ac" }],
+  "routes": [{ "pattern": "atproto.tari.mw", "custom_domain": true }],
+  // Starts on the testnet and moves to mainnet by itself at launch (worker/network.ts). Deploy after npm run build:all.
+  "define": { "__SKYDROP_NETWORK__": "\"auto\"" },
+  "env": {
+    "testnet": {
+      "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": true },
+      "routes": [{ "pattern": "testnet-atproto.tari.mw", "custom_domain": true }],
+      "define": { "__SKYDROP_NETWORK__": "\"esmeralda\"" }
+    }
+  }
 }

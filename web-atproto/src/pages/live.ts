@@ -11,7 +11,7 @@ import { connectWallet, dryRunInstructions, friendly, onWallet, sendFunded, send
 import { calm, celebrate } from "../lib/motion";
 import type { Page } from "../main";
 
-const unit = "tTARI";
+const unit = DEPLOYMENT.unit;
 /** Limits on what the wallet may charge in fees. It only charges the real cost: creating measured about 0.016 tTARI. */
 const LAUNCH_MAX_FEE = 1_000_000n;
 const MANAGE_MAX_FEE = 500_000n;
@@ -22,7 +22,7 @@ function connectButton(w: WalletState, onError: (msg: string) => void): HTMLElem
   return h("button", { class: "btn primary small", type: "button", onclick: async () => { try { await connectWallet(); } catch (e) { onError(friendly(e)); } } }, `Connect ${w.name}`);
 }
 
-const wrongNetwork = (w: WalletState): boolean => !!w.network && w.network !== "esmeralda";
+const wrongNetwork = (w: WalletState): boolean => !!w.network && w.network !== DEPLOYMENT.walletNetwork;
 
 /** The builder's last step: fund the contract from the connected wallet. */
 export function launchBox(spec: Spec): HTMLElement {
@@ -79,7 +79,7 @@ export function launchBox(spec: Spec): HTMLElement {
     } else if (!w.connected || !w.key) {
       replace(box, h("p", { class: "muted small-text", style: "margin:0" }, "Connect the wallet that will fund this campaign."), connectButton(w, (m) => { status.className = "fielderr"; status.textContent = m; }), status);
     } else if (wrongNetwork(w)) {
-      replace(box, h("p", { class: "note warn", style: "margin:0" }, `Your wallet is on ${w.network}. Switch it to Esmeralda to fund this.`));
+      replace(box, h("p", { class: "note warn", style: "margin:0" }, `Your wallet is on ${w.network}. Switch it to ${DEPLOYMENT.walletLabel} to fund this.`));
     } else {
       const go = h("button", { class: "btn primary", type: "button" }, `Fund and launch: ${fromMicro(spec.budget)} ${unit}`);
       go.addEventListener("click", () => void launch(go, w));
@@ -218,7 +218,7 @@ function listBox(c: ChainCampaign, local: Allocation[] | undefined): HTMLElement
     const short = c.paid + c.balance < total;
     replace(box,
       h("p", { class: "muted small-text" }, `${found.length.toLocaleString("en-US")} ${found.length === 1 ? "account shares" : "accounts share"} ${fromMicro(total)} ${unit}${c.rounds > 1 ? " across all rounds" : ""}. The list is public and matches the fingerprint in the contract. `,
-        h("button", { class: "btn ghost small", type: "button", onclick: () => save("allocation-list.csv", "text/csv", ["account,amount_tTARI", ...found.map((a) => `${csvCell(a.did)},${fromMicro(a.amount).replace(/,/g, "")}`)].join("\n")) }, "Download it")),
+        h("button", { class: "btn ghost small", type: "button", onclick: () => save("allocation-list.csv", "text/csv", [`account,amount_${unit}`, ...found.map((a) => `${csvCell(a.did)},${fromMicro(a.amount).replace(/,/g, "")}`)].join("\n")) }, "Download it")),
       short ? h("div", { class: "note warn" }, h("strong", null, "The pool doesn't cover the whole list. "), `It has held ${fromMicro(c.paid + c.balance)} ${unit} against ${fromMicro(total)} ${unit} listed, so claims will stop when it runs out. Anyone can add to it.`) : null,
     );
   })();
@@ -257,7 +257,7 @@ export function livePage(component: string): Page {
       try {
         const all = await listClaims(component, 1000);
         const names = await handlesFor(all.map((x) => x.did));
-        save("claims.csv", "text/csv", ["account,handle,round,amount_tTARI,transaction", ...all.map((x) => [csvCell(x.did), csvCell(names.get(x.did) ?? ""), x.round + 1, fromMicro(x.amount).replace(/,/g, ""), x.tx].join(","))].join("\n"));
+        save("claims.csv", "text/csv", [`account,handle,round,amount_${unit},transaction`, ...all.map((x) => [csvCell(x.did), csvCell(names.get(x.did) ?? ""), x.round + 1, fromMicro(x.amount).replace(/,/g, ""), x.tx].join(","))].join("\n"));
       } finally {
         btn.disabled = false;
       }

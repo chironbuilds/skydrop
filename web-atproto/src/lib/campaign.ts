@@ -1,3 +1,4 @@
+import { DEPLOYMENT } from "../data/deployment";
 /** The Campaign contract's rules, as data. Everything here mirrors campaigns/src/lib.rs; keep them in step. */
 export type RuleKind = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export type InputKind = "post" | "did" | "text" | "list";
@@ -292,7 +293,7 @@ export function validate(s: Spec): Problem[] {
   if (bonus > 0n && s.maxReferrals === 0) warn("A bonus with a referral limit of 0 can never pay.");
   if (bonus > 0n && exposure(s).level !== "Low") warn("Paid referrals on an open campaign reward making fake accounts. Add a vouch rule or keep the bonus tiny.");
   if (reward > 0n && budget > 0n && !s.root && budget < reward) err("The pool can't cover even one reward.");
-  if (reward > 0n && !s.root && reward <= claimFee(s.rules) * 2n) warn(`Claimers pay the network fee themselves, about ${fromMicro(claimFee(s.rules))} tTARI for this campaign, so a reward this small may not be worth claiming.`);
+  if (reward > 0n && !s.root && reward <= claimFee(s.rules) * 2n) warn(`Claimers pay the network fee themselves, about ${fromMicro(claimFee(s.rules))} ${DEPLOYMENT.unit} for this campaign, so a reward this small may not be worth claiming.`);
   return out;
 }
 

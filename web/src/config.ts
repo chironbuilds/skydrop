@@ -36,5 +36,20 @@ export const CONFIG = {
   plcDirectory: "https://plc.directory",
 };
 
+// Runtime address injection: the Worker reads KV and injects these into the HTML before the page loads.
+// This fills empty mainnet addresses without a rebuild (window.__SD_ADDR__ set by the skydrop Worker).
+if (typeof window !== "undefined") {
+  const rt = (window as unknown as Record<string, unknown>).__SD_ADDR__;
+  if (rt && typeof rt === "object") {
+    const a = rt as Partial<Record<string, string>>;
+    if (a.escrow) CONFIG.escrow = a.escrow;
+    if (a.claim) CONFIG.claim = a.claim;
+    if (a.tip) CONFIG.tip = a.tip;
+    // KV stores the link registry as either "linkRegistry" (from deploy-campaigns) or "link"
+    if (a.linkRegistry) CONFIG.link = a.linkRegistry;
+    else if (a.link) CONFIG.link = a.link;
+  }
+}
+
 /** Whether the contract stack has been deployed and configured. */
 export const deployed = (): boolean => !!(CONFIG.escrow && CONFIG.claim && CONFIG.tip && CONFIG.link);

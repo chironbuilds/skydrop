@@ -19,16 +19,19 @@ import { assess, deadlineOf, reminderFile, settle, totals, type Assessment, type
 import { attachSuggest } from "../../web-atproto/src/lib/suggest";
 import { connectWallet, dryRunInstructions, friendly, onWallet, sendInstructions, shortAddress, silentConnect, walletBalance, walletState } from "../../web-atproto/src/lib/wallet";
 import { campaignLink, contractsOnNetwork, DEPLOYMENT, isPublished } from "../../web-atproto/src/data/deployment";
+import { watchForMainnet } from "../../web-atproto/src/lib/cutover";
 
-const unit = "tTARI";
-const CREATOR = "https://atproto.tari.mw";
-const EXPLORER = "https://testnet-explorer.tari.mw";
-const QKEY = "skydrop-quests";
+const unit = DEPLOYMENT.unit;
+const CREATOR = DEPLOYMENT.creator;
+const EXPLORER = DEPLOYMENT.explorer;
+/** Testnet campaigns stay behind on the testnet, so what this browser tracks is kept per network. */
+const NET = DEPLOYMENT.isMainnet ? "-mainnet" : "";
+const QKEY = `skydrop-quests${NET}`;
 const HKEY = "skydrop-handle";
 /** Campaigns someone removed, so finding their past campaigns doesn't bring them back. */
-const HIDDEN = "skydrop-hidden";
+const HIDDEN = `skydrop-hidden${NET}`;
 /** Who invited this browser to each campaign. The contract pays them a bonus from the pool, never from the reward. */
-const REFS = "skydrop-refs";
+const REFS = `skydrop-refs${NET}`;
 
 interface Tracked { id: string; spec: Spec; added: number; example?: boolean }
 
@@ -267,8 +270,8 @@ function livePanel(t: Tracked): HTMLElement {
       void begin();
       return;
     }
-    if (w.network && w.network !== "esmeralda") {
-      replace(body, say(`Your wallet is on ${w.network}. Switch it to Esmeralda, then try again.`, "fielderr"), startButton());
+    if (w.network && w.network !== DEPLOYMENT.walletNetwork) {
+      replace(body, say(`Your wallet is on ${w.network}. Switch it to ${DEPLOYMENT.walletLabel}, then try again.`, "fielderr"), startButton());
       return;
     }
     const live = liveData.get(t.id);
@@ -588,8 +591,8 @@ async function startLink(): Promise<void> {
     return;
   }
   const w = walletState();
-  if (w.network && w.network !== "esmeralda") {
-    replace(box, say(`Your wallet is on ${w.network}. Switch it to Esmeralda, then try again.`, "fielderr"), notNow());
+  if (w.network && w.network !== DEPLOYMENT.walletNetwork) {
+    replace(box, say(`Your wallet is on ${w.network}. Switch it to ${DEPLOYMENT.walletLabel}, then try again.`, "fielderr"), notNow());
     return;
   }
   if (!actor || !w.key || !w.account) {
@@ -705,8 +708,8 @@ async function startBatch(): Promise<void> {
     return;
   }
   const w = walletState();
-  if (w.network && w.network !== "esmeralda") {
-    replace(box, say(`Your wallet is on ${w.network}. Switch it to Esmeralda, then try again.`, "fielderr"), notNow());
+  if (w.network && w.network !== DEPLOYMENT.walletNetwork) {
+    replace(box, say(`Your wallet is on ${w.network}. Switch it to ${DEPLOYMENT.walletLabel}, then try again.`, "fielderr"), notNow());
     return;
   }
   if (!actor || !w.key || !w.account) {
@@ -1255,6 +1258,7 @@ onWallet((w) => {
   else replace(chip);
 });
 void silentConnect();
+watchForMainnet();
 
 // Someone typing a different handle isn't refreshing.
 handleInput.addEventListener("input", () => {
@@ -1302,15 +1306,15 @@ append(document.getElementById("app")!, [
     openBox,
     h("section", { class: "qadd" }, h("h2", null, "Have a link?"), addForm, addMsg),
     !isPublished()
-      ? h("div", { class: "note warn" }, h("strong", null, "Testnet preview. "), `${contractsOnNetwork() ? `The campaign contract is on ${DEPLOYMENT.network}, but funding and claiming from these sites is still being built.` : `The campaign contract isn't published on ${DEPLOYMENT.network} yet.`} Campaigns here are previews with no funds behind them, so nothing can be collected.`)
-      : h("div", { class: "note warn" }, h("strong", null, "Testnet only. "), `Rewards here are ${unit} on the ${DEPLOYMENT.network}, with no real value. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.`),
+      ? h("div", { class: "note warn" }, h("strong", null, DEPLOYMENT.isMainnet ? "Almost ready. " : "Testnet preview. "), `${contractsOnNetwork() ? `The campaign contract is on ${DEPLOYMENT.network}, but funding and claiming from these sites is still being built.` : `The campaign contract isn't published on ${DEPLOYMENT.network} yet.`} Campaigns here are previews with no funds behind them, so nothing can be collected.`)
+      : h("div", { class: "note warn" }, h("strong", null, DEPLOYMENT.isMainnet ? "Real funds. " : "Testnet only. "), `Rewards here are ${unit} on ${DEPLOYMENT.network}${DEPLOYMENT.isMainnet ? "" : ", with no real value"}. The contracts haven't had an outside audit. Anyone can create a campaign, so judge what it asks you to do yourself.`),
   ),
   h("footer", { class: "qfoot wrap" },
-    h("a", { href: "/#/how" }, "How it works"),
+    DEPLOYMENT.isMainnet ? null : h("a", { href: "/#/how" }, "How it works"),
     h("a", { href: CREATOR, target: "_blank", rel: "noopener" }, "Create a campaign"),
     languagePicker(),
     themePicker(),
-    h("span", null, "Tari testnet: tTARI has no monetary value."),
+    DEPLOYMENT.isMainnet ? null : h("span", null, "Tari testnet: tTARI has no monetary value."),
   ),
   toastBox,
 ]);

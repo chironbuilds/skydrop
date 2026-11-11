@@ -1,3 +1,4 @@
+import { DEPLOYMENT } from "./deployment";
 import type { Rule } from "../lib/campaign";
 
 export interface Playbook {
@@ -35,3 +36,6 @@ export const PLAYBOOKS: Playbook[] = [
   { id: "ambassadors", name: "Ambassador seasons", tag: "Retention", goal: "Pay a named group for steady activity over months.", how: "Ambassadors on your list post with the tag every two weeks for a season.", rules: [{ kind: 6, hint: "The ambassador list" }, { kind: 3, hint: "Season tag", text: "#TariSeason1" }], reward: "10", budget: "2000", rounds: 6, roundDays: 14, days: 90, caution: "The contract checks a post exists, not whether it's any good." },
   { id: "testnet", name: "Testnet onboarding", tag: "Growth", goal: "Get people to try Ootle and leave a public trace.", how: "Post about trying the testnet. Linked wallets can be paid by a relayer with no fee of their own.", rules: [{ kind: 3, hint: "Campaign tag", text: "#TriedOotle" }, { kind: 2, hint: "The project's account" }], reward: "2", budget: "500", days: 21, caution: "Testnet tokens have no value, so this is good for dry runs of any other playbook." },
 ];
+
+// Onboarding people to a testnet makes no sense on mainnet.
+if (DEPLOYMENT.isMainnet) PLAYBOOKS.splice(PLAYBOOKS.findIndex((p) => p.id === "testnet"), 1);

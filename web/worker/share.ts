@@ -4,6 +4,7 @@
  */
 import { approxTime, encodeLive, fromMicro, summarize } from "../../web-atproto/src/lib/campaign";
 import { isComponent, phaseOf, readCampaign, type ChainCampaign } from "../../web-atproto/src/lib/chain";
+import { DEPLOYMENT } from "../../web-atproto/src/data/deployment";
 
 const ENT: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ENT[c]!);
@@ -41,7 +42,7 @@ export function shareRoute(url: URL): ShareRoute | null {
   return { component: m[1]!, card: !!m[2], ref: ref && REF.test(ref) ? ref : null };
 }
 
-const rewardOf = (c: ChainCampaign): string => (c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI`);
+const rewardOf = (c: ChainCampaign): string => (c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${DEPLOYMENT.unit}`);
 const stepsOf = (c: ChainCampaign): string => {
   if (!c.rules.length) return "Paid to the accounts on its list.";
   const s = summarize(c.rules);
@@ -58,9 +59,10 @@ const timing = (c: ChainCampaign): string => {
 export const shareDest = (origin: string, component: string, ref: string | null): string => `${origin}/quests#add=${encodeLive(component)}${ref ? `&ref=${ref}` : ""}`;
 
 export function sharePage(origin: string, url: URL, route: ShareRoute, c: ChainCampaign | null): string {
-  const dest = c ? shareDest(origin, route.component, route.ref) : `${origin}/quests`;
+  // A link from before the switch: the campaign is still on the testnet site.
+  const dest = c ? shareDest(origin, route.component, route.ref) : DEPLOYMENT.isMainnet ? `${DEPLOYMENT.otherSkydrop}/q/${route.component}${url.search}` : `${origin}/quests`;
   const title = c ? `${c.name}: ${c.root ? "see if you're on the list" : `earn ${rewardOf(c)}`} on Skydrop` : "A campaign on Skydrop";
-  const desc = c ? `${stepsOf(c)} ${timing(c)} Testnet tokens with no monetary value.` : "See the Bluesky campaigns you're in and what you can claim.";
+  const desc = c ? `${stepsOf(c)} ${timing(c)}${DEPLOYMENT.isMainnet ? "" : " Testnet tokens with no monetary value."}` : "See the Bluesky campaigns you're in and what you can claim.";
   const img = `${origin}/q/${route.component}/card.png`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -78,6 +80,7 @@ export function shareCard(c: ChainCampaign): { svg: string; text: string } {
   const steps = wrap(stepsOf(c), 32, 1060, 2);
   const reward = rewardOf(c);
   const foot = `${c.claimants.toLocaleString("en-US")} claimed · ${timing(c).replace(/\.$/, "")}`;
+  const badge = DEPLOYMENT.isMainnet ? "Tari mainnet" : "Tari testnet";
   const stripe = `<pattern id="s" width="40" height="40" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="20" height="40" fill="#d9362b"/><rect x="20" width="20" height="40" fill="#2350d8"/></pattern>`;
   const nameY = 190;
   const rewardY = nameY + (name.length - 1) * 74 + 104;
@@ -86,14 +89,14 @@ export function shareCard(c: ChainCampaign): { svg: string; text: string } {
 <rect width="1200" height="630" fill="#f0e6d0"/>
 <rect width="1200" height="14" fill="url(#s)"/><rect y="616" width="1200" height="14" fill="url(#s)"/>
 <text x="70" y="96" font-family="Fraunces" font-weight="700" font-size="38" fill="#191730">Skydrop</text>
-<text x="1130" y="94" text-anchor="end" font-family="Fraunces" font-weight="700" font-size="26" fill="#857e96">Tari testnet</text>
+<text x="1130" y="94" text-anchor="end" font-family="Fraunces" font-weight="700" font-size="26" fill="#857e96">${badge}</text>
 ${name.map((l, i) => `<text x="70" y="${nameY + i * 74}" font-family="Fraunces, Noto Sans SC" font-weight="700" font-size="62" fill="#191730">${esc(l)}</text>`).join("")}
 <text x="70" y="${rewardY}" font-family="Fraunces" font-weight="700" font-size="72" fill="#d9362b">${esc(reward)}</text>
 ${steps.map((l, i) => `<text x="70" y="${stepsY + i * 42}" font-family="Fraunces, Noto Sans SC" font-weight="700" font-size="32" fill="#5a5470">${esc(l)}</text>`).join("")}
 <text x="70" y="572" font-family="Fraunces" font-weight="700" font-size="26" fill="#5a5470">${esc(foot)}</text>
 <text x="1130" y="572" text-anchor="end" font-family="Fraunces" font-weight="700" font-size="26" fill="#857e96">skydrop.tari.mw</text>
 </svg>`;
-  return { svg, text: [...name, ...steps, reward, foot, "Skydrop", "Tari testnet", "skydrop.tari.mw"].join("") };
+  return { svg, text: [...name, ...steps, reward, foot, "Skydrop", badge, "skydrop.tari.mw"].join("") };
 }
 
 export interface ShareDeps {

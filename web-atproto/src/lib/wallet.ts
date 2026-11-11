@@ -148,6 +148,10 @@ export async function silentConnect(): Promise<void> {
     /* locked or not approved yet */
   }
   addEventListener("tari#accountsChanged", (e) => void adopt((e as CustomEvent<string[]>).detail?.[0] ?? null));
+  addEventListener("tari#networkChanged", (e) => {
+    state.network = (e as CustomEvent<string>).detail ?? null;
+    emit();
+  });
 }
 
 export async function connectWallet(): Promise<void> {

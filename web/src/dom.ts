@@ -1,3 +1,4 @@
+import { DEPLOYMENT } from "../../web-atproto/src/data/deployment";
 type Child = Node | string | number | null | undefined | false | Child[];
 type Props = Record<string, unknown> & { class?: string; style?: string };
 
@@ -66,12 +67,12 @@ export function stamp(): HTMLElement {
   <rect x="52" y="130" width="40" height="32" fill="#d9a566" stroke="#191730" stroke-width="2.2"/>
   <rect x="68" y="130" width="8" height="32" fill="#f6d44c" stroke="#191730" stroke-width="1.6"/>
   <text x="9" y="17" font-family="DM Mono, monospace" font-size="8" letter-spacing="2" fill="#191730">SKYDROP</text>
-  <text x="9" y="184" font-family="Fraunces, Georgia, serif" font-weight="800" font-size="17" fill="#191730">1 tTARI</text>
+  <text x="9" y="184" font-family="Fraunces, Georgia, serif" font-weight="800" font-size="17" fill="#191730">1 ${DEPLOYMENT.unit}</text>
 </svg></div>
 <svg class="postmark" viewBox="0 0 118 96" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#d9362b" stroke-width="2.4">
   <defs><path id="pm" d="M70 48 m-30 0 a30 30 0 1 1 60 0 a30 30 0 1 1 -60 0"/></defs>
   <circle cx="70" cy="48" r="40"/><circle cx="70" cy="48" r="22" stroke-width="1.4"/>
-  <text font-family="DM Mono, monospace" font-size="9.5" letter-spacing="2.2" fill="#d9362b" stroke="none"><textPath href="#pm">SKYDROP · TESTNET · BSKY ·</textPath></text>
+  <text font-family="DM Mono, monospace" font-size="9.5" letter-spacing="2.2" fill="#d9362b" stroke="none"><textPath href="#pm">SKYDROP · ${DEPLOYMENT.isMainnet ? "MAINNET" : "TESTNET"} · BSKY ·</textPath></text>
   <path d="M0 30 q8 -7 16 0 t16 0 t16 0"/><path d="M0 46 q8 -7 16 0 t16 0 t16 0"/><path d="M0 62 q8 -7 16 0 t16 0 t16 0"/>
 </svg>`;
   return w;

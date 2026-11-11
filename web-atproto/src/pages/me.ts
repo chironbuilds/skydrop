@@ -28,7 +28,7 @@ function draftCard(d: Draft, redraw: () => void): HTMLElement {
     h("div", { class: "questbody" },
       h("h3", null, s.name || "Untitled campaign"),
       h("p", { class: "muted small-text" }, s.rules.length ? `${summarize(s.rules)}.` : "No steps yet."),
-      h("p", { class: "muted small-text" }, `${fromMicro(s.reward)} tTARI each · pool ${fromMicro(s.budget)} · edited ${timeAgo(d.updated)}`),
+      h("p", { class: "muted small-text" }, `${fromMicro(s.reward)} ${DEPLOYMENT.unit} each · pool ${fromMicro(s.budget)} · edited ${timeAgo(d.updated)}`),
       h("div", { class: "row" },
         h("a", { class: "btn small primary", href: `/campaigns/new?draft=${d.id}` }, "Keep editing"),
         h("a", { class: "btn small ghost", href: `/c/preview#${encodeSpec(s)}` }, "Preview"),
@@ -110,8 +110,8 @@ export function mePage(): Page {
       ));
     } else {
       const bal = h("span", { class: "mono" }, "…");
-      void walletBalance().then((b) => { bal.textContent = b === null ? "unknown" : `${fromMicro(b)} tTARI`; });
-      const wrongNet = s.network && s.network !== "esmeralda";
+      void walletBalance().then((b) => { bal.textContent = b === null ? "unknown" : `${fromMicro(b)} ${DEPLOYMENT.unit}`; });
+      const wrongNet = s.network && s.network !== DEPLOYMENT.walletNetwork;
       replace(walletBox, h("div", { class: "card" },
         h("span", { class: "tag" }, `connected · ${s.name}`),
         h("h3", { class: "mono", style: "word-break:break-all" }, s.address ? shortAddress(s.address) : s.account!),

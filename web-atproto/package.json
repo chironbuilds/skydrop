@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --port 5195",
     "build": "tsc --noEmit && vite build",
+    "build:mainnet": "tsc --noEmit && vite build --mode mainnet --outDir dist-mainnet --emptyOutDir",
+    "build:all": "npm run build && npm run build:mainnet && node ../scripts/merge-mainnet.mjs dist dist-mainnet",
     "preview": "vite preview --port 5196",
     "test": "tsx scripts/test-lib.ts"
   },

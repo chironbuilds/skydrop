@@ -3,6 +3,7 @@
  * 5 tTARI each, pool 500, for 7 days". Simple word rules, no AI and no network, so it behaves the same every time.
  * Whatever it can't read is reported, not guessed at.
  */
+import { DEPLOYMENT } from "../data/deployment";
 import type { RuleKind } from "./campaign";
 import { toMicro } from "./campaign";
 
@@ -165,7 +166,7 @@ export function compose(input: string): Composed {
 }
 
 export const EXAMPLES = [
-  "Like, repost and comment on https://bsky.app/profile/bsky.app/post/3k, 5 tTARI each, pool 500, for 7 days",
+  `Like, repost and comment on https://bsky.app/profile/bsky.app/post/3k, 5 ${DEPLOYMENT.unit} each, pool 500, for 7 days`,
   "Like https://bsky.app/profile/a.com/post/3x then like https://bsky.app/profile/b.com/post/3y or repost https://bsky.app/profile/c.com/post/3z",
   'Comment "gm #Ootle" on https://bsky.app/profile/bsky.app/post/3k and follow @bsky.app, 4 rounds every 7 days',
 ];

@@ -1,4 +1,4 @@
-import { isPublished, participantLink } from "../data/deployment";
+import { DEPLOYMENT, isPublished, participantLink } from "../data/deployment";
 import { questArt } from "../lib/art";
 import { composeUrl, fetchPost, resolveActor, targetLink, type Actor } from "../lib/atproto";
 import { claimCode, decodeSpec, encodeSpec, exposure, fromHex, fromMicro, groupsOf, project, requirementCount, requirementsMet, RULES, summarize, type Spec } from "../lib/campaign";
@@ -10,7 +10,7 @@ import { postCard } from "./builder";
 import { livePage } from "./live";
 import { exposurePill } from "./campaigns";
 
-const unit = "tTARI";
+const unit = DEPLOYMENT.unit;
 
 function ruleLine(rule: Spec["rules"][number]): HTMLElement {
   const def = RULES[rule.kind]!;

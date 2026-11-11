@@ -2,7 +2,7 @@ import { fromMicro } from "../lib/campaign";
 import { poolBar, questArt, ruleChips } from "../lib/art";
 import { ruleIcon } from "../lib/icons";
 import { once, skeleton } from "../lib/motion";
-import { contractsOnNetwork, isPublished } from "../data/deployment";
+import { contractsOnNetwork, DEPLOYMENT, isPublished } from "../data/deployment";
 import { PLAYBOOKS, type Playbook } from "../data/playbooks";
 import { listCampaigns, phaseOf } from "../lib/chain";
 import { h, pageHead, pill, replace } from "../lib/dom";
@@ -35,14 +35,14 @@ function exposureOf(p: Playbook): "Low" | "Medium" | "High" {
 function liveCampaigns(): HTMLElement {
   const box = h("div", { style: "margin-top:12px" }, h("p", { class: "muted" }, "Reading the network…"), skeleton(3));
   if (!isPublished()) {
-    replace(box, h("div", { class: "note" }, h("strong", null, "No campaigns can run yet."), " ", contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract passes its tests on Ootle 0.49.2 but isn't published on the network. You can design a campaign and try its eligibility check against real accounts today."));
+    replace(box, h("div", { class: "note" }, h("strong", null, "No campaigns can run yet."), " ", contractsOnNetwork() ? "The Campaign contract is on the Esmeralda testnet, but funding from the site is still being built. You can design a campaign and try its eligibility check against real accounts today." : "The Campaign contract isn't published on this network yet. You can design a campaign and try its eligibility check against real accounts today."));
     return box;
   }
   void (async () => {
     const open = (await listCampaigns()).filter((c) => !c.legacy && phaseOf(c) !== "closed" && c.balance > 0n);
     replace(box, open.length
       ? [
-          h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card livec", href: `/c/${c.component}` }, questArt(c.name, c.rules), h("div", { class: "livecbody" }, h("h3", null, c.name), h("p", { class: "livecreward" }, c.root ? "Listed amounts" : `${fromMicro(c.reward)} tTARI each`), c.rules.length ? ruleChips(c.rules, (r) => RULES[r.kind]!.name) : null, poolBar(c.paid, c.balance, "tTARI", once(`pool|${c.component}`)), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`))))),
+          h("div", { class: "grid g3" }, open.map((c) => h("a", { class: "card livec", href: `/c/${c.component}` }, questArt(c.name, c.rules), h("div", { class: "livecbody" }, h("h3", null, c.name), h("p", { class: "livecreward" }, c.root ? "Listed amounts" : `${fromMicro(c.reward)} ${DEPLOYMENT.unit} each`), c.rules.length ? ruleChips(c.rules, (r) => RULES[r.kind]!.name) : null, poolBar(c.paid, c.balance, DEPLOYMENT.unit, once(`pool|${c.component}`)), h("div", { class: "foot-line" }, `${c.claimants.toLocaleString("en-US")} claimed · ${fromMicro(c.balance)} left`))))),
           h("p", { class: "muted small-text" }, "Anyone can create a campaign, so nobody here has vetted these. Their funds and rules are real; their names and links are whatever the creator chose."),
         ]
       : h("div", { class: "note" }, h("strong", null, "No campaigns are open right now."), " Be the first: pick a playbook below."));

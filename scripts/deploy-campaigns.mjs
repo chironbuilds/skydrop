@@ -1,5 +1,5 @@
-// Publishes the Campaign stack on Esmeralda: LinkRegistry + Campaign + Verifier templates, then one LinkRegistry.
-// Spends real testnet funds, so it only reports what it would do unless you pass "go".
+// Publishes the Campaign stack: LinkRegistry + Campaign + Verifier templates, then one LinkRegistry.
+// Spends funds, so it only reports what it would do unless you pass "go". SKYDROP_NET=mainnet targets mainnet, and spends real TARI.
 //
 //   cd ~/rcv-publish equivalent (a folder with @chironbuilder/ootle-sdk, @tari-project/ootle and a publisher.json)
 //   node <repo>/scripts/deploy-campaigns.mjs <folder with the .wasm files>        # report only
@@ -30,8 +30,10 @@ const TEMPLATES = [["LinkRegistry", "bsky_link_registry"], ["Campaign", "bsky_ca
 
 const { entropy } = JSON.parse(readFileSync("publisher.json", "utf8"));
 const { ownerSecret, viewSecret } = deriveAccountKeys(fromHex(entropy), 0);
-const network = Network.Esmeralda;
-const provider = await IndexerProvider.connect({ url: defaultIndexerUrl(network), network });
+const mainnet = process.env.SKYDROP_NET === "mainnet";
+const network = mainnet ? Network.MainNet : Network.Esmeralda;
+const provider = await IndexerProvider.connect({ url: mainnet ? "https://indexer-a.ootle.tari.com" : defaultIndexerUrl(network), network });
+console.log("network", mainnet ? "MAINNET (real funds)" : "Esmeralda");
 const signer = SecretKeyWallet.fromSecretKey(ownerSecret, network, viewSecret);
 const { accountAddressFromPublicKey } = await import(pathToFileURL(resolve("../confidential-rcv-web/lib/derive.mjs")).href).catch(() => {
   throw new Error("Needs accountAddressFromPublicKey; run this from ~/rcv-publish, next to confidential-rcv-web.");
@@ -47,7 +49,7 @@ for (const id of vaults) {
 }
 for (const [name, file] of TEMPLATES) console.log(`${name}: ${file}.wasm, ${(statSync(join(dir, `${file}.wasm`)).size / 1024).toFixed(0)} KB`);
 if (!go) {
-  console.log('\nNothing was sent. Add "go" to publish. Publishing costs roughly 3 to 4 tTARI per template, from past publishes.');
+  console.log('\nNothing was sent. Add "go" to publish. Measured on the testnet, publishing all three optimised costs about 8.4.');
   process.exit(0);
 }
 

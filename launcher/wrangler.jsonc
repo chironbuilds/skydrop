@@ -1,0 +1,14 @@
+{
+  "name": "skydrop-launcher",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "main": "./worker/index.ts",
+  "durable_objects": {
+    "bindings": [{ "name": "LAUNCH_CTL", "class_name": "LaunchController" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LaunchController"] }],
+  "kv_namespaces": [{ "binding": "LAUNCH_STATE", "id": "58ad9c6377eb450bbccac4b9ef8448ac" }]
+  // Secrets (set with `npx wrangler secret put`):
+  //   LAUNCH_WEBHOOK_SECRET  — a random token; pass as Bearer on /arm and /complete calls
+  // No custom domain needed — access via <name>.<subdomain>.workers.dev
+}

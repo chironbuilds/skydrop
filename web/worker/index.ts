@@ -8,13 +8,37 @@ import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import { handleGate, liveDeps } from "./gate";
 import { cleanNote, envelopeHash, isCoverId, styleOf, type Style } from "../src/envelope-data";
 import { fullPageRequest, httpsRedirect, readCapped, readCappedBytes, secure } from "../../web-atproto/worker/secure";
+import { atPath, networkResponse, onMainnet } from "../../web-atproto/worker/network";
 
+interface KVNamespace { get(key: string): Promise<string | null> }
 interface Env {
   ASSETS: { fetch(r: Request): Promise<Response> };
   COVERS: { get(k: string, t: "arrayBuffer"): Promise<ArrayBuffer | null>; put(k: string, v: ArrayBuffer, o?: { expirationTtl?: number }): Promise<void> };
+  LAUNCH_STATE?: KVNamespace;
 }
 
 const MAX_COVER = 90_000;
+
+// Runtime address injection from KV (fills empty mainnet addresses without a rebuild)
+let _cachedAddrs: string | null = null;
+let _addrsFetchedAt = 0;
+const _ADDRS_TTL_MS = 2 * 60 * 1000;
+async function getAddresses(ls: KVNamespace | undefined): Promise<string | null> {
+  if (!ls) return null;
+  const now = Date.now();
+  if (_cachedAddrs !== null || (_addrsFetchedAt > 0 && now - _addrsFetchedAt < _ADDRS_TTL_MS)) return _cachedAddrs;
+  _cachedAddrs = await ls.get("mainnet:addresses").catch(() => null);
+  _addrsFetchedAt = now;
+  return _cachedAddrs;
+}
+async function injectAddrScript(res: Response, addrs: string): Promise<Response> {
+  const script = `<script>window.__SD_ADDR__=${addrs}</script>`;
+  const html = await res.text();
+  const patched = html.includes("</head>") ? html.replace("</head>", script + "</head>") : script + html;
+  const headers = new Headers(res.headers);
+  headers.delete("content-length");
+  return new Response(patched, { status: res.status, statusText: res.statusText, headers });
+}
 // long enough for any gift's refund period, short enough that nothing is hosted for ever
 const COVER_TTL = 60 * 60 * 24 * 90;
 
@@ -222,9 +246,15 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
 
 async function serve(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    if (url.pathname === "/api/gate" && req.method === "POST" && (await overLimit(req, env, "gate", 20))) return new Response(JSON.stringify({ error: "Too many locked posts from this address. Try again later." }), { status: 429, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
-    const gate = await handleGate(req, liveDeps(env.COVERS as never));
-    if (gate) return gate;
+    const mainnet = await onMainnet();
+    if (url.pathname === "/__network") return networkResponse();
+    // The older gift app and locked posts are testnet-only.
+    if (mainnet && (url.pathname === "/" || url.pathname === "/index.html" || url.pathname.startsWith("/e/"))) return new Response(null, { status: 302, headers: { location: "/quests" } });
+    if (!mainnet && url.pathname === "/api/gate" && req.method === "POST" && (await overLimit(req, env, "gate", 20))) return new Response(JSON.stringify({ error: "Too many locked posts from this address. Try again later." }), { status: 429, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
+    if (!mainnet) {
+      const gate = await handleGate(req, liveDeps(env.COVERS as never));
+      if (gate) return gate;
+    }
     const list = await handleLists(req, url, env.COVERS, (big) => (big ? overLimit(req, env, "list-big", 2) : overLimit(req, env, "list", 10)));
     if (list) return list;
     const share = await handleShare(req, url, {
@@ -240,7 +270,13 @@ async function serve(req: Request, env: Env): Promise<Response> {
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
     if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);
     if (url.pathname.startsWith("/c/")) return serveCover(url, env);
-    return env.ASSETS.fetch(fullPageRequest(req));
+    const targetReq = fullPageRequest(mainnet && url.pathname === "/quests" ? atPath(req, "/mainnet/quests") : req);
+    const assetRes = await env.ASSETS.fetch(targetReq);
+    if (mainnet && !/\.[a-z0-9]+$/i.test(url.pathname)) {
+      const addrs = await getAddresses(env.LAUNCH_STATE);
+      if (addrs) return injectAddrScript(assetRes, addrs);
+    }
+    return assetRes;
 }
 
 export default {
