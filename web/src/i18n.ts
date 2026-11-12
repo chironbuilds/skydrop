@@ -30,7 +30,7 @@ const ZH: Record<string, string> = {
   "Skip the post. ": "跳过发帖。",
   "Make the next one instant. ": "让下一次即时到账。",
   "Want to skip these steps next time? ": "下次想跳过这些步骤？",
-  "Link a wallet once and future tips land in it instantly, with nothing to claim.": "关联一次钱包，以后的打赏会即时到账，无需领取。",
+  "Link a wallet instead: what's waiting is collected for you, and future tips land in it instantly with nothing to claim.": "改为关联钱包：现在等待的会自动帮你领取，以后的打赏即时到账，无需领取。",
   "More touches: pattern, seal, colour, font, burst": "更多装饰：图案、封印、颜色、字体、开封特效",
   "Pattern": "图案",
   "Seal": "封印",

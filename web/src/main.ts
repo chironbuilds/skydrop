@@ -669,6 +669,37 @@ async function relayLinked(did: string, step: "start" | "finalize", done: (e: ch
   throw new Error(`Skydrop couldn't do this for free this time. If your linked wallet holds ${CONFIG.symbol}, it pays its own fee: open this page from that wallet, or add a little ${CONFIG.symbol} here, and try again.`);
 }
 
+/**
+ * Linking makes future gifts arrive by themselves; this collects the ones already waiting too, using the link post
+ * itself as the linked claim's post (any post of the account will do, since the money can only go to the linked
+ * wallet). Gifts with a phrase still need their phrase posted, and gifts with a safety window are paid once it ends.
+ * Returns how much was paid to the linked wallet, and whether the post must stay up (a gift asked for it to).
+ */
+async function collectAfterLink(did: string, rkey: string, say: (s: string) => void): Promise<{ paid: bigint; keepPost: boolean }> {
+  let e = await chain.readEscrow(provider, did);
+  const keepPost = e.deposits.some((d) => d.hold > 0);
+  if (!e.binding || !e.deposits.some((d) => !d.challenge)) return { paid: 0n, keepPost };
+  const before = chain.total(e.deposits);
+  await balanceReady;
+  if (!(e.pending && e.pending.claimant === e.bindingOwner)) {
+    say("Collecting what was already waiting for you");
+    if (needsFunds()) {
+      await relayLinked(did, "start", (n) => !!n.pending && n.pending.claimant === n.bindingOwner, say);
+    } else {
+      await recordForFree(did, say);
+      await checkPaidClaim(did, say);
+      say("Fetching the signed copy of your post");
+      await chain.startLinkedClaim(wallet, await bsky.buildClaimProof(did, rkey), say);
+    }
+    e = await chain.readEscrow(provider, did);
+  }
+  if (!e.pending || chain.payableNow(e, e.pending.start).amount === 0n) return { paid: 0n, keepPost };
+  if (needsFunds()) await relayLinked(did, "finalize", (n) => chain.total(n.deposits) < before, say);
+  else await chain.finalizeToLinked(wallet, did, say, true);
+  const after = await chain.readEscrow(provider, did);
+  return { paid: before - chain.total(after.deposits), keepPost };
+}
+
 /** Mirrors the bot's RECORD_MIN_GIFTS: below this, it won't pay to record an account's history. */
 const RECORD_MIN_WAITING = 500_000n;
 
@@ -1841,6 +1872,9 @@ function renderLink(prefill?: string, flow = false): void {
   let changing = false;
   let submitted = "";
   let addrProblem = "";
+  // the link post, which also collects what was already waiting; and how that went
+  let linkRkey = "";
+  let swept: { paid: bigint; left: bigint } | "busy" | "failed" | null = null;
   const mine = (): string => target;
   const card = h("div", { class: "card stack" });
   const stepsEl = h("div");
@@ -1913,6 +1947,34 @@ function renderLink(prefill?: string, flow = false): void {
     throw new Error(`Skydrop couldn't link it this time. Add a little ${CONFIG.symbol} to your wallet and try again.`);
   };
 
+  /** Once the link is live: collect what was already waiting, delete the link post if nothing needs it, carry on. */
+  const afterLinked = async (p: bsky.Profile): Promise<void> => {
+    let keepPost = false;
+    if (linkRkey && swept === null) {
+      swept = "busy";
+      draw();
+      try {
+        const r = await collectAfterLink(p.did, linkRkey, say);
+        keepPost = r.keepPost;
+        const left = chain.total((await chain.readEscrow(provider, p.did)).deposits);
+        swept = { paid: r.paid, left };
+        if (r.paid > 0n) {
+          toast(`${chain.formatTari(r.paid)} ${CONFIG.symbol} collected`, "good");
+          await refreshBalance();
+        }
+      } catch {
+        swept = "failed";
+      }
+      if (profile?.did === p.did) draw();
+    }
+    if (!keepPost) void cleanupProofPosts(p.did);
+    // a challenge gift's next step is posting its phrase, on the claim page
+    if (flow && profile?.did === p.did) {
+      const t = window.setTimeout(() => { location.hash = `#/claim/${p.handle}`; }, 1800);
+      cleanups.push(() => clearTimeout(t));
+    }
+  };
+
   const runBind = async (): Promise<void> => {
     if (!profile || busy) return;
     await balanceReady;
@@ -1922,6 +1984,7 @@ function renderLink(prefill?: string, flow = false): void {
       say("Looking for your post on Bluesky");
       const found = await bsky.findClaimPost(profile.did, code);
       if (!found) throw new Error("We couldn't find a post containing your link code yet. Post it publicly, wait a few seconds, then try again.");
+      linkRkey = found.rkey;
       if (needsFunds()) await linkForFree(profile.did);
       else {
         say("Fetching the signed copy of your post");
@@ -1934,13 +1997,9 @@ function renderLink(prefill?: string, flow = false): void {
       toast("Wallet linked", "good");
       confetti();
       current = await chain.readBinding(provider, profile.did);
-      void cleanupProofPosts(profile.did);
-      // with no delay the link is live now: carry on to the next step of a challenge gift
-      if (flow && current === mine()) {
-        const handle = profile.handle;
-        const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 1800);
-        cleanups.push(() => clearTimeout(t));
-      }
+      // with no delay the link is live now: collect what was waiting, then carry on
+      if (current === mine()) void afterLinked(profile);
+      else void cleanupProofPosts(profile.did);
     } catch (e) {
       toast(chain.friendly(e), "bad");
     }
@@ -1958,11 +2017,7 @@ function renderLink(prefill?: string, flow = false): void {
       }
       if (current === mine()) {
         draw();
-        if (flow) {
-          const handle = profile.handle;
-          const t = window.setTimeout(() => { location.hash = `#/claim/${handle}`; }, 1800);
-          cleanups.push(() => clearTimeout(t));
-        }
+        void afterLinked(profile);
       }
       return;
     }
@@ -1974,6 +2029,14 @@ function renderLink(prefill?: string, flow = false): void {
     }
   }, 5000);
   cleanups.push(() => clearInterval(watch));
+
+  const sweptNote = (): HTMLElement | null => {
+    if (swept === "busy") return h("div", { class: "note", style: "margin:12px 0" }, ...spinnerLabel("Collecting what was already waiting for you…"));
+    if (swept === "failed") return h("div", { class: "note warn", style: "margin:12px 0" }, "We couldn't collect what was already waiting just now. Collect it on the next page.");
+    if (!swept || typeof swept !== "object") return null;
+    if (swept.paid > 0n) return h("div", { class: "note good", style: "margin:12px 0" }, `${chain.formatTari(swept.paid)} ${CONFIG.symbol} that was already waiting for you has been collected into ${target === wallet.componentAddress ? "this wallet" : "your linked wallet"} too.${swept.left > 0n ? ` ${chain.formatTari(swept.left)} more needs a phrase or is still in its safety window.` : ""}`);
+    return null;
+  };
 
   const draw = (): void => {
     if (!profile) return;
@@ -1990,7 +2053,7 @@ function renderLink(prefill?: string, flow = false): void {
     // name the address too, so "this wallet" is never a mystery
     const whereFull = target === wallet.componentAddress ? `this wallet (${short(target, 10, 6)})` : where;
     if (current === mine()) {
-      mount(stepsEl, flow ? flowBar(2) : null, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, flow ? "Next: post the phrase" : "Collect what's waiting")), profileCard(p)), changer);
+      mount(stepsEl, flow ? flowBar(2) : null, h("div", { class: "card success" }, h("div", { class: "delivered" }, "Linked"), h("h2", { class: "page", style: "margin:8px 0" }, `Tips arrive straight in ${where}`), h("p", { class: "sub" }, `@${p.handle} is linked to ${where}. Gifts with no safety window and no phrase are paid there the moment they are sent. Anything with a challenge is released when you post its phrase in a new post, and paid there too.`), sweptNote(), swept === "busy" || (swept && typeof swept === "object" && swept.left === 0n) ? null : h("div", { class: "row", style: "justify-content:center" }, h("a", { class: "btn primary", href: `#/claim/${p.handle}` }, flow ? "Next: post the phrase" : "Collect what's waiting")), profileCard(p)), changer);
       return;
     }
     mount(
@@ -2499,7 +2562,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       holdNote,
       // Someone collecting by hand: one line on how to never do this again.
       !e.binding && !e.bindingPending && pay.needLink === 0n && cur === 1
-        ? h("div", { class: "note linkrow skip-next", style: "margin-top:12px" }, h("span", null, h("b", null, "Want to skip these steps next time? "), "Link a wallet once and future tips land in it instantly, with nothing to claim."), h("a", { class: "btn ghost sm", href: `#/link/${p.handle}` }, "Link a wallet"))
+        ? h("div", { class: "note linkrow skip-next", style: "margin-top:12px" }, h("span", null, h("b", null, "Want to skip these steps next time? "), "Link a wallet instead: what's waiting is collected for you, and future tips land in it instantly with nothing to claim."), h("a", { class: "btn ghost sm", href: `#/link/${p.handle}` }, "Link a wallet"))
         : null,
       pay.needLink > 0n && e.bindingPending ? h("div", { class: "note warn", style: "margin-top:12px" }, `Your link is being confirmed and takes effect in about ${eta(Math.max(0, e.bindingPending.epoch - e.epoch))}. The short wait lets anyone stop it if it was made with a stolen key. After that, post the phrase.`) : null,
       pay.needLink > 0n && !e.bindingPending ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
