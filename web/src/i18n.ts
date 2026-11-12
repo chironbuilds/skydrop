@@ -28,6 +28,10 @@ export function setLang(l: Lang): void {
 const ZH: Record<string, string> = {
   // linking a wallet
   "Skip the post. ": "跳过发帖。",
+  "Make the next one instant. ": "让下一次即时到账。",
+  "Tari mainnet: these are real TARI.": "Tari 主网：这些是真实的 TARI。",
+  "Save it now": "立即保存",
+  "Checking your wallet balance…": "正在查询钱包余额…",
   "Link your wallet once and first claims on any campaign need no post.": "只需关联一次钱包，之后任何活动的首次领取都无需发帖。",
   "Link a wallet": "关联钱包",
   "Wallet linked. ": "钱包已关联。",
@@ -586,6 +590,8 @@ const PATTERNS: Pattern[] = [
   [/^Added “(.+)”\.$/, (m) => `已添加「${m[1]}」。`],
   [/^Removed “(.+)”\.$/, (m) => `已移除「${m[1]}」。`],
   [/^Found (\d+) campaigns? you've collected from\.$/, (m) => `找到 ${m[1]} 个你领取过的活动。`],
+  [/^Link your wallet to @(.+) with one post, and future gifts and tips land in it directly, with nothing to collect\.$/, (m) => `用一条帖子把钱包关联到 @${m[1]}，以后的礼物和打赏会直接到账，无需领取。`],
+  [/^Your tTARI is kept in this browser\. Save your recovery key so you can't lose it if you clear your browser data\.$/, () => "你的 tTARI 保存在这个浏览器里。请保存恢复密钥，以免清除浏览器数据后丢失。"],
   [/^About ([\d.,]+) tTARI after the network fee\.$/, (m) => `扣除网络费用后约 ${m[1]} tTARI。`],
   [/^The network fee, about ([\d.,]+) tTARI, may be more than this reward\.$/, (m) => `网络费用约 ${m[1]} tTARI，可能超过这份奖励。`],
   [/^Your wallet pays a network fee of about ([\d.,]+) tTARI, so you end up about ([\d.,]+) tTARI better off\. Only the real cost is charged\.$/, (m) => `你的钱包支付约 ${m[1]} tTARI 的网络费用，实际净得约 ${m[2]} tTARI。只收取实际费用。`],
@@ -634,11 +640,21 @@ function zh(raw: string): string | null {
   const trail = /\s*$/.exec(raw)![0];
   const t = raw.trim();
   if (!t) return null;
+  const out = zhCore(t);
+  if (out !== null) return lead + out + trail;
+  // The table is written with the testnet's "tTARI"; on mainnet the same sentences say "TARI".
+  const mainnet = t.replace(/\bTARI\b/g, "tTARI");
+  if (mainnet === t) return null;
+  const hit = zhCore(mainnet);
+  return hit === null ? null : lead + hit.replace(/tTARI/g, "TARI") + trail;
+}
+
+function zhCore(t: string): string | null {
   const hit = ZH[t];
-  if (hit !== undefined) return lead + hit + trail;
+  if (hit !== undefined) return hit;
   for (const [re, fn] of PATTERNS) {
     const m = re.exec(t);
-    if (m) return lead + fn(m) + trail;
+    if (m) return fn(m);
   }
   return null;
 }

@@ -127,6 +127,22 @@ let balance = 0n;
  *  draw straight away and fill the balance in; actions that check funds wait for it (`balanceReady`). */
 let balanceKnown = false;
 let balanceReady: Promise<void> = Promise.resolve();
+/** Set once the recovery key has been revealed or copied, so the "save your recovery key" nudge stops. */
+const BACKED_UP_KEY = "skydrop.backedUp";
+const backedUp = (): boolean => {
+  try {
+    return localStorage.getItem(BACKED_UP_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const noteBackedUp = (): void => {
+  try {
+    localStorage.setItem(BACKED_UP_KEY, "1");
+  } catch {
+    /* storage unavailable: the nudge just keeps showing */
+  }
+};
 const balanceText = (digits: number): string => (balanceKnown ? `${chain.formatTari(balance, digits)} ${CONFIG.symbol}` : "…");
 let cleanups: (() => void)[] = [];
 
@@ -410,8 +426,8 @@ function openWallet(): void {
       h(
         "div",
         { class: "row" },
-        h("button", { class: "btn ghost sm", onclick: () => { showSeed = !showSeed; render(); } }, showSeed ? "Hide" : "Reveal"),
-        h("button", { class: "btn ghost sm", onclick: () => copy(seed, "Recovery key copied") }, icons.copy(), "Copy"),
+        h("button", { class: "btn ghost sm", onclick: () => { showSeed = !showSeed; if (showSeed) noteBackedUp(); render(); } }, showSeed ? "Hide" : "Reveal"),
+        h("button", { class: "btn ghost sm", onclick: () => { noteBackedUp(); copy(seed, "Recovery key copied"); } }, icons.copy(), "Copy"),
       ),
       h("p", { class: "help" }, "Anyone with this key controls this wallet. Save it somewhere safe. If you clear your browser data without it, the wallet is gone."),
       h(
@@ -1479,7 +1495,26 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const others = e.pending && !mine;
     const waitingTotal = chain.total(e.deposits);
 
-    const doneCard = collected === null ? null : h("div", { class: "card success" }, h("div", { class: "delivered" }, "Delivered"), h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)), h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"), h("p", { class: "sub" }, e.binding && e.binding !== wallet.componentAddress ? `It was paid to the wallet @${p.handle} has linked (${displayAddress(e.binding)}).` : "It's in your Skydrop wallet now."), h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")));
+    const paidHere = !(e.binding && e.binding !== wallet.componentAddress);
+    const doneCard =
+      collected === null
+        ? null
+        : h(
+            "div",
+            { class: "card success" },
+            h("div", { class: "delivered" }, "Delivered"),
+            h("div", { class: "amount" }, chain.formatTari(collected), h("small", null, CONFIG.symbol)),
+            h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"),
+            h("p", { class: "sub" }, paidHere ? "It's in your Skydrop wallet now." : `It was paid to the wallet @${p.handle} has linked (${displayAddress(e.binding!)}).`),
+            h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")),
+            // The two things that make the next gift easier: no claim at all, and not losing this one.
+            !e.binding && !e.bindingPending
+              ? h("div", { class: "note", style: "margin-top:16px;text-align:left" }, h("b", null, "Make the next one instant. "), `Link your wallet to @${p.handle} with one post, and future gifts and tips land in it directly, with nothing to collect. `, h("a", { href: `#/link/${p.handle}` }, "Link my wallet"))
+              : null,
+            paidHere && wallet.kind === "builtin" && !backedUp()
+              ? h("div", { class: "note warn", style: "margin-top:12px;text-align:left" }, `Your ${CONFIG.symbol} is kept in this browser. Save your recovery key so you can't lose it if you clear your browser data. `, h("a", { href: "#", onclick: (ev: Event) => { ev.preventDefault(); openWallet(); } }, "Save it now"))
+              : null,
+          );
     // Gifts sent with the first contract to an account it can't verify (too long an identity history).
     const stuckNote = e.stuckV1.length
       ? h("div", { class: "note warn", style: "margin-top:12px" }, `${chain.formatTari(chain.total(e.stuckV1))} ${CONFIG.symbol} was sent to @${p.handle} with Skydrop's first contract, which can't verify accounts with a long identity history like this one. The sender can take it back after its refund date and send it again: new gifts work.`)
@@ -1737,6 +1772,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
 
     const { text: postText, dropped } = claimPost();
     const maxWin = Math.max(...e.deposits.map((d) => d.window));
+    // Instant gifts have no safety window: don't show a step that never happens.
+    const hasWindow = maxWin > 0 || e.deposits.some((d) => d.hold > 0);
     const elapsed = mine ? Math.max(0, e.epoch - e.pending!.start) : 0;
     const pct = maxWin ? Math.min(100, Math.round((elapsed / maxWin) * 100)) : 100;
 
@@ -1830,8 +1867,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         { class: "steps" },
         h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, codeNow() ? "Post this on Bluesky" : "Post the phrase"), h("p", null, codeNow() ? "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards." : "Your wallet is linked. Post this as a new post from your account, separate from the link post, and the money goes to your linked wallet."), pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It leads the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
         h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, canAuto() && !autoOff ? h("p", { class: "help" }, `Watching for your post. This continues by itself once it appears, and your ${CONFIG.symbol} is collected automatically when it's due.`) : null, verifyBtn, logEl) : null)),
-        h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
-        h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, "4"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, `Your ${CONFIG.symbol} lands in your Skydrop wallet.`))),
+        !hasWindow ? null : h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
+        h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, hasWindow ? "4" : "3"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, `Your ${CONFIG.symbol} lands in your Skydrop wallet.`))),
       ),
       declineBox,
     );
@@ -2028,8 +2065,8 @@ function renderHow(): void {
     h("details", null, h("summary", null, "Can I decline a gift?"), h("p", null, "Yes, once your wallet is linked: open Collect, pick \"Decline a gift\" and sign from your wallet. The money goes back to the sender, who takes it back from Your sends. Phrase gifts nobody answers for about three days can be sent back by anyone.")),
     h("details", null, h("summary", null, "What if my Bluesky key was stolen?"), h("p", null, "A proof can't show an account's history is complete, so links and claims wait out a short delay during which anyone, and the Skydrop bot, can cancel them by showing the account's newer history. Larger gifts can add a longer safety window.")),
     h("details", null, h("summary", null, "What if nobody claims it?"), h("p", null, `The sender can take it back after about ${eta(CONFIG.refundAfterEpochs)}.`)),
-    h("details", null, h("summary", null, "What can't it do yet?"), h("p", null, "Only did:plc accounts work (almost everyone). Private payouts to a stealth address are planned. This is testnet.")),
-    h("details", null, h("summary", null, "Is my wallet safe?"), h("p", null, "It's created in your browser and never sent anywhere. Back up your recovery key from the wallet menu. This is testnet software.")),
+    h("details", null, h("summary", null, "What can't it do yet?"), h("p", null, `Only did:plc accounts work (almost everyone). Private payouts to a stealth address are planned.${MAINNET ? "" : " This is testnet."}`)),
+    h("details", null, h("summary", null, "Is my wallet safe?"), h("p", null, `It's created in your browser and never sent anywhere. Back up your recovery key from the wallet menu.${MAINNET ? " If you clear your browser data without it, the wallet is gone." : " This is testnet software."}`)),
   );
 }
 
