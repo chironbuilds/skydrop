@@ -427,6 +427,8 @@ details.opt { margin-top: 0; box-shadow: none; background: var(--well); }
 details.opt summary .sum-main { display: inline-flex; align-items: center; margin-right: auto; }
 details.opt summary .sum-val { align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--muted); }
 details.opt[open] summary .sum-val { display: none; }
+/* the usual gap after a field (the amount buttons need room for their shadows); stacked options sit closer */
+.stack > * + details.opt { margin-top: 24px; }
 details.opt + details.opt { margin-top: 10px; }
 details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); align-self: center; margin-right: auto; }
 /* the send button stays in reach on a long form */
