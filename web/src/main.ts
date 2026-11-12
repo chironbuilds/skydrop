@@ -1676,18 +1676,20 @@ function renderClaim(prefill?: string, gift?: Gift): void {
             say("Network fees are covered for you");
             await chain.confirmClaimSponsored(wallet, proof, say);
           } catch (err) {
-            if (chain.needsRecording(err) && needsFunds()) {
-              // An old account: its identity history has to be on-chain before a free claim fits. Skydrop records it.
-              await askForRecording(p.did, say);
+            // As for the claim: Skydrop records an old account's history for free first, whatever the wallet holds.
+            if (chain.needsRecording(err) && (await recordForFree(p.did, say))) {
               await chain.confirmClaimSponsored(wallet, proof, say);
             } else {
               if (needsFunds() && chain.isFeePhaseTooBig(err)) await askForFloat(p.did, say);
-              else if (needsFunds()) throw err;
-              else say("Sponsored fees weren't available, so your wallet pays the small fee");
+              else if (needsFunds() && !chain.needsRecording(err)) throw err;
+              else say("Sponsored fees weren't available, so your wallet pays the fee");
+              await checkPaidClaim(p.did, say);
               await chain.confirmClaim(wallet, proof, say);
             }
           }
         } else {
+          await recordForFree(p.did, say);
+          await checkPaidClaim(p.did, say);
           await chain.confirmClaim(wallet, proof, say);
         }
         await refreshBalance();
