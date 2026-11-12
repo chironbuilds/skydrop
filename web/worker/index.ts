@@ -121,7 +121,8 @@ async function render(svg: string, text: string, extra: { family: string; weight
   ]);
   const fontBuffers = [a, b, e, ...more].filter((f): f is Uint8Array => !!f);
   const bytes = new Resvg(svg, { font: { fontBuffers, loadSystemFonts: false, defaultFontFamily: "Fraunces" } }).render().asPng();
-  return { bytes, complete: !!a && (!wide || !!b) && more.every((f) => !!f) };
+  // A card missing a font (a blank seal, say) is still shown, but not kept, so the next request draws it again.
+  return { bytes, complete: !!a && (!wide || !!b) && (!symbols || !!e) && more.every((f) => !!f) };
 }
 
 function toBase64(buf: ArrayBuffer): string {

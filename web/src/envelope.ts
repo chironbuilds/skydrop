@@ -54,7 +54,12 @@ export function envelope(base: Style, note: string, opts: { amount?: string; ope
     cover.classList.add("pic");
   } else {
     const pat = patternCss(style.pattern, style.ink);
-    if (pat) cover.style.backgroundImage = pat;
+    if (pat) {
+      // a repeating tile at its own size (the cover's own rule stretches a picture to fill it)
+      cover.style.backgroundImage = pat;
+      cover.style.backgroundSize = "auto";
+      cover.style.backgroundRepeat = "repeat";
+    }
   }
   if (x.f === "hand") needCaveat();
   const msg = h("span", { class: "env-msg" + (x.f ? ` font-${x.f}` : "") }, note || "A little something for you");
