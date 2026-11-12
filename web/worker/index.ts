@@ -280,16 +280,32 @@ async function readEnvelope(url: URL, env: Env): Promise<Response> {
  * It holds only public facts (a campaign address and a DID), so it needs no secret: the bot checks every entry on-chain
  * before paying anything, and an entry it can't use costs it nothing. Entries expire on their own.
  */
+const RELAY_TTL_MS = 30 * 60_000;
+
 async function relayQueue(req: Request, url: URL, env: Env, mainnet: boolean): Promise<Response> {
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", "access-control-allow-origin": "*" } });
   const kv = env.LAUNCH_STATE;
   if (!kv) return json({ error: "Relaying isn't available here." }, 503);
   const prefix = `relayq:${mainnet ? "mainnet" : "testnet"}:`;
+  // The queue lives in one key, not one key per entry: the bot polls every 15 s and KV allows only 1,000 list() calls
+  // a day (it ran out by mid-morning and every request failed), while get() has a far larger allowance.
+  const indexKey = `${prefix}index`;
+  const readIndex = async (): Promise<Record<string, number>> => {
+    const raw = (await kv.get(indexKey, "json").catch(() => null)) as Record<string, number> | null;
+    const now = Date.now();
+    return Object.fromEntries(Object.entries(raw ?? {}).filter(([, t]) => typeof t === "number" && now - t < RELAY_TTL_MS));
+  };
+  const enqueue = async (name: string): Promise<Response> => {
+    const idx = await readIndex();
+    if (!(name in idx) && Object.keys(idx).length >= 200) return json({ error: "Skydrop is busy. Try again in a few minutes." }, 503);
+    idx[name] = Date.now();
+    await kv.put(indexKey, JSON.stringify(idx));
+    return json({ queued: true }, 202);
+  };
   if (url.pathname === "/api/relay-queue") {
-    const listed = await kv.list({ prefix, limit: 200 });
-    const items = listed.keys.map((k) => {
-      const parts = k.name.slice(prefix.length).split("|");
+    const items = Object.keys(await readIndex()).map((name) => {
+      const parts = name.split("|");
       if (parts[0] === "float") return { kind: "float", did: parts[1], address: parts[2] };
       if (parts[0] === "record") return { kind: "record", did: parts[1], ...(parts[2] ? { campaign: parts[2] } : {}) };
       return parts[0] === "link" ? { kind: "link", did: parts[1], account: parts[2], owner: parts[3] } : { kind: "claim", campaign: parts[0], did: parts[1] };
@@ -310,27 +326,23 @@ async function relayQueue(req: Request, url: URL, env: Env, mainnet: boolean): P
     const account = String(body.account ?? "");
     const owner = String(body.owner ?? "");
     if (!/^did:plc:[a-z2-7]{24}$/.test(did) || !/^component_[0-9a-f]{64}$/.test(account) || !/^[0-9a-f]{64}$/.test(owner)) return json({ error: "That isn't a did:plc, an account and a key." }, 400);
-    await kv.put(`${prefix}link|${did}|${account}|${owner}`, String(Date.now()), { expirationTtl: 1800 });
-    return json({ queued: true }, 202);
+    return enqueue(`link|${did}|${account}|${owner}`);
   }
   // An old account's identity history, recorded in the ChainBook so its free (sponsored) v2 claim fits.
   if (body.kind === "record") {
     const campaign = String(body.campaign ?? "");
     if (!/^did:plc:[a-z2-7]{24}$/.test(did) || (campaign && !/^component_[0-9a-f]{64}$/.test(campaign))) return json({ error: "That isn't a did:plc (and a campaign)." }, 400);
-    await kv.put(`${prefix}record|${did}${campaign ? `|${campaign}` : ""}`, String(Date.now()), { expirationTtl: 1800 });
-    return json({ queued: true }, 202);
+    return enqueue(`record|${did}${campaign ? `|${campaign}` : ""}`);
   }
   // A gift claim whose proof is too big to be sponsored: the bot sends the wallet enough TARI to pay the fee itself.
   if (body.kind === "float") {
     const address = String((body as { address?: unknown }).address ?? "");
     if (!/^did:plc:[a-z2-7]{24}$/.test(did) || !/^otl_[a-z0-9_]{20,200}$/.test(address)) return json({ error: "That isn't a did:plc and a wallet address." }, 400);
-    await kv.put(`${prefix}float|${did}|${address}`, String(Date.now()), { expirationTtl: 1800 });
-    return json({ queued: true }, 202);
+    return enqueue(`float|${did}|${address}`);
   }
   const campaign = String(body.campaign ?? "");
   if (!/^component_[0-9a-f]{64}$/.test(campaign) || !/^did:plc:[a-z2-7]{24}$/.test(did)) return json({ error: "That isn't a campaign address and a did:plc." }, 400);
-  await kv.put(`${prefix}${campaign}|${did}`, String(Date.now()), { expirationTtl: 1800 });
-  return json({ queued: true }, 202);
+  return enqueue(`${campaign}|${did}`);
 }
 
 async function serve(req: Request, env: Env): Promise<Response> {

@@ -947,6 +947,21 @@ async function bookFirst(wallet: Wallet, did: string, onStage?: (s: string) => v
   return { steps: instructions, fee: FEE_PER_BOOK_OP * BigInt(missing) };
 }
 
+/** How many of `did`'s identity operations a claim would have to record first (always 0 for a v1 claim). */
+export async function unrecordedOps(did: string): Promise<number> {
+  return isV2(did) ? (await bookSteps(did)).missing : 0;
+}
+
+/**
+ * The most a paid claim's first step can cost (µT) with `missing` operations still to record: recording them (in
+ * transactions of their own past INLINE_BOOK_OPS) plus the claim itself. Only the real cost is charged, but a wallet
+ * holding less than this can run dry partway and pay for failed attempts.
+ */
+export function paidClaimFeeCeiling(missing: number): bigint {
+  const separate = missing > INLINE_BOOK_OPS ? BigInt(Math.ceil(missing / BOOK_MAX_ADVANCE)) * 20_000n : 0n;
+  return separate + FEE_PER_BOOK_OP * BigInt(missing) + 120_000n;
+}
+
 /** v1 calls carry the identity chain; v2 calls read it from the ChainBook instead. */
 const chainArg = (did: string, ops: Uint8Array[]): unknown[] => (isV2(did) ? [] : [lit(ops)]);
 

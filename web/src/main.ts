@@ -585,6 +585,33 @@ async function askForRecording(did: string, say: (s: string) => void): Promise<v
   throw new Error(`Recording your account's history is taking too long. Add about 0.2 ${CONFIG.symbol} to your wallet and try again.`);
 }
 
+/**
+ * Before the wallet pays for a claim: an old account's identity history costs about 0.009 TARI an operation to record,
+ * which can be more than a small wallet holds. Skydrop's bot records it for free when enough is waiting, so ask it
+ * first, whatever the wallet holds. True when the history is ready for a free claim.
+ */
+async function recordForFree(did: string, say: (s: string) => void): Promise<boolean> {
+  const missing = await chain.unrecordedOps(did).catch(() => 0);
+  if (missing <= chain.FEE_PHASE_BOOK_OPS) return true;
+  try {
+    await askForRecording(did, say);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stops a paid claim the wallet can't afford before it starts, rather than partway with fees already spent. */
+async function checkPaidClaim(did: string, say: (s: string) => void): Promise<void> {
+  const missing = await chain.unrecordedOps(did).catch(() => 0);
+  const need = chain.paidClaimFeeCeiling(missing);
+  if (balance < need) {
+    const why = missing > 1 ? `, mostly to record this Bluesky account's identity history on-chain (${missing} entries)` : "";
+    throw new Error(`Collecting with this wallet needs up to ${chain.formatTari(need)} ${CONFIG.symbol} for network fees${why}, and it holds ${chain.formatTari(balance)}. Add about ${chain.formatTari(need - balance + 20_000n)} ${CONFIG.symbol} and try again. Only the real cost is charged.`);
+  }
+  if (missing > 1) say(`Your wallet pays to record this account's identity history first (${missing} entries)`);
+}
+
 /** Mirrors the bot's RECORD_MIN_GIFTS: below this, it won't pay to record an account's history. */
 const RECORD_MIN_WAITING = 500_000n;
 
@@ -1504,27 +1531,35 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         say("Fetching the signed copy of your post");
         const proof = await bsky.buildClaimProof(p.did, post.rkey);
         say("Submitting the proof. The contract checks every signature itself");
+        const paidClaim = async (): Promise<void> => {
+          await recordForFree(p.did, say);
+          await checkPaidClaim(p.did, say);
+          await chain.startClaim(wallet, proof, say);
+        };
         if (!codeNow()) {
           // a linked account's code-free post: the payout can only go to the linked wallet
+          await recordForFree(p.did, say);
+          await checkPaidClaim(p.did, say);
           await chain.startLinkedClaim(wallet, proof, say);
         } else if (sponsorOk) {
           try {
             say("Network fees are covered for you");
             await chain.startClaimSponsored(wallet, proof, say);
           } catch (err) {
-            if (chain.needsRecording(err) && needsFunds()) {
-              // An old account: its identity history has to be on-chain before a free claim fits. Skydrop records it.
-              await askForRecording(p.did, say);
+            // An old account: its identity history has to be on-chain before a free claim fits. Skydrop records it
+            // for free (with enough waiting), even when the wallet holds a little TARI: recording can cost more than that.
+            if (chain.needsRecording(err) && (await recordForFree(p.did, say))) {
               await chain.startClaimSponsored(wallet, proof, say);
             } else {
               if (needsFunds() && chain.isFeePhaseTooBig(err)) await askForFloat(p.did, say);
-              else if (needsFunds()) throw err;
-              else say("Sponsored fees weren't available, so your wallet pays the small fee");
+              else if (needsFunds() && !chain.needsRecording(err)) throw err;
+              else say("Sponsored fees weren't available, so your wallet pays the fee");
+              await checkPaidClaim(p.did, say);
               await chain.startClaim(wallet, proof, say);
             }
           }
         } else {
-          await chain.startClaim(wallet, proof, say);
+          await paidClaim();
         }
         await refreshBalance();
         toast("Verified on-chain", "good");
