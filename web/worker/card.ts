@@ -3,12 +3,12 @@ import { esc, wrap } from "./share";
 import { effectiveStyle, noteFont, patternTile, type Extras, type Style } from "../src/envelope-data";
 
 /** The preview card: the tall envelope on the left (with the sender's picture as its cover, if any), the words on the right. */
-export function card(base: Style, handle: string, note: string, amount: string, cover: string, extras: Extras = {}): { svg: string; text: string; fonts: { family: string; weight: number; text: string }[] } {
+export function card(base: Style, handle: string, note: string, amount: string, cover: string, extras: Extras = {}, jar = false): { svg: string; text: string; fonts: { family: string; weight: number; text: string }[] } {
   const style = effectiveStyle(base, extras);
   const nf = noteFont(extras.f);
-  const lines = wrap(note || (amount ? `${amount} for you` : "A little something for you"), nf === "Caveat" ? 54 : 46, 560);
+  const lines = wrap(note || (jar ? "Tip me in TARI. Two taps, and it's on its way." : amount ? `${amount} for you` : "A little something for you"), nf === "Caveat" ? 54 : 46, 560);
   const who = handle ? `@${handle}` : "";
-  const head = who ? `a gift for ${who}` : "a gift on Tari";
+  const head = jar ? (who ? `the tip jar of ${who}` : "a tip jar on Tari") : who ? `a gift for ${who}` : "a gift on Tari";
   const seal = extras.g || (cover ? "福" : style.glyph);
   const text = [...lines, amount, head, "Skydrop", "skydrop.tari.mw", seal].join("");
   // DM Mono has no bold, so the typewriter note uses its 500 weight.

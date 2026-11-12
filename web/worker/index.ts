@@ -52,7 +52,7 @@ let ready: Promise<void> | null = null;
 const cleanHandle = (s: string): string => (/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s) ? s.toLowerCase() : "");
 const cleanAmount = (s: string | null): string => (s && /^[0-9][0-9.,]{0,18}( [A-Za-z]{1,8})?$/.test(s) ? s : "");
 
-function params(url: URL): { handle: string; style: Style; note: string; amount: string; cover: string; extras: Extras } {
+function params(url: URL): { handle: string; style: Style; note: string; amount: string; cover: string; extras: Extras; jar: boolean } {
   return {
     handle: cleanHandle(url.searchParams.get("h") ?? url.pathname.split("/")[2] ?? ""),
     style: styleOf(url.searchParams.get("e")),
@@ -60,11 +60,33 @@ function params(url: URL): { handle: string; style: Style; note: string; amount:
     amount: cleanAmount(url.searchParams.get("a")),
     cover: isCoverId(url.searchParams.get("c")) ? url.searchParams.get("c")! : "",
     extras: extrasFromQuery((k) => url.searchParams.get(k)),
+    jar: url.searchParams.get("j") === "1",
   };
 }
 
 /** The extras as a stable query string, for cache keys. */
 const extrasKey = (x: Extras): string => (["p", "g", "k", "f", "x"] as const).map((k) => `${k}=${encodeURIComponent(x[k] ?? "")}`).join("&");
+
+/** A tip jar link, skydrop.tari.mw/tip/<handle>: a preview card for Bluesky, then on to the tip page. */
+function tipPage(url: URL): Response {
+  const origin = url.hostname === "localhost" ? url.origin : "https://" + url.host;
+  const handle = cleanHandle(decodeURIComponent(url.pathname.split("/")[2] ?? "").replace(/^@/, ""));
+  const a = cleanAmount(url.searchParams.get("a"));
+  const dest = `${origin}/#/tip/${handle}${a ? `?a=${encodeURIComponent(a)}` : ""}`;
+  const title = handle ? `Tip @${handle} on Skydrop` : "Tip anyone on Bluesky";
+  const desc = "Send a tip in TARI with two taps. They collect it with one Bluesky post.";
+  const img = `${origin}/og?j=1&e=air&h=${encodeURIComponent(handle)}`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Skydrop">
+<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}">
+<meta property="og:image" content="${esc(img)}"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta property="og:url" content="${esc(url.href)}"><meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(title)}"><meta name="twitter:description" content="${esc(desc)}"><meta name="twitter:image" content="${esc(img)}">
+<meta property="og:image:type" content="image/png"><meta property="og:image:secure_url" content="${esc(img)}"></head>
+<body><p><a href="${esc(dest)}">Tip ${esc(handle ? "@" + handle : "on Skydrop")}</a></p><script>location.replace(${JSON.stringify(dest).replace(/</g, "\\u003c")})</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });
+}
 
 function page(url: URL): Response {
   const origin = url.hostname === "localhost" ? url.origin : "https://" + url.host;
@@ -151,16 +173,16 @@ async function overLimit(req: Request, env: Env, name: string, max: number): Pro
 }
 
 async function png(url: URL, env: Env, req: Request): Promise<Response> {
-  const { handle, style, note, amount, cover, extras } = params(url);
+  const { handle, style, note, amount, cover, extras, jar } = params(url);
   const cache = (caches as unknown as { default: Cache }).default;
   // keyed by what is actually drawn, so junk in the query string cannot create new entries
-  const key = new Request(`${url.origin}/og-cache?h=${encodeURIComponent(handle)}&e=${style.id}&m=${encodeURIComponent(note)}&a=${encodeURIComponent(amount)}&c=${cover}&${extrasKey(extras)}`);
+  const key = new Request(`${url.origin}/og-cache?h=${encodeURIComponent(handle)}&e=${style.id}&m=${encodeURIComponent(note)}&a=${encodeURIComponent(amount)}&c=${cover}&${extrasKey(extras)}${jar ? "&j=1" : ""}`);
   const hit = await cache.match(key);
   if (hit) return hit;
   // drawing costs CPU and font downloads: a new picture is allowed a limited number of times per address
   if (await overLimit(req, env, "og", 60)) return new Response("slow down", { status: 429 });
   const coverBytes = cover && !(await banned(cover, env)) ? await env.COVERS.get(cover, "arrayBuffer") : null;
-  const built = card(style, handle, note, amount, coverBytes ? "x" : "", extras);
+  const built = card(style, handle, note, amount, coverBytes ? "x" : "", extras, jar);
   const svg = coverBytes ? built.svg.replace("__COVER__", "data:image/jpeg;base64," + toBase64(coverBytes)) : built.svg;
   const { bytes: out, complete } = await render(svg, built.text, built.fonts);
   const res = new Response(out, { headers: { "content-type": "image/png", "cache-control": complete ? "public, max-age=86400" : "no-store" } });
@@ -362,6 +384,7 @@ async function serve(req: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/relay-claim" || url.pathname === "/api/relay-queue") return relayQueue(req, url, env, mainnet);
     if (url.pathname === "/api/from") return giftFrom(req, url, env);
     if (url.pathname.startsWith("/e/")) return page(url);
+    if (url.pathname.startsWith("/tip/")) return tipPage(url);
     if (url.pathname === "/og") return png(url, env, req);
     if (url.pathname === "/cover" && req.method === "POST") return saveCover(req, env);
     if (url.pathname === "/envelope") return req.method === "POST" ? saveEnvelope(req, env) : readEnvelope(url, env);

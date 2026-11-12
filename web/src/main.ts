@@ -227,7 +227,7 @@ function eta(epochs: number): string {
 // layout
 // ---------------------------------------------------------------------------------------------------------
 
-type Tab = "home" | "send" | "claim" | "tips" | "link" | "how";
+type Tab = "home" | "send" | "claim" | "tips" | "tip" | "link" | "how";
 
 function layout(active: Tab, ...content: (Node | null)[]): void {
   const link = (href: string, label: string, tab: Tab, cls = "") =>
@@ -747,6 +747,18 @@ function renderRewardsHome(): void {
   );
 }
 
+/** The home page's shortcut: type who, land on their tip page. */
+function quickTip(): HTMLElement {
+  const input = h("input", { class: "input", placeholder: "Who do you want to tip?", autocomplete: "off", autocapitalize: "off", spellcheck: "false", enterkeyhint: "go", "aria-label": "Bluesky handle to tip" }) as HTMLInputElement;
+  const go = (e?: Event): void => {
+    e?.preventDefault();
+    const v = bsky.cleanHandle(input.value);
+    if (!v) return input.focus();
+    location.hash = `#/tip/${encodeURIComponent(v)}`;
+  };
+  return h("form", { class: "quick-tip", onsubmit: go }, input, h("button", { class: "btn primary", type: "submit" }, "Tip"));
+}
+
 function renderHome(): void {
   if (!deployed()) {
     renderRewardsHome();
@@ -761,8 +773,9 @@ function renderHome(): void {
         "div",
         null,
         h("span", { class: "pill" }, icons.shield(14), "Trustless · verified on-chain"),
-        h("h1", null, "Send Tari to ", h("em", null, "anyone"), " on Bluesky"),
-        h("p", { class: "lead" }, "Type a handle, pick an amount, done. They collect it by proving they own the account. No wallet to set up first, no middleman holding the money."),
+        h("h1", null, "Tip ", h("em", null, "anyone"), " on Bluesky"),
+        h("p", { class: "lead" }, `Type a handle, tap an amount, done. They collect the ${CONFIG.symbol} by proving they own the account. No wallet to set up first, no middleman holding the money.`),
+        quickTip(),
       ),
       stamp(),
     ),
@@ -770,7 +783,8 @@ function renderHome(): void {
       "div",
       { class: "grid2" },
       h("a", { class: "card action", href: "#/send" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Send"), h("p", null, "Pick a Bluesky handle and an amount. We hold it safely on-chain until they claim it.")),
-      h("a", { class: "card action", href: "#/tips" }, h("span", { class: "icon" }, icons.drop(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Tip by post"), h("p", null, "Fund a budget once, then tip anyone by posting a line on Bluesky. Nobody holds your keys.")),
+      h("a", { class: "card action", href: "#/jar" }, h("span", { class: "icon" }, icons.drop(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Get tipped"), h("p", null, "Your own tip jar link for your Bluesky bio. Fans tip you in two taps.")),
+      h("a", { class: "card action", href: "#/tips" }, h("span", { class: "icon" }, icons.send(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Tip by post"), h("p", null, "Fund a budget once, then tip anyone with one Bluesky post. Nobody holds your keys.")),
       h("a", { class: "card action", href: "#/link" }, h("span", { class: "icon" }, icons.wallet(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Link wallet"), h("p", null, "Link your wallet to your Bluesky account once. Gifts then land in it instantly, with nothing to claim.")),
       h("a", { class: "card action", href: "#/claim" }, h("span", { class: "icon alt" }, icons.gift(24)), h("span", { class: "arrow" }, "→"), h("h2", null, "Collect"), h("p", null, `Someone sent you ${CONFIG.symbol}? Post one line on Bluesky to prove it's you, then collect.`)),
     ),
@@ -1242,17 +1256,44 @@ function renderTips(prefill?: string): void {
     );
   };
 
-  const drawHow = (): void => {
-    if (!profile || !budget) return void mount(howEl);
-    const text = `@${CONFIG.botHandle} tip @friend.bsky.social 1`;
+  // A composer, so nobody has to remember the exact line: the contract only accepts "@bot tip @them <amount>".
+  const tipWho = h("input", { class: "input", placeholder: "who.bsky.social", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Who to tip" }) as HTMLInputElement;
+  const tipAmt = h("input", { class: "input", inputmode: "decimal", value: "1", "aria-label": "Tip amount" }) as HTMLInputElement;
+  const tipOut = h("div");
+  const drawTipText = (): void => {
+    const who = bsky.cleanHandle(tipWho.value);
+    const handle = who && /^[a-z0-9-]+$/.test(who) ? `${who}.bsky.social` : who;
+    const a = chain.parseTari(tipAmt.value);
+    const over = !!a && !!budget && (a > budget.maxTip || a > budget.balance);
+    const text = `@${CONFIG.botHandle} tip @${handle || "them.bsky.social"} ${a ? chain.formatTari(a).replace(/,/g, "") : "1"}`;
     mount(
-      howEl,
-      h("div", { class: "kv" }, h("div", { class: "k" }, "Tip by posting")),
+      tipOut,
       h("div", { class: "codebox" }, text),
-      h("p", { class: "help" }, "Post it from this account, mention the person you are tipping, then the amount. The bot relays your post to the contract, which checks your signature itself. Each post tips once."),
-      h("div", { class: "row" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(text, "Text copied") }, icons.copy(14), "Copy")),
+      over ? h("div", { class: "note warn", style: "margin-top:8px" }, `That's over your ${a! > budget!.maxTip ? `per-tip limit of ${chain.formatTari(budget!.maxTip)}` : `budget of ${chain.formatTari(budget!.balance)}`} ${CONFIG.symbol}.`) : null,
+      h(
+        "div",
+        { class: "row", style: "margin-top:10px" },
+        handle && a && !over
+          ? h("a", { class: "btn bsky sm", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Post this tip", icons.external(14))
+          : h("button", { class: "btn bsky sm", disabled: "" }, "Post this tip"),
+        h("button", { class: "btn ghost sm", onclick: () => copy(text, "Text copied") }, icons.copy(14), "Copy"),
+      ),
     );
   };
+  tipWho.addEventListener("input", drawTipText);
+  tipAmt.addEventListener("input", drawTipText);
+  const drawHow = (): void => {
+    if (!profile || !budget) return void mount(howEl);
+    drawTipText();
+    mount(
+      howEl,
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Send a tip")),
+      h("div", { class: "tip-compose" }, h("div", { class: "field" }, tipWho), h("div", { class: "field" }, tipAmt, h("span", { class: "suffix" }, CONFIG.symbol))),
+      tipOut,
+      h("p", { class: "help" }, `Post it from @${profile.handle} exactly as shown, with nothing else in the post: Bluesky turns both handles into real mentions. The bot relays it to the contract, which checks your signature itself, and replies when it's sent. Each post tips once.`),
+    );
+  };
+
 
   const whyEl = h("div", { class: "why", "aria-live": "polite" });
   const update = (): void => {
@@ -1313,6 +1354,291 @@ function renderTips(prefill?: string): void {
   update();
   layout("tips", h("h1", { class: "page" }, "Tip by posting"), h("p", { class: "sub" }, `Fund a budget once. Then tip anyone by posting "@${CONFIG.botHandle} tip @them 5".`), card);
   if (!prefill && matchMedia("(pointer: fine)").matches) field.input.focus();
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// tip jars: skydrop.tari.mw/tip/<handle>, the link a creator puts in their bio. Two taps to tip them.
+// ---------------------------------------------------------------------------------------------------------
+
+const TIP_AMOUNTS = ["1", "5", "10", "25"];
+const TIP_PICK_KEY = "skydrop.tipAmount";
+/** A creator's tip jar link. The path form gets a preview card on Bluesky; the worker sends it on to #/tip/<handle>. */
+const tipJarLink = (handle: string): string => `${location.origin}/tip/${handle}`;
+const tipJarPost = (handle: string): string => `Like what I post? You can tip me in ${CONFIG.symbol} on Skydrop 💧\n${tipJarLink(handle)}`;
+/** "alice" means alice.bsky.social, as in the handle fields. */
+const fullHandle = (s: string): string => {
+  const bare = bsky.cleanHandle(s);
+  return /^[a-z0-9-]+$/.test(bare) ? `${bare}.bsky.social` : s;
+};
+
+/** Records who a gift is from before it's sent, so nobody else can name a sender first. Throws if the handle is unknown. */
+async function recordFrom(recipient: string, amount: bigint, fromInput: string): Promise<void> {
+  const fromHandle = bsky.cleanHandle(fromInput);
+  try {
+    localStorage.setItem(FROM_KEY, fromHandle);
+  } catch {
+    /* not remembered */
+  }
+  if (!fromHandle) return;
+  const me = await bsky.lookupProfile(fullHandle(fromHandle)).catch(() => null);
+  if (!me) throw new Error(`Couldn't find the Bluesky account “${fromHandle}” to say it's from. Fix it, or leave it empty to stay anonymous.`);
+  await fetch("/api/from", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ did: recipient, sender: myKeyHex, amount: amount.toString(), from: me.did }) }).catch(() => undefined);
+}
+
+/** "Your tip jar": the link, copy, and a ready-made post. */
+function tipJarBox(handle: string): HTMLElement {
+  const link = tipJarLink(handle);
+  return h(
+    "div",
+    { class: "jar-box" },
+    h("div", { class: "kv" }, h("div", { class: "k" }, "Your tip jar")),
+    h("div", { class: "codebox jar-link" }, link.replace(/^https?:\/\//, "")),
+    h(
+      "div",
+      { class: "row" },
+      h("button", { class: "btn primary sm", onclick: () => copy(link, "Tip jar link copied") }, icons.copy(14), "Copy link"),
+      h("a", { class: "btn bsky sm", href: bsky.composeUrl(tipJarPost(handle)), target: "_blank", rel: "noopener" }, "Post it on Bluesky", icons.external(14)),
+      h("a", { class: "btn ghost sm", href: `#/tip/${handle}` }, "Preview"),
+    ),
+    h("p", { class: "help" }, "Put it in your Bluesky bio or pin the post. Anyone can tip you in two taps, and the Skydrop bot tells you when one arrives."),
+  );
+}
+
+function renderTipJar(prefill?: string, q: URLSearchParams = new URLSearchParams()): void {
+  let profile: bsky.Profile | null = null;
+  let busy = false;
+  let picked = "";
+  try {
+    picked = localStorage.getItem(TIP_PICK_KEY) ?? "";
+  } catch {
+    /* no remembered amount */
+  }
+  const preset = q.get("a") ?? "";
+  if (preset && chain.parseTari(preset)) picked = preset;
+  if (!picked || !chain.parseTari(picked)) picked = "5";
+
+  const head = h("div", { class: "jar-head" });
+  const routeEl = h("div");
+  const amountsEl = h("div", { class: "tip-amts", role: "radiogroup", "aria-label": "Tip amount" });
+  const otherInput = h("input", { class: "input", inputmode: "decimal", placeholder: "Other amount", "aria-label": "Other amount" }) as HTMLInputElement;
+  if (!TIP_AMOUNTS.includes(picked)) otherInput.value = picked;
+  const noteInput = h("input", { class: "input", maxlength: String(env.MAX_NOTE), placeholder: "Thanks for the great posts!", "aria-label": "A note with your tip (optional)" }) as HTMLInputElement;
+  const noteQ = env.cleanNote(q.get("m") ?? "");
+  if (noteQ) noteInput.value = noteQ;
+  const fromInput = h("input", { class: "input", placeholder: "yourname.bsky.social", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Your Bluesky handle (optional)" }) as HTMLInputElement;
+  try {
+    fromInput.value = localStorage.getItem(FROM_KEY) ?? "";
+  } catch {
+    /* not remembered */
+  }
+  const tipBtn = h("button", { class: "btn primary block" }, "Tip") as HTMLButtonElement;
+  const whyEl = h("div", { class: "why", "aria-live": "polite" });
+  const fundsEl = h("div");
+  const stage = h("div", { class: "log" });
+  const card = h("div", { class: "card stack jar" });
+
+  const amount = (): bigint | null => chain.parseTari(otherInput.value.trim() || picked);
+
+  const drawAmounts = (): void => {
+    const other = otherInput.value.trim();
+    mount(
+      amountsEl,
+      TIP_AMOUNTS.map((v) =>
+        h(
+          "button",
+          { class: "tip-amt", role: "radio", "aria-checked": String(!other && picked === v), onclick: () => { picked = v; otherInput.value = ""; drawAmounts(); update(); } },
+          h("b", null, v),
+          h("small", null, CONFIG.symbol),
+        ),
+      ),
+    );
+  };
+
+  const update = (): void => {
+    const a = amount();
+    const short = needsFunds(a ?? 0n);
+    tipBtn.disabled = !profile || !a || a < CONFIG.minDeposit || busy || short || !balanceKnown;
+    mount(
+      whyEl,
+      busy ? null : !profile ? "Enter who to tip." : !a ? "Pick an amount." : a < CONFIG.minDeposit ? `Tip at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.` : !balanceKnown ? "Checking your wallet balance…" : null,
+    );
+    const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
+    mount(
+      fundsEl,
+      !short ? null : a && room >= CONFIG.minDeposit
+        ? h("div", { class: "note warn", style: "margin-top:10px" }, `You have ${chain.formatTari(balance)} ${CONFIG.symbol}. After the network fee you can tip up to `, h("a", { href: "#", onclick: (e: Event) => { e.preventDefault(); otherInput.value = chain.formatTari(room).replace(/,/g, ""); drawAmounts(); update(); } }, chain.formatTari(room)), ".")
+        : h("div", { style: "margin-top:10px" }, fundsNote()),
+    );
+    if (!busy) mount(tipBtn, profile && a ? `Tip ${chain.formatTari(a)} ${CONFIG.symbol}` : "Tip");
+  };
+
+  const drawHead = (p: bsky.Profile): void => {
+    mount(
+      head,
+      p.avatar ? h("img", { class: "jar-av", src: p.avatar, alt: "", width: 88, height: 88 }) : h("div", { class: "jar-av avatar" }),
+      h("h1", { class: "page jar-title" }, "Tip ", p.displayName),
+      p.displayName !== p.handle ? h("div", { class: "jar-handle" }, `@${p.handle}`) : null,
+      p.description ? h("p", { class: "jar-bio" }, p.description.length > 160 ? `${p.description.slice(0, 157).trimEnd()}…` : p.description) : null,
+    );
+  };
+
+  const loadRoute = async (p: bsky.Profile): Promise<void> => {
+    try {
+      const esc = await chain.readEscrow(provider, p.did);
+      noteEpoch(esc.epoch);
+      if (profile?.did !== p.did) return;
+      mount(
+        routeEl,
+        h(
+          "div",
+          { class: "route " + (esc.binding ? "instant" : "claim") },
+          h("span", { class: "badge" }, esc.binding ? "Instant" : "One post"),
+          esc.binding ? `Lands straight in @${p.handle}'s wallet.` : `@${p.handle} collects it by posting once from their account. The Skydrop bot tells them it's waiting.`,
+        ),
+      );
+    } catch {
+      mount(routeEl);
+    }
+  };
+
+  const blankHead = (): void => mount(head, h("h1", { class: "page" }, "Tip anyone on Bluesky"), h("p", { class: "sub" }, `Type their handle, pick an amount. They get it in ${CONFIG.symbol} on Tari.`));
+  const setProfile = (p: bsky.Profile | null): void => {
+    profile = p;
+    mount(routeEl);
+    if (p) {
+      drawHead(p);
+      document.title = `Tip @${p.handle} · Skydrop`;
+      void loadRoute(p);
+    } else if (!prefill) blankHead();
+    update();
+  };
+
+  // With a handle in the link there's nothing to type: the page is just them and the amounts.
+  const field = handleField("", setProfile);
+  const whoEl = h("div", null, h("label", { class: "f" }, "Who to tip"), field.el);
+
+  otherInput.addEventListener("input", () => { drawAmounts(); update(); });
+  otherInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !tipBtn.disabled) tipBtn.click();
+  });
+  onBalance(update);
+
+  tipBtn.addEventListener("click", async () => {
+    const a = amount();
+    const p = profile;
+    if (!p || !a || busy) return;
+    busy = true;
+    tipBtn.disabled = true;
+    mount(tipBtn, ...spinnerLabel("Tipping…"));
+    mount(stage);
+    const say = (s: string) => stage.appendChild(h("div", null, s));
+    try {
+      await balanceReady;
+      if (needsFunds(a)) throw new Error(`Add ${CONFIG.symbol} to your wallet first.`);
+      try {
+        localStorage.setItem(TIP_PICK_KEY, otherInput.value.trim() || picked);
+      } catch {
+        /* not remembered */
+      }
+      const esc = await chain.readEscrow(provider, p.did);
+      const rec = env.cleanRecord({ e: "air", m: noteInput.value });
+      const plain = env.isPlainEnvelope(rec);
+      const envelope = plain ? "" : await env.envelopeHash(rec);
+      await recordFrom(p.did, a, fromInput.value);
+      await chain.sendTip(wallet, { did: p.did, amount: a, window: 0, challenge: "", hold: 0, envelope }, esc.epoch, !!esc.binding, say);
+      if (!plain) void env.registerEnvelope(rec);
+      await refreshBalance();
+      done(p, a, !!esc.binding, env.cleanNote(noteInput.value));
+    } catch (e) {
+      busy = false;
+      toast(chain.friendly(e), "bad");
+      update();
+    }
+  });
+
+  const done = (p: bsky.Profile, a: bigint, instant: boolean, note: string): void => {
+    confetti();
+    const link = env.shareLink(location.origin, p.handle, "air", note, `${chain.formatTari(a)} ${CONFIG.symbol}`, "");
+    const text = `@${p.handle} I just tipped you ${chain.formatTari(a)} ${CONFIG.symbol} 💧${note ? `\n“${note}”` : ""}${instant ? "" : `\nCollect it here, no wallet needed:\n${link}`}`;
+    mount(
+      card,
+      h(
+        "div",
+        { class: "success" },
+        h("div", { class: "delivered" }, "Tipped"),
+        h("h2", { class: "page", style: "margin:8px 0" }, `${chain.formatTari(a)} ${CONFIG.symbol} to @${p.handle}`),
+        h("p", { class: "sub" }, instant ? "It's already in their wallet." : "It's waiting for them on-chain. The Skydrop bot lets them know within a few minutes."),
+      ),
+      h(
+        "div",
+        { class: "row" },
+        h("a", { class: "btn primary bsky", href: bsky.composeUrl(text), target: "_blank", rel: "noopener" }, "Tell them on Bluesky", icons.external()),
+        h("button", { class: "btn ghost", onclick: () => renderTipJar(p.handle) }, "Tip again"),
+        h("a", { class: "btn ghost", href: "#/sent" }, "Your sends"),
+      ),
+      h("div", { class: "note" }, "Want tips too? ", h("a", { href: "#/jar" }, "Get your own tip jar link"), " for your bio."),
+      h("p", { class: "help" }, instant ? "" : `If it isn't collected in about ${eta(CONFIG.refundAfterEpochs)}, you can take it back.`),
+    );
+  };
+
+  mount(
+    card,
+    prefill ? null : whoEl,
+    routeEl,
+    h("div", null, h("label", { class: "f" }, "Amount"), amountsEl, h("div", { class: "field", style: "margin-top:10px" }, otherInput, h("span", { class: "suffix" }, CONFIG.symbol)), fundsEl),
+    h(
+      "details",
+      { class: "opt" },
+      h("summary", null, h("span", { class: "sum-main" }, "Add a note", h("span", { class: "tag" }, "optional"))),
+      h(
+        "div",
+        { class: "stack", style: "margin-top:12px" },
+        noteInput,
+        h("div", null, h("label", { class: "f" }, "From"), fromInput, h("p", { class: "help" }, "Your handle, so they know who it's from. Empty means anonymous.")),
+      ),
+    ),
+    h("div", { class: "send-bar" }, tipBtn, whyEl, stage),
+  );
+  if (noteQ) card.querySelector("details")?.setAttribute("open", "");
+  drawAmounts();
+  if (prefill) mount(head, h("div", { class: "skel" }));
+  setProfile(null);
+  layout("tip", head, card, h("p", { class: "help jar-foot" }, "The Skydrop contract on Tari holds tips until they're collected. ", h("a", { href: "#/jar" }, "Get your own tip jar")));
+  if (prefill) {
+    bsky
+      .lookupProfile(fullHandle(prefill))
+      .then(setProfile)
+      .catch((e) => {
+        mount(head, h("h1", { class: "page" }, "Tip anyone on Bluesky"), h("div", { class: "note bad" }, e instanceof Error ? e.message : String(e)));
+        card.prepend(whoEl);
+      });
+  } else if (matchMedia("(pointer: fine)").matches) field.input.focus();
+}
+
+/** Where a creator gets their tip jar link. */
+function renderJar(prefill?: string): void {
+  const out = h("div");
+  const field = handleField(prefill ?? lastHandle(), (p) => {
+    if (p) saveHandle(p.handle);
+    mount(out, p ? tipJarBox(p.handle) : null);
+  });
+  layout(
+    "tip",
+    h("h1", { class: "page" }, "Get tipped on Bluesky"),
+    h("p", { class: "sub" }, `One link for your bio. Anyone can tip you ${CONFIG.symbol} in two taps.`),
+    h(
+      "div",
+      { class: "card stack" },
+      h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el),
+      out,
+      h(
+        "div",
+        null,
+        h("div", { class: "kv" }, h("div", { class: "k" }, "Collecting your tips")),
+        h("p", { class: "help", style: "margin:0" }, "Tips wait on-chain under your account. ", h("a", { href: "#/link" }, "Link a wallet once"), " and every tip lands in it instantly. Otherwise ", h("a", { href: "#/claim" }, "collect them"), " with one post whenever you like."),
+      ),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1643,6 +1969,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
             paidHere && wallet.kind === "builtin" && !backedUp()
               ? h("div", { class: "note warn", style: "margin-top:12px;text-align:left" }, `Your ${CONFIG.symbol} is kept in this browser. Save your recovery key so you can't lose it if you clear your browser data. `, h("a", { href: "#", onclick: (ev: Event) => { ev.preventDefault(); openWallet(); } }, "Save it now"))
               : null,
+            h("div", { class: "note", style: "margin-top:12px;text-align:left" }, h("b", null, "Get more like this. "), `Put your tip jar link in your Bluesky bio and anyone can tip you in two taps. `, h("a", { href: `#/jar/${p.handle}` }, "Get my tip jar")),
           );
     // Gifts sent with the first contract to an account it can't verify (too long an identity history).
     const stuckNote = e.stuckV1.length
@@ -2255,7 +2582,7 @@ function renderSponsor(): void {
 // router
 // ---------------------------------------------------------------------------------------------------------
 
-const TITLES: Record<string, string> = { send: "Send", claim: "Collect", tips: "Tip by post", link: "Link wallet", sent: "Your sends", how: "How it works", sponsor: "Fund free claims" };
+const TITLES: Record<string, string> = { send: "Send", claim: "Collect", tips: "Tip by post", tip: "Tip", jar: "Your tip jar", link: "Link wallet", sent: "Your sends", how: "How it works", sponsor: "Fund free claims" };
 
 function route(): void {
   cleanups.forEach((f) => f());
@@ -2266,10 +2593,12 @@ function route(): void {
   // the tab and history show where you are
   document.title = TITLES[kind] ? `${TITLES[kind]} · Skydrop` : deployed() ? "Skydrop: send Tari to anyone on Bluesky" : "Skydrop: get rewarded for what you do on Bluesky";
   const q = new URLSearchParams(query);
-  if (!deployed() && ["send", "claim", "tips", "link", "sent"].includes(kind)) renderGiftsPaused();
+  if (!deployed() && ["send", "claim", "tips", "tip", "jar", "link", "sent"].includes(kind)) renderGiftsPaused();
   else if (kind === "send") renderSend(param || undefined);
   else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "", extras: env.extrasFromQuery((k) => q.get(k)) });
   else if (kind === "tips") renderTips(param || undefined);
+  else if (kind === "tip") renderTipJar(param || undefined, q);
+  else if (kind === "jar") renderJar(param || undefined);
   else if (kind === "link") renderLink(param || undefined, q.get("flow") === "1");
   else if (kind === "sent") renderSent();
   else if (kind === "how") renderHow();
