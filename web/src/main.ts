@@ -2497,6 +2497,10 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         ...[...new Set(e.deposits.map((d) => fromOf.get(d.index)).filter((f): f is { handle: string; verified: boolean } => !!f).map(fromText))].map((t) => h("p", { class: "sub", style: "margin:6px 0 0" }, t)),
       ),
       holdNote,
+      // Someone collecting by hand: one line on how to never do this again.
+      !e.binding && !e.bindingPending && pay.needLink === 0n && cur === 1
+        ? h("div", { class: "note linkrow skip-next", style: "margin-top:12px" }, h("span", null, h("b", null, "Want to skip these steps next time? "), "Link a wallet once and future tips land in it instantly, with nothing to claim."), h("a", { class: "btn ghost sm", href: `#/link/${p.handle}` }, "Link a wallet"))
+        : null,
       pay.needLink > 0n && e.bindingPending ? h("div", { class: "note warn", style: "margin-top:12px" }, `Your link is being confirmed and takes effect in about ${eta(Math.max(0, e.bindingPending.epoch - e.epoch))}. The short wait lets anyone stop it if it was made with a stolen key. After that, post the phrase.`) : null,
       pay.needLink > 0n && !e.bindingPending ? h("div", { class: "card", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px" }, "Link your wallet first"), h("p", { class: "sub", style: "margin:0 0 12px" }, `${chain.formatTari(pay.needLink)} ${CONFIG.symbol} comes with a challenge from the sender. To collect it, first link your wallet (one post, once), then post the challenge phrase as a separate post. The two can't be done in the same post.`), h("a", { class: "btn primary", href: `#/link/${p.handle}?flow=1` }, "Step 1: link my wallet")) : null,
       stuckNote,

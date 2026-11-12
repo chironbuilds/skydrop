@@ -435,6 +435,8 @@ details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size
 .send-bar { position: sticky; bottom: 10px; z-index: 5; background: var(--card); padding: 8px 0 2px; box-shadow: 0 -10px 12px -6px var(--card); }
 
 .note.linkrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.note a.btn { text-decoration: none; }
+.skip-next b { color: var(--text); }
 .route { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: 8px; font-size: 14px; border: 2px solid var(--line-strong); background: var(--card); color: var(--muted); }
 .route .badge { flex: none; font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; border: 2px solid var(--edge); }
 .route.instant { border-color: #2e9a5b; background: rgba(46, 154, 91, 0.1); color: var(--text); }
