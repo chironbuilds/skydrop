@@ -123,6 +123,11 @@ let pubKey: Uint8Array;
 let myKeyHex = "";
 let walletAddress = "";
 let balance = 0n;
+/** False until the first balance read lands. A new wallet's first read scans the chain and can take 10-20 s, so pages
+ *  draw straight away and fill the balance in; actions that check funds wait for it (`balanceReady`). */
+let balanceKnown = false;
+let balanceReady: Promise<void> = Promise.resolve();
+const balanceText = (digits: number): string => (balanceKnown ? `${chain.formatTari(balance, digits)} ${CONFIG.symbol}` : "…");
 let cleanups: (() => void)[] = [];
 
 async function startSession(): Promise<void> {
@@ -149,12 +154,15 @@ async function startSession(): Promise<void> {
   walletAddress = wallet.walletAddress;
   rememberAddress(wallet.componentAddress, walletAddress);
   wallets.onSapientAccountChange(() => location.reload());
-  await refreshBalance();
+  balanceReady = refreshBalance().catch(() => {
+    /* the indexer hiccuped: the next refresh fills it in */
+  });
 }
 
 async function refreshBalance(): Promise<void> {
   balance = await wallet.balance();
-  document.querySelectorAll<HTMLElement>("[data-balance]").forEach((el) => (el.textContent = `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`));
+  balanceKnown = true;
+  document.querySelectorAll<HTMLElement>("[data-balance]").forEach((el) => (el.textContent = balanceText(Number(el.dataset.balance) || 3)));
   dispatchEvent(new Event(BALANCE_EVENT));
 }
 
@@ -227,7 +235,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
               link("#/link", "Link wallet", "link", "hide-sm"),
               link("#/how", "How it works", "how", "hide-sm"),
               h("span", { class: "net hide-sm" }, MAINNET ? "Mainnet" : "Testnet"),
-              h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "" }, `${chain.formatTari(balance, 3)} ${CONFIG.symbol}`)),
+              h("button", { class: "chip", onclick: openWallet, "aria-label": "Your wallet" }, h("span", { class: "dot" }), icons.wallet(16), h("span", { "data-balance": "3" }, balanceText(3))),
             ]
           : [
               h("a", { href: "/quests" }, "My quests"),
@@ -302,13 +310,15 @@ function openWallet(): void {
     const amt = chain.parseTari(wAmt.value);
     const addrErr = addr ? chain.addressProblem(addr, walletAddress) : null;
     let msg: string | null = addrErr;
-    if (!msg && amt !== null && amt > wRoom()) msg = wRoom() > 0n ? `You can withdraw up to ${chain.formatTari(wRoom())} ${CONFIG.symbol}. A small network fee stays behind.` : "There isn't enough here to cover the network fee.";
+    if (!msg && amt !== null && !balanceKnown) msg = "Checking your wallet balance…";
+    else if (!msg && amt !== null && amt > wRoom()) msg = wRoom() > 0n ? `You can withdraw up to ${chain.formatTari(wRoom())} ${CONFIG.symbol}. A small network fee stays behind.` : "There isn't enough here to cover the network fee.";
     wBtn.disabled = wBusy || !addr || !!addrErr || !amt || amt <= 0n || amt > wRoom();
     if (!wBusy) mount(wBtn, amt && addr && !addrErr ? `Withdraw ${chain.formatTari(amt)} ${CONFIG.symbol}` : "Withdraw");
     mount(wNote, msg ? h("div", { class: "note warn" }, msg) : null);
   };
   wAddr.addEventListener("input", wUpdate);
   wAmt.addEventListener("input", wUpdate);
+  onBalance(wUpdate);
   wBtn.addEventListener("click", async () => {
     const addr = wAddr.value.trim();
     const amt = chain.parseTari(wAmt.value);
@@ -355,7 +365,7 @@ function openWallet(): void {
       h("button", { class: "btn ghost sm x", onclick: close, "aria-label": "Close" }, icons.close(16)),
       h("h3", null, "Sapient wallet"),
       h("p", { class: "sub", style: "margin-bottom:8px" }, "Connected. Sapient holds your keys and asks you to approve each transaction."),
-      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "" }, `${chain.formatTari(balance, 4)} ${CONFIG.symbol}`))),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "4" }, balanceText(4)))),
       h(
         "div",
         { class: "kv" },
@@ -376,7 +386,7 @@ function openWallet(): void {
       h("button", { class: "btn ghost sm x", onclick: close, "aria-label": "Close" }, icons.close(16)),
       h("h3", null, "Your Skydrop wallet"),
       h("p", { class: "sub", style: "margin-bottom:8px" }, "Kept in this browser. It signs for you, so you never connect an extension."),
-      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "" }, `${chain.formatTari(balance, 4)} ${CONFIG.symbol}`))),
+      h("div", { class: "kv" }, h("div", { class: "k" }, "Balance"), h("div", { class: "amount", style: "font-size:36px" }, h("span", { "data-balance": "4" }, balanceText(4)))),
       h(
         "div",
         { class: "kv" },
@@ -543,7 +553,9 @@ function handleField(initial: string, onProfile: (p: bsky.Profile | null) => voi
 }
 
 const SEND_FEE_ROOM = 40_000n;
-const needsFunds = (extra = 0n): boolean => balance < extra + SEND_FEE_ROOM;
+/** Whether the wallet is short of `extra` plus a fee. Unknown until the first balance read, and never "short" before
+ *  then, so no page flashes a "you need TARI" note at someone who has some; actions `await balanceReady` first. */
+const needsFunds = (extra = 0n): boolean => balanceKnown && balance < extra + SEND_FEE_ROOM;
 
 /**
  * Some posts' proofs are too big to check inside a sponsored transaction's fee step. For those, Skydrop's bot sends
@@ -603,6 +615,7 @@ async function recordForFree(did: string, say: (s: string) => void): Promise<boo
 
 /** Stops a paid claim the wallet can't afford before it starts, rather than partway with fees already spent. */
 async function checkPaidClaim(did: string, say: (s: string) => void): Promise<void> {
+  await balanceReady;
   const missing = await chain.unrecordedOps(did).catch(() => 0);
   const need = chain.paidClaimFeeCeiling(missing);
   if (balance < need) {
@@ -873,12 +886,12 @@ function renderSend(prefill?: string): void {
       problem ? h("div", { class: "note warn", style: "margin-top:8px" }, problem) : null,
       !problem && challenge() && profile && !bound ? h("div", { class: "note", style: "margin-top:8px" }, `@${profile.handle} hasn't linked a wallet yet. To collect a challenge gift they'll first link one (one post), then post your phrase.`) : null,
     );
-    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem && !uploading;
+    const ok = !!profile && !!a && a >= CONFIG.minDeposit && !busy && !short && !problem && !uploading && balanceKnown;
     sendBtn.disabled = !ok;
     // Say what's still needed instead of leaving a grey button (funds and challenge problems show their own notes).
     mount(
       whyEl,
-      busy ? null : !profile ? "Enter who to send to." : !a ? "Enter an amount." : a < CONFIG.minDeposit ? `Send at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.` : short ? `Add ${CONFIG.symbol} to your wallet first (see above).` : uploading ? "Preparing your picture…" : null,
+      busy ? null : !profile ? "Enter who to send to." : !a ? "Enter an amount." : a < CONFIG.minDeposit ? `Send at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.` : short ? `Add ${CONFIG.symbol} to your wallet first (see above).` : uploading ? "Preparing your picture…" : !balanceKnown ? "Checking your wallet balance…" : null,
     );
     const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
     mount(
@@ -1128,7 +1141,9 @@ function renderTips(prefill?: string): void {
             ? `Set a largest tip of at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.`
             : needsFunds(a)
               ? null
-              : "";
+              : !balanceKnown
+                ? "Checking your wallet balance…"
+                : "";
     fundBtn.disabled = busy || missing !== "";
     mount(whyEl, busy || missing === "" ? null : missing ?? fundsNote());
     if (!busy) mount(fundBtn, budget ? "Add to tip budget" : "Fund tip budget");
@@ -1257,6 +1272,7 @@ function renderLink(prefill?: string, flow = false): void {
 
   const runBind = async (): Promise<void> => {
     if (!profile || busy) return;
+    await balanceReady;
     if (needsFunds()) return void toast(`You need a little ${CONFIG.symbol} for network fees first.`, "bad");
     busy = true;
     mount(logEl);
@@ -1304,7 +1320,7 @@ function renderLink(prefill?: string, flow = false): void {
       }
       return;
     }
-    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin" || needsFunds()) return;
+    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin" || !balanceKnown || needsFunds()) return;
     try {
       if (await bsky.findClaimPost(profile.did, code)) void runBind();
     } catch {
@@ -1425,6 +1441,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     }
   };
 
+  onBalance(() => { if (profile && esc && !busy) draw(); });
   const poll = window.setInterval(() => { if (profile && !busy) void reload(); }, 20_000);
   cleanups.push(() => clearInterval(poll));
 
@@ -1520,6 +1537,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const verifyBtn = h("button", { class: "btn primary" }, "I've posted it. Verify and claim") as HTMLButtonElement;
     const runVerify = async (): Promise<void> => {
       if (busy) return;
+      await balanceReady;
       if (!sponsorOk && needsFunds()) return void toast(`You need a little ${CONFIG.symbol} for network fees first.`, "bad");
       busy = true;
       verifyBtn.disabled = true;
@@ -2030,6 +2048,7 @@ function renderSponsor(): void {
     const amt = chain.parseTari(input.value);
     if (busy) return;
     if (!amt || amt <= 0n) return void toast("Enter an amount.", "bad");
+    await balanceReady;
     if (needsFunds(amt)) return void toast(`This wallet doesn't have enough ${CONFIG.symbol} for that plus the network fee.`, "bad");
     busy = true;
     btn.disabled = true;
