@@ -667,13 +667,67 @@ async function relayLinked(did: string, step: "start" | "finalize", done: (e: ch
 /** Mirrors the bot's RECORD_MIN_GIFTS: below this, it won't pay to record an account's history. */
 const RECORD_MIN_WAITING = 500_000n;
 
+/** While a page is showing "add TARI", the balance is re-read now and then, so the page moves on by itself once it lands. */
+let fundsPoll = 0;
+function watchForFunds(): void {
+  if (fundsPoll) return;
+  const before = balance;
+  let reading = false;
+  fundsPoll = window.setInterval(async () => {
+    if (document.hidden || reading) return;
+    reading = true;
+    try {
+      await refreshBalance();
+    } catch {
+      return;
+    } finally {
+      reading = false;
+    }
+    if (balance > before) {
+      toast(`${chain.formatTari(balance - before)} ${CONFIG.symbol} arrived`, "good");
+      clearInterval(fundsPoll);
+      fundsPoll = 0;
+    }
+  }, 15_000);
+  cleanups.push(() => {
+    clearInterval(fundsPoll);
+    fundsPoll = 0;
+  });
+}
+
+/** What to do when the wallet is short: where to get TARI, the address to send it to, and that the page will notice. */
 function fundsNote(): HTMLElement {
+  watchForFunds();
+  const sapient = async (): Promise<void> => {
+    try {
+      const w = await wallets.connectSapient(true);
+      if (!w) return void toast("Sapient isn't installed in this browser.", "bad");
+      wallets.saveKind("sapient");
+      location.reload();
+    } catch (e) {
+      toast(chain.friendly(e), "bad");
+    }
+  };
   return h(
     "div",
-    { class: "note warn" },
-    `This wallet has no ${CONFIG.symbol} for network fees yet. `,
-    h("a", { href: "#", onclick: (e: Event) => { e.preventDefault(); openWallet(); } }, `Get some ${CONFIG.symbol}`),
-    ".",
+    { class: "note warn funds" },
+    h("b", null, balance > 0n ? `Add a little more ${CONFIG.symbol} first.` : `Add ${CONFIG.symbol} to your Skydrop wallet first.`),
+    ` It pays for what you send plus a small network fee. ${balance > 0n ? `You have ${chain.formatTari(balance)} ${CONFIG.symbol}.` : ""}`,
+    h(
+      "div",
+      { class: "row", style: "margin-top:10px" },
+      h("button", { class: "btn primary sm", onclick: () => copy(walletAddress, "Address copied") }, icons.copy(14), "Copy my address"),
+      wallet.kind === "sapient" ? null : h("button", { class: "btn ghost sm", onclick: sapient }, "Use Sapient instead"),
+      h("button", { class: "btn ghost sm", onclick: openWallet }, "Wallet"),
+    ),
+    h(
+      "p",
+      { class: "help", style: "margin:10px 0 0" },
+      MAINNET
+        ? h("span", null, "Send TARI to that address from Sapient or any other Tari Ootle wallet. Holding Tari on the main chain? Bring it over at ", h("a", { href: "https://universe.tari.mw", target: "_blank", rel: "noopener" }, "universe.tari.mw"), ". ")
+        : `Send ${CONFIG.symbol} to that address, or get free testnet ${CONFIG.symbol} from the wallet. `,
+      "This page notices when it arrives.",
+    ),
   );
 }
 
@@ -1457,10 +1511,11 @@ function renderTipJar(prefill?: string, q: URLSearchParams = new URLSearchParams
   const update = (): void => {
     const a = amount();
     const short = needsFunds(a ?? 0n);
-    tipBtn.disabled = !profile || !a || a < CONFIG.minDeposit || busy || short || !balanceKnown;
+    // Clickable before the first balance read finishes: the click waits for it, so nobody stares at a grey button.
+    tipBtn.disabled = !profile || !a || a < CONFIG.minDeposit || busy || short;
     mount(
       whyEl,
-      busy ? null : !profile ? "Enter who to tip." : !a ? "Pick an amount." : a < CONFIG.minDeposit ? `Tip at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.` : !balanceKnown ? "Checking your wallet balance…" : null,
+      busy ? null : !profile ? "Enter who to tip." : !a ? "Pick an amount." : a < CONFIG.minDeposit ? `Tip at least ${chain.formatTari(CONFIG.minDeposit)} ${CONFIG.symbol}.` : null,
     );
     const room = balance > SEND_FEE_ROOM ? balance - SEND_FEE_ROOM : 0n;
     mount(
@@ -1533,8 +1588,19 @@ function renderTipJar(prefill?: string, q: URLSearchParams = new URLSearchParams
     mount(stage);
     const say = (s: string) => stage.appendChild(h("div", null, s));
     try {
-      await balanceReady;
-      if (needsFunds(a)) throw new Error(`Add ${CONFIG.symbol} to your wallet first.`);
+      if (!balanceKnown) {
+        mount(tipBtn, ...spinnerLabel("Checking your wallet…"));
+        await balanceReady;
+        mount(tipBtn, ...spinnerLabel("Tipping…"));
+      }
+      if (needsFunds(a)) {
+        // not an error: the funds note below says what to do, and the button comes back once TARI arrives
+        busy = false;
+        mount(stage);
+        update();
+        fundsEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
       try {
         localStorage.setItem(TIP_PICK_KEY, otherInput.value.trim() || picked);
       } catch {
