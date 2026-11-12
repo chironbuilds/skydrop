@@ -463,7 +463,7 @@ details.opt summary .tag { margin-left: 8px; font-family: var(--mono); font-size
 .lang.theme svg { display: block; }
 
 @media (max-width: 480px) {
-  .nav a[href="#/tips"] { display: none; }
+  .nav a[href="/quests"] { display: none; }
   .nav { gap: 2px; }
   .nav a { padding: 7px 9px; font-size: 14px; }
 }

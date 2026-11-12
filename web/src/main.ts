@@ -101,7 +101,9 @@ function settingsMenu(): HTMLElement {
     h(
       "div",
       { class: "menu-panel", role: "menu" },
-      ...(deployed() ? [item("#/tips", "Tip by post", "only-xs"), item("#/link", "Link wallet", "only-sm")] : []),
+      ...(deployed()
+        ? [item("/quests", "My quests", "only-xs"), item("#/jar", "Get tipped", ""), item("#/tips", "Tip by post", ""), item("#/link", "Link wallet", "only-sm")]
+        : []),
       item("#/how", "How it works", "only-sm"),
       h("div", { class: "menu-sep only-sm" }),
       h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Language"), seg([["en", "English"], ["zh", "中文"]], currentLang(), (v) => setLang(v as Lang))),
@@ -246,7 +248,7 @@ function layout(active: Tab, ...content: (Node | null)[]): void {
           ? [
               link("#/send", "Send", "send"),
               link("#/claim", "Collect", "claim"),
-              link("#/tips", "Tip by post", "tips"),
+              link("#/tip", "Tip", "tip"),
               h("a", { href: "/quests" }, "My quests"),
               link("#/link", "Link wallet", "link", "hide-sm"),
               link("#/how", "How it works", "how", "hide-sm"),
@@ -2450,7 +2452,7 @@ function renderSent(): void {
     if (!data.items.length && !delivered.length && returnedAmt === 0n) {
       return mount(
         listEl,
-        h("div", { class: "card" }, h("h3", { style: "margin:0 0 6px;font-family:var(--serif);font-size:26px" }, "Nothing waiting"), h("p", { class: "sub", style: "margin:0 0 14px" }, "Anything you send that nobody has collected yet shows up here, and you can take it back after its refund time."), h("a", { class: "btn primary", href: "#/send" }, "Send some")),
+        h("div", { class: "card" }, h("h3", { style: "margin:0 0 6px;font-family:var(--serif);font-size:26px" }, "Nothing waiting"), h("p", { class: "sub", style: "margin:0 0 14px" }, "Anything you send that nobody has collected yet shows up here, and you can take it back after its refund time."), h("div", { class: "row" }, h("a", { class: "btn primary", href: "#/tip" }, "Tip someone"), h("a", { class: "btn ghost", href: "#/send" }, "Send a gift"))),
       );
     }
     const profiles = await Promise.all(data.items.map((d) => profileFor(d.did)));
@@ -2588,7 +2590,23 @@ function renderHow(): void {
         h("li", null, h("b", null, "They post a code."), " One short post from their account. The code is made from their wallet's key, so that post can only ever pay out to the wallet that asked."),
         h("li", null, h("b", null, "The contract checks the math."), " Bluesky accounts are cryptographic identities. The contract verifies the account's identity history, the signature on their repository and the path to the post. No server is asked."),
         h("li", null, h("b", null, "They collect."), " After the safety window you chose, the escrow pays out to their wallet."),
-        h("li", null, h("b", null, "Or they link a wallet once."), " With one signed post, an account can link an Ootle address (", h("a", { href: "#/link" }, "Link wallet"), `). After that, gifts with no safety window and no phrase are paid there instantly, and anything collected goes there too. Changing the address later takes about ${eta(CONFIG.bindDelayEpochs)} to apply`),
+        h("li", null, h("b", null, "Or they link a wallet once."), " With one signed post, an account can link an Ootle address (", h("a", { href: "#/link" }, "Link wallet"), `). After that, gifts with no safety window and no phrase are paid there instantly, and anything collected goes there too. ${CONFIG.bindDelayEpochs ? `Changing the address later takes about ${eta(CONFIG.bindDelayEpochs)} to apply.` : "You can change the address later, and the change applies right away."}`),
+      ),
+    ),
+    h(
+      "details",
+      null,
+      h("summary", null, "How do tips work?"),
+      h(
+        "p",
+        null,
+        "Three ways. Tap ",
+        h("a", { href: "#/tip" }, "Tip"),
+        ", pick someone and an amount. Or open a creator's tip jar link (",
+        h("a", { href: "#/jar" }, "get yours"),
+        ") and tap an amount. Or fund a ",
+        h("a", { href: "#/tips" }, "tip budget"),
+        ` once and tip from Bluesky itself by posting "@${CONFIG.botHandle} tip @them 5". Either way the ${CONFIG.symbol} waits under their account until they collect it with one post, or lands at once if they've linked a wallet.`,
       ),
     ),
     h("details", null, h("summary", null, "What's the safety window for?"), h("p", null, "A proof can show an account's history is valid, but not that it's complete. If someone stole a Bluesky signing key and the real owner had already rotated it, the thief could present the old history. The window lets anyone submit the owner's rotation and cancel the claim. Small tips can skip it. Large transfers should use it.")),
