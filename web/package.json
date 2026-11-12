@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@atproto/oauth-client-browser": "0.5.11",
     "@chironbuilder/ootle-sdk": "0.5.1",
     "@ipld/car": "5.4.0",
     "@ipld/dag-cbor": "9.2.2",

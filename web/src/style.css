@@ -577,3 +577,9 @@ main:focus { outline: none; }
   .tip-compose { grid-template-columns: 1fr 110px; }
 }
 .card.jar, .jar-foot { max-width: 600px; margin-left: auto; margin-right: auto; }
+
+/* "Continue with Bluesky": the easy way to make a proof post */
+.autopost { margin: 12px 0 4px; }
+.autopost .help { margin: 8px 0 0; }
+.or-self { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; }
+.menu-panel button.mi { background: none; border: 0; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }

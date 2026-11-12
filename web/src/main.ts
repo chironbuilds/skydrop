@@ -106,6 +106,9 @@ function settingsMenu(): HTMLElement {
         : []),
       item("#/how", "How it works", "only-sm"),
       h("div", { class: "menu-sep only-sm" }),
+      authedAs()
+        ? h("button", { class: "mi", onclick: async () => { close(); await (await import("./auth")).signOut(); toast("Signed out of Bluesky", "good"); route(); } }, "Sign out of Bluesky")
+        : null,
       h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Language"), seg([["en", "English"], ["zh", "中文"]], currentLang(), (v) => setLang(v as Lang))),
       h("div", { class: "menu-row" }, h("span", { class: "menu-label" }, "Theme"), seg([["light", "Light"], ["dark", "Dark"], ["auto", "Auto"]], themeMode(), (v) => applyTheme(v as ThemeMode))),
     ),
@@ -1413,6 +1416,109 @@ function renderTips(prefill?: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// "Continue with Bluesky": Skydrop makes the proof post for you, then deletes it once it has done its job
+// ---------------------------------------------------------------------------------------------------------
+
+/** Bluesky's sign-in only knows the address its client file names, so it's offered there and nowhere else. */
+const authAvailable = (): boolean => location.hostname === "skydrop.tari.mw";
+const AUTO_INTENT_KEY = "skydrop.autoPostFor";
+const authedAs = (): string => {
+  try {
+    return localStorage.getItem("skydrop.authDid") ?? "";
+  } catch {
+    return "";
+  }
+};
+const hasAutoPosts = (did: string): boolean => {
+  try {
+    return ((JSON.parse(localStorage.getItem("skydrop.autoPosts") ?? "[]") as { did: string }[]) ?? []).some((p) => p.did === did);
+  } catch {
+    return false;
+  }
+};
+/** Posts in flight or made this visit, by account: so a page redraw can't post the same thing twice. */
+const autoPosting = new Map<string, "posting" | string>();
+
+/**
+ * The one-tap way to make a proof post. Signed in as this account: "Post it for me". Not yet: "Continue with Bluesky",
+ * which comes back here and posts without another tap. `onPosted` nudges the page to look for the post at once.
+ */
+function postForMe(p: bsky.Profile, text: string, onPosted: () => void): HTMLElement | null {
+  if (!authAvailable()) return null;
+  const signed = authedAs() === p.did;
+  const state = autoPosting.get(p.did);
+  const label = signed ? "Post it for me" : "Continue with Bluesky";
+  const btn = h("button", { class: "btn primary bsky" }, label) as HTMLButtonElement;
+  if (state === "posting") {
+    btn.disabled = true;
+    mount(btn, ...spinnerLabel("Posting…"));
+  } else if (state === text) {
+    btn.disabled = true;
+    mount(btn, icons.check(16), "Posted. Checking it…");
+  }
+  const go = async (): Promise<void> => {
+    if (autoPosting.get(p.did) === "posting") return;
+    btn.disabled = true;
+    mount(btn, ...spinnerLabel(signed ? "Posting…" : "Opening Bluesky…"));
+    try {
+      const auth = await import("./auth");
+      if (auth.signedInDid() !== p.did) {
+        try {
+          sessionStorage.setItem(AUTO_INTENT_KEY, p.did);
+        } catch {
+          /* they tap once more when they're back */
+        }
+        await auth.signIn(p.handle, location.hash);
+        return;
+      }
+      autoPosting.set(p.did, "posting");
+      await auth.postFor(p.did, text);
+      autoPosting.set(p.did, text);
+      mount(btn, icons.check(16), "Posted. Checking it…");
+      onPosted();
+    } catch (e) {
+      autoPosting.delete(p.did);
+      toast(e instanceof Error ? e.message : String(e), "bad");
+      btn.disabled = false;
+      mount(btn, label);
+    }
+  };
+  btn.addEventListener("click", () => void go());
+  // back from signing in to do exactly this: carry on without another tap
+  let intent = "";
+  try {
+    intent = sessionStorage.getItem(AUTO_INTENT_KEY) ?? "";
+    if (signed && intent === p.did) sessionStorage.removeItem(AUTO_INTENT_KEY);
+  } catch {
+    /* no intent saved */
+  }
+  if (signed && intent === p.did && !state) setTimeout(() => void go(), 300);
+  return h(
+    "div",
+    { class: "autopost" },
+    btn,
+    h("p", { class: "help" }, signed ? `Skydrop posts it from @${p.handle} and deletes it as soon as it has done its job, so it won't stay on your profile or in anyone's feed.` : "Sign in with Bluesky and Skydrop makes the post for you, then deletes it once it has done its job. Nothing to copy, and nothing left in your feed."),
+  );
+}
+
+/** Deletes the proof posts Skydrop made for this account, once nothing needs them any more. */
+const cleaning = new Set<string>();
+async function cleanupProofPosts(did: string): Promise<void> {
+  if (!hasAutoPosts(did) || cleaning.has(did) || authedAs() !== did) return;
+  cleaning.add(did);
+  try {
+    const auth = await import("./auth");
+    const n = await auth.deletePostsFor(did);
+    if (n) toast(n === 1 ? "Your proof post has been deleted" : `Your ${n} proof posts have been deleted`, "good");
+  } catch {
+    /* kept for next time */
+  } finally {
+    cleaning.delete(did);
+    autoPosting.delete(did);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // tip jars: skydrop.tari.mw/tip/<handle>, the link a creator puts in their bio. Two taps to tip them.
 // ---------------------------------------------------------------------------------------------------------
 
@@ -1828,6 +1934,7 @@ function renderLink(prefill?: string, flow = false): void {
       toast("Wallet linked", "good");
       confetti();
       current = await chain.readBinding(provider, profile.did);
+      void cleanupProofPosts(profile.did);
       // with no delay the link is live now: carry on to the next step of a challenge gift
       if (flow && current === mine()) {
         const handle = profile.handle;
@@ -1896,7 +2003,7 @@ function renderLink(prefill?: string, flow = false): void {
       h(
         "div",
         { class: "steps", style: "margin-top:8px" },
-        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "a" : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "a" : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), postForMe(p, post(), () => void runBind()), authAvailable() ? h("div", { class: "or-self" }, "Or post it yourself:") : null, h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
         h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), h("p", null, needsFunds() ? `We watch for the post and link it for you. Your wallet has no ${CONFIG.symbol}, so Skydrop pays the tiny network fee.` : "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
       ),
     );
@@ -2030,6 +2137,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
             h("h2", { class: "page", style: "margin:12px 0 4px" }, "Collected!"),
             h("p", { class: "sub" }, paidHere ? "It's in your Skydrop wallet now." : `It was paid to the wallet @${p.handle} has linked (${displayAddress(e.binding!)}).`),
             h("div", { class: "row", style: "justify-content:center" }, h("button", { class: "btn primary", onclick: openWallet }, "Open wallet"), h("a", { class: "btn ghost", href: "#/send" }, "Send some to a friend")),
+            authedAs() === p.did ? null : h("p", { class: "help", style: "margin-top:12px" }, "Your claim post has done its job, so you can delete it from Bluesky now."),
             // The two things that make the next gift easier: no claim at all, and not losing this one.
             !e.binding && !e.bindingPending
               ? h("div", { class: "note", style: "margin-top:16px;text-align:left" }, h("b", null, "Make the next one instant. "), `Link your wallet to @${p.handle} with one post, and future gifts and tips land in it directly, with nothing to collect. `, h("a", { href: `#/link/${p.handle}` }, "Link my wallet"))
@@ -2044,6 +2152,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       ? h("div", { class: "note warn", style: "margin-top:12px" }, `${chain.formatTari(chain.total(e.stuckV1))} ${CONFIG.symbol} was sent to @${p.handle} with Skydrop's first contract, which can't verify accounts with a long identity history like this one. The sender can take it back after its refund date and send it again: new gifts work.`)
       : null;
     if (doneCard && !e.deposits.length) {
+      if (!e.pending) void cleanupProofPosts(p.did);
       mount(stepsEl, doneCard, stuckNote);
       return;
     }
@@ -2398,7 +2507,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
       h(
         "div",
         { class: "steps" },
-        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, codeNow() ? "Post this on Bluesky" : "Post the phrase"), h("p", null, codeNow() ? "Post it from your account (so everyone can see it). It ties this claim to your wallet, and you can delete the post afterwards." : "Your wallet is linked. Post this as a new post from your account, separate from the link post, and the money goes to your linked wallet."), pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It leads the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
+        h("div", { class: stepClass(1, cur) }, h("div", { class: "num" }, cur > 1 ? icons.check(18) : "1"), h("div", null, h("h3", null, codeNow() ? "Post this on Bluesky" : "Post the phrase"), h("p", null, codeNow() ? "It proves the account is yours and ties this claim to your wallet. It's only needed until you've collected." : "Your wallet is linked. Post this as a new post from your account, separate from the link post, and the money goes to your linked wallet."), cur === 1 ? postForMe(p, postText, () => { watching = true; }) : null, cur === 1 && authAvailable() ? h("div", { class: "or-self" }, "Or post it yourself:") : null, pay.missing.length || e.deposits.some((d) => d.challenge) ? h("div", { class: "note", style: "margin:0 0 10px" }, `The sender asked for something specific: ${[...new Set(e.deposits.map((d) => d.challenge).filter(Boolean))].map((c) => `“${c}”`).join(", ")}. It leads the text below. The money for that deposit is only released if your post says it exactly.${dropped ? ` Too many phrases fit in one post, so ${dropped} will wait for a second post.` : ""}`) : null, h("div", { class: "codebox" }, postText), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(postText), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(postText, "Text copied") }, icons.copy(14), "Copy")))),
         h("div", { class: cur === 1 ? "step active" : stepClass(2, cur) }, h("div", { class: "num" }, cur > 2 ? icons.check(18) : "2"), h("div", null, h("h3", null, "Prove it's you"), h("p", null, "We fetch the signed copy of your post straight from Bluesky. The contract checks the signatures itself. Nobody has to trust us."), cur === 1 ? h("div", null, canAuto() && !autoOff ? h("p", { class: "help" }, `Watching for your post. This continues by itself once it appears, and your ${CONFIG.symbol} is collected automatically when it's due.`) : null, verifyBtn, logEl) : null)),
         !hasWindow ? null : h("div", { class: stepClass(3, cur) }, h("div", { class: "num" }, cur > 3 ? icons.check(18) : "3"), h("div", null, h("h3", null, "Safety window"), cur >= 3 ? h("div", null, h("p", null, pay.nextEpoch !== null ? `Larger payments wait a bit so the real owner could stop a hijack. Next release ${eta(Math.max(0, pay.nextEpoch - e.epoch))}.` : "All clear."), h("div", { class: "bar", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 }, h("i", { style: `width:${pct}%` }))) : h("p", null, "Small payments skip this. Larger ones wait a short while first."))),
         h("div", { class: stepClass(4, cur) }, h("div", { class: "num" }, hasWindow ? "4" : "3"), h("div", null, h("h3", null, "Collect"), cur === 4 ? h("div", null, h("p", null, pay.waitingAmount > 0n ? `${chain.formatTari(pay.amount)} ${CONFIG.symbol} is ready now. ${chain.formatTari(pay.waitingAmount)} more is still in its safety window.` : "It's ready."), collectBtn, logEl) : h("p", null, `Your ${CONFIG.symbol} lands in your Skydrop wallet.`))),
@@ -2699,6 +2808,16 @@ function route(): void {
     return;
   }
   document.documentElement.lang = currentLang() === "zh" ? "zh-Hans" : "en";
+  const cb = new URLSearchParams(location.hash.slice(1));
+  if (cb.has("state") && (cb.has("code") || cb.has("error"))) {
+    try {
+      const auth = await import("./auth");
+      if (await auth.finishSignIn()) toast("Signed in with Bluesky", "good");
+    } catch (e) {
+      if (location.hash.includes("state=")) history.replaceState(null, "", `${location.pathname}#/`);
+      toast(`Bluesky sign-in didn't finish: ${e instanceof Error ? e.message : String(e)}`, "bad");
+    }
+  }
   addEventListener("hashchange", route);
   route();
   if (currentLang() === "zh") startChinese();
