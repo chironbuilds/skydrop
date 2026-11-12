@@ -641,6 +641,29 @@ async function checkPaidClaim(did: string, say: (s: string) => void): Promise<vo
   if (missing > 1) say(`Your wallet pays to record this account's identity history first (${missing} entries)`);
 }
 
+/** Mirrors the bot's LINKED_MIN_GIFTS: below this, it won't pay a linked claim's fees. */
+const LINKED_MIN_WAITING = 500_000n;
+
+/**
+ * A linked account's phrase claim, when this wallet has no TARI: the linked-claim calls need no signature (the payout
+ * can only go to the linked wallet), so Skydrop's bot submits the step and pays its fee. Waits until the chain shows it.
+ */
+async function relayLinked(did: string, step: "start" | "finalize", done: (e: chain.Escrow) => boolean, say: (s: string) => void): Promise<void> {
+  const e = await chain.readEscrow(provider, did);
+  if (chain.total(e.deposits) < LINKED_MIN_WAITING) {
+    throw new Error(`Skydrop pays this fee for you when at least ${chain.formatTari(LINKED_MIN_WAITING)} ${CONFIG.symbol} is waiting. Add a little ${CONFIG.symbol} to your wallet and try again.`);
+  }
+  say(step === "start" ? `Your wallet has no ${CONFIG.symbol}, so Skydrop submits your post and pays the fee. This takes up to a minute` : `Skydrop pays the fee to send it to your linked wallet. This takes up to a minute`);
+  const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "linked", did, step }) });
+  if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `Skydrop couldn't do this for free right now. Add a little ${CONFIG.symbol} to your wallet and try again.`);
+  for (let i = 0; i < 18; i++) {
+    await new Promise((res) => setTimeout(res, 10_000));
+    const now = await chain.readEscrow(provider, did).catch(() => null);
+    if (now && done(now)) return;
+  }
+  throw new Error(`Skydrop couldn't do this for free this time. If your linked wallet holds ${CONFIG.symbol}, it pays its own fee: open this page from that wallet, or add a little ${CONFIG.symbol} here, and try again.`);
+}
+
 /** Mirrors the bot's RECORD_MIN_GIFTS: below this, it won't pay to record an account's history. */
 const RECORD_MIN_WAITING = 500_000n;
 
@@ -1286,20 +1309,38 @@ function renderLink(prefill?: string, flow = false): void {
 
   const post = (): string => `Linking my Skydrop wallet to this account, so tips arrive directly. ${code}`;
 
+  /**
+   * A wallet with no TARI can't pay the link's fee, so Skydrop's bot submits the post instead (anyone may: the post is
+   * the authority). It checks everything on-chain itself and only pays for a wallet that's empty.
+   */
+  const linkForFree = async (did: string): Promise<void> => {
+    say("Your wallet has no TARI, so Skydrop pays the fee to link it. This takes up to a minute");
+    const r = await fetch("/api/relay-claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "link", did, account: mine(), owner: toHex(targetOwner) }) });
+    if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `Skydrop couldn't link it for free right now. Add a little ${CONFIG.symbol} to your wallet and try again.`);
+    for (let i = 0; i < 18; i++) {
+      await new Promise((res) => setTimeout(res, 10_000));
+      const e = await chain.readEscrow(provider, did).catch(() => null);
+      if (e && (e.binding === mine() || e.bindingPending?.address === mine())) return;
+    }
+    throw new Error(`Skydrop couldn't link it this time. Add a little ${CONFIG.symbol} to your wallet and try again.`);
+  };
+
   const runBind = async (): Promise<void> => {
     if (!profile || busy) return;
     await balanceReady;
-    if (needsFunds()) return void toast(`You need a little ${CONFIG.symbol} for network fees first.`, "bad");
     busy = true;
     mount(logEl);
     try {
       say("Looking for your post on Bluesky");
       const found = await bsky.findClaimPost(profile.did, code);
       if (!found) throw new Error("We couldn't find a post containing your link code yet. Post it publicly, wait a few seconds, then try again.");
-      say("Fetching the signed copy of your post");
-      const proof = await bsky.buildClaimProof(profile.did, found.rkey);
-      say("Submitting the proof. The contract checks every signature itself");
-      await chain.bindAccount(wallet, proof, mine(), targetOwner, say);
+      if (needsFunds()) await linkForFree(profile.did);
+      else {
+        say("Fetching the signed copy of your post");
+        const proof = await bsky.buildClaimProof(profile.did, found.rkey);
+        say("Submitting the proof. The contract checks every signature itself");
+        await chain.bindAccount(wallet, proof, mine(), targetOwner, say);
+      }
       await refreshBalance();
       submitted = target;
       toast("Wallet linked", "good");
@@ -1336,7 +1377,7 @@ function renderLink(prefill?: string, flow = false): void {
       }
       return;
     }
-    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin" || !balanceKnown || needsFunds()) return;
+    if (!profile || busy || current === mine() || submitted === mine() || wallet.kind !== "builtin" || !balanceKnown) return;
     try {
       if (await bsky.findClaimPost(profile.did, code)) void runBind();
     } catch {
@@ -1374,12 +1415,12 @@ function renderLink(prefill?: string, flow = false): void {
         "div",
         { class: "steps", style: "margin-top:8px" },
         h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "a" : "1"), h("div", null, h("h3", null, "Post this on Bluesky"), h("p", null, "It proves the account is yours. The code ties it to this address, so it can't link anyone else."), h("div", { class: "codebox" }, post()), h("div", { class: "row", style: "margin-top:12px" }, h("a", { class: "btn bsky sm", href: bsky.composeUrl(post()), target: "_blank", rel: "noopener" }, "Open Bluesky", icons.external(14)), h("button", { class: "btn ghost sm", onclick: () => copy(post(), "Text copied") }, icons.copy(14), "Copy")))),
-        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), needsFunds() ? h("div", { style: "margin:0 0 12px" }, h("p", null, "Linking costs a tiny network fee. Your post can wait while you add some."), fundsNote()) : h("p", null, "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", disabled: needsFunds(), onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
+        h("div", { class: "step active" }, h("div", { class: "num" }, flow ? "b" : "2"), h("div", null, h("h3", null, "Link it"), h("p", null, needsFunds() ? `We watch for the post and link it for you. Your wallet has no ${CONFIG.symbol}, so Skydrop pays the tiny network fee.` : "We watch for the post and link it for you. A tiny network fee comes from your wallet."), h("button", { class: "btn primary", onclick: () => void runBind() }, "I've posted it. Link it"), logEl)),
       ),
     );
   };
 
-  // funds arriving turns step 2 back on
+  // the fee note follows the balance
   onBalance(() => { if (!busy) draw(); });
   mount(card, h("div", null, h("label", { class: "f" }, "Your Bluesky account"), field.el), stepsEl);
   layout("link", h("h1", { class: "page" }, "Link your wallet"), h("p", { class: "sub" }, flow ? "Step 1 of 3. Link your wallet once with a Bluesky post. Then you post the sender's phrase, and the money goes to this wallet." : "Do it once, and gifts with no safety window and no phrase land in your wallet instantly. Nothing to claim."), card);
@@ -1573,7 +1614,8 @@ function renderClaim(prefill?: string, gift?: Gift): void {
     const runVerify = async (): Promise<void> => {
       if (busy) return;
       await balanceReady;
-      if (!sponsorOk && needsFunds()) return void toast(`You need a little ${CONFIG.symbol} for network fees first.`, "bad");
+      // A linked account's phrase claim (no code) can be relayed by Skydrop, so an empty wallet may go ahead.
+      if (!sponsorOk && needsFunds() && codeNow()) return void toast(`You need a little ${CONFIG.symbol} for network fees first.`, "bad");
       busy = true;
       verifyBtn.disabled = true;
       mount(verifyBtn, ...spinnerLabel("Verifying…"));
@@ -1591,9 +1633,13 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         };
         if (!codeNow()) {
           // a linked account's code-free post: the payout can only go to the linked wallet
-          await recordForFree(p.did, say);
-          await checkPaidClaim(p.did, say);
-          await chain.startLinkedClaim(wallet, proof, say);
+          if (needsFunds()) {
+            await relayLinked(p.did, "start", (n) => !!n.pending && n.pending.claimant === n.bindingOwner && chain.payableNow(n, n.pending.start).missing.length === 0, say);
+          } else {
+            await recordForFree(p.did, say);
+            await checkPaidClaim(p.did, say);
+            await chain.startLinkedClaim(wallet, proof, say);
+          }
         } else if (sponsorOk) {
           try {
             say("Network fees are covered for you");
@@ -1644,7 +1690,11 @@ function renderClaim(prefill?: string, gift?: Gift): void {
         const attempt = async (): Promise<void> => {
           if (esc?.binding && esc.pending?.claimant === esc.bindingOwner) {
             // a linked claim pays into the linked wallet, whoever submits it
-            await chain.finalizeToLinked(wallet, p.did, say, true);
+            await balanceReady;
+            if (needsFunds()) {
+              const before = chain.total(esc.deposits);
+              await relayLinked(p.did, "finalize", (n) => chain.total(n.deposits) < before, say);
+            } else await chain.finalizeToLinked(wallet, p.did, say, true);
           } else if (sponsorOk) {
             try {
               say("Network fees are covered for you");

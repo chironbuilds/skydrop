@@ -306,6 +306,7 @@ async function relayQueue(req: Request, url: URL, env: Env, mainnet: boolean): P
   if (url.pathname === "/api/relay-queue") {
     const items = Object.keys(await readIndex()).map((name) => {
       const parts = name.split("|");
+      if (parts[0] === "linked") return { kind: "linked", did: parts[1], step: parts[2] };
       if (parts[0] === "float") return { kind: "float", did: parts[1], address: parts[2] };
       if (parts[0] === "record") return { kind: "record", did: parts[1], ...(parts[2] ? { campaign: parts[2] } : {}) };
       return parts[0] === "link" ? { kind: "link", did: parts[1], account: parts[2], owner: parts[3] } : { kind: "claim", campaign: parts[0], did: parts[1] };
@@ -333,6 +334,12 @@ async function relayQueue(req: Request, url: URL, env: Env, mainnet: boolean): P
     const campaign = String(body.campaign ?? "");
     if (!/^did:plc:[a-z2-7]{24}$/.test(did) || (campaign && !/^component_[0-9a-f]{64}$/.test(campaign))) return json({ error: "That isn't a did:plc (and a campaign)." }, 400);
     return enqueue(`record|${did}${campaign ? `|${campaign}` : ""}`);
+  }
+  // A phrase gift for a linked account whose linked wallet holds no TARI: the bot starts the claim or pays it out.
+  if (body.kind === "linked") {
+    const step = String((body as { step?: unknown }).step ?? "");
+    if (!/^did:plc:[a-z2-7]{24}$/.test(did) || (step !== "start" && step !== "finalize")) return json({ error: "That isn't a did:plc and a step." }, 400);
+    return enqueue(`linked|${did}|${step}`);
   }
   // A gift claim whose proof is too big to be sponsored: the bot sends the wallet enough TARI to pay the fee itself.
   if (body.kind === "float") {
