@@ -6,14 +6,20 @@ import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-expect-error wrangler turns .wasm imports into compiled modules
 import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import { handleGate, liveDeps } from "./gate";
-import { cleanNote, envelopeHash, isCoverId, styleOf, type Style } from "../src/envelope-data";
+import { card } from "./card";
+import { cleanNote, cleanRecord, effectiveStyle, envelopeHash, extrasFromQuery, isCoverId, styleOf, type Extras, type Style } from "../src/envelope-data";
 import { fullPageRequest, httpsRedirect, readCapped, readCappedBytes, secure } from "../../web-atproto/worker/secure";
 import { atPath, networkResponse, onMainnet } from "../../web-atproto/worker/network";
 
-interface KVNamespace { get(key: string): Promise<string | null> }
+interface KVNamespace {
+  get(key: string): Promise<string | null>;
+  get(key: string, type: "json"): Promise<unknown>;
+  get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
+  put(key: string, value: string | ArrayBuffer, opts?: { expirationTtl?: number }): Promise<void>;
+}
 interface Env {
   ASSETS: { fetch(r: Request): Promise<Response> };
-  COVERS: { get(k: string, t: "arrayBuffer"): Promise<ArrayBuffer | null>; put(k: string, v: ArrayBuffer, o?: { expirationTtl?: number }): Promise<void> };
+  COVERS: KVNamespace;
   LAUNCH_STATE?: KVNamespace;
 }
 
@@ -46,19 +52,24 @@ let ready: Promise<void> | null = null;
 const cleanHandle = (s: string): string => (/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s) ? s.toLowerCase() : "");
 const cleanAmount = (s: string | null): string => (s && /^[0-9][0-9.,]{0,18}( [A-Za-z]{1,8})?$/.test(s) ? s : "");
 
-function params(url: URL): { handle: string; style: Style; note: string; amount: string; cover: string } {
+function params(url: URL): { handle: string; style: Style; note: string; amount: string; cover: string; extras: Extras } {
   return {
     handle: cleanHandle(url.searchParams.get("h") ?? url.pathname.split("/")[2] ?? ""),
     style: styleOf(url.searchParams.get("e")),
     note: cleanNote(url.searchParams.get("m") ?? ""),
     amount: cleanAmount(url.searchParams.get("a")),
     cover: isCoverId(url.searchParams.get("c")) ? url.searchParams.get("c")! : "",
+    extras: extrasFromQuery((k) => url.searchParams.get(k)),
   };
 }
 
+/** The extras as a stable query string, for cache keys. */
+const extrasKey = (x: Extras): string => (["p", "g", "k", "f", "x"] as const).map((k) => `${k}=${encodeURIComponent(x[k] ?? "")}`).join("&");
+
 function page(url: URL): Response {
   const origin = url.hostname === "localhost" ? url.origin : "https://" + url.host;
-  const { handle, style, note, amount } = params(url);
+  const { handle, style: base, note, amount, extras } = params(url);
+  const style = effectiveStyle(base, extras);
   const dest = `${origin}/#/claim/${handle}${url.search}`;
   const title = handle ? `@${handle}, you got a gift on Tari` : "You got a gift on Tari";
   const desc = note ? `\u201c${note}\u201d` : amount ? `${amount} is waiting for you. Collect it with one Bluesky post.` : "Collect it with one Bluesky post. No wallet needed.";
@@ -93,16 +104,24 @@ async function font(family: string, weight: number, text: string): Promise<Uint8
 }
 
 /** Draws a card. `complete` is false if a font couldn't be fetched, so the picture shouldn't be kept. */
-async function render(svg: string, text: string): Promise<{ bytes: Uint8Array; complete: boolean }> {
+async function render(svg: string, text: string, extra: { family: string; weight: number; text: string }[] = []): Promise<{ bytes: Uint8Array; complete: boolean }> {
   ready ??= initWasm(resvgWasm);
   await ready;
   const chars = [...new Set(text)];
   const latin = chars.filter(isLatin).join("");
   const wide = chars.filter((c) => !isLatin(c)).join("");
-  const [a, b] = await Promise.all([font("Fraunces", 700, latin || "a"), wide ? font("Noto Sans SC", 700, wide) : Promise.resolve(null)]);
-  const fontBuffers = [a, b].filter((f): f is Uint8Array => !!f);
+  // Emoji and symbols (a seal can be any one): the monochrome Noto Emoji covers what Noto Sans SC doesn't. Google
+  // subsets each font to the characters it actually has, so asking both for the same symbols is harmless.
+  const symbols = chars.filter((c) => /\p{Extended_Pictographic}|[\u2600-\u27bf]/u.test(c)).join("");
+  const [a, b, e, ...more] = await Promise.all([
+    font("Fraunces", 700, latin || "a"),
+    wide ? font("Noto Sans SC", 700, wide) : Promise.resolve(null),
+    symbols ? font("Noto Emoji", 700, symbols) : Promise.resolve(null),
+    ...extra.map((f) => font(f.family, f.weight, f.text || "a")),
+  ]);
+  const fontBuffers = [a, b, e, ...more].filter((f): f is Uint8Array => !!f);
   const bytes = new Resvg(svg, { font: { fontBuffers, loadSystemFonts: false, defaultFontFamily: "Fraunces" } }).render().asPng();
-  return { bytes, complete: !!a && (!wide || !!b) };
+  return { bytes, complete: !!a && (!wide || !!b) && more.every((f) => !!f) };
 }
 
 function toBase64(buf: ArrayBuffer): string {
@@ -110,39 +129,6 @@ function toBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(bin);
-}
-
-/** The preview card: the tall envelope on the left (with the sender's picture as its cover, if any), the words on the right. */
-function card(style: Style, handle: string, note: string, amount: string, cover: string): { svg: string; text: string } {
-  const lines = wrap(note || (amount ? `${amount} for you` : "A little something for you"), 46, 560);
-  const who = handle ? `@${handle}` : "";
-  const head = who ? `a gift for ${who}` : "a gift on Tari";
-  const text = [...lines, amount, head, "Skydrop", "skydrop.tari.mw", style.glyph, "福"].join("");
-  const stripe = `<pattern id="s" width="40" height="40" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="20" height="40" fill="#d9362b"/><rect x="20" width="20" height="40" fill="#2350d8"/></pattern>`;
-  // envelope: x 130..440, y 60..570. The cover covers the top 78% and its bottom edge bulges down in the middle.
-  const x0 = 130, x1 = 440, y0 = 60, y1 = 570, cx = (x0 + x1) / 2;
-  const cb = y0 + (y1 - y0) * 0.78;
-  const bulge = 34;
-  const coverPath = `M${x0},${y0 + 18} Q${x0},${y0} ${x0 + 18},${y0} L${x1 - 18},${y0} Q${x1},${y0} ${x1},${y0 + 18} L${x1},${cb - 12} Q${x1},${cb} ${cx},${cb + bulge} Q${x0},${cb} ${x0},${cb - 12} Z`;
-  const pic = cover
-    ? `<clipPath id="cv"><path d="${coverPath}"/></clipPath><image href="__COVER__" x="${x0}" y="${y0}" width="${x1 - x0}" height="${cb + bulge - y0}" preserveAspectRatio="xMidYMid slice" clip-path="url(#cv)"/>`
-    : `<path d="${coverPath}" fill="${style.paper}"/><rect x="${x0 + 18}" y="${y0 + 18}" width="${x1 - x0 - 36}" height="${cb - y0 - 40}" rx="10" fill="none" stroke="${style.ink}" stroke-opacity=".35" stroke-width="3"/>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><defs>${stripe}</defs>
-<rect width="1200" height="630" fill="#f0e6d0"/>
-<rect width="1200" height="14" fill="url(#s)"/><rect y="616" width="1200" height="14" fill="url(#s)"/>
-<rect x="${x0 + 8}" y="${y0 + 8}" width="${x1 - x0}" height="${y1 - y0}" rx="20" fill="#191730"/>
-<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" rx="20" fill="${style.paper}" stroke="#191730" stroke-width="5"/>
-${pic}
-<path d="${coverPath}" fill="none" stroke="#191730" stroke-width="5"/>
-<circle cx="${cx}" cy="${cb + bulge - 6}" r="44" fill="#e9cf9b" stroke="#191730" stroke-opacity=".35" stroke-width="3"/>
-<text x="${cx}" y="${cb + bulge + 8}" text-anchor="middle" font-family="Noto Sans SC" font-weight="700" font-size="38" fill="#a98b4d">${esc(cover ? "福" : style.glyph)}</text>
-<text x="540" y="120" font-family="Fraunces" font-weight="700" font-size="40" fill="#191730">Skydrop</text>
-<text x="540" y="168" font-family="Fraunces" font-weight="700" font-size="28" fill="#857e96">${esc(head)}</text>
-${lines.map((l, i) => `<text x="540" y="${290 + i * 58}" font-family="Fraunces, Noto Sans SC" font-weight="700" font-size="46" fill="#191730">${esc(l)}</text>`).join("")}
-${amount ? `<text x="540" y="${290 + lines.length * 58 + 30}" font-family="Fraunces" font-weight="700" font-size="40" fill="#d9362b">${esc(amount)}</text>` : ""}
-<text x="540" y="580" font-family="Fraunces" font-weight="700" font-size="26" fill="#857e96">skydrop.tari.mw</text>
-</svg>`;
-  return { svg, text };
 }
 
 /** At most `max` calls of `name` per address per hour. KV is eventually consistent, so this is a brake, not a hard cap. */
@@ -164,18 +150,18 @@ async function overLimit(req: Request, env: Env, name: string, max: number): Pro
 }
 
 async function png(url: URL, env: Env, req: Request): Promise<Response> {
-  const { handle, style, note, amount, cover } = params(url);
+  const { handle, style, note, amount, cover, extras } = params(url);
   const cache = (caches as unknown as { default: Cache }).default;
   // keyed by what is actually drawn, so junk in the query string cannot create new entries
-  const key = new Request(`${url.origin}/og-cache?h=${encodeURIComponent(handle)}&e=${style.id}&m=${encodeURIComponent(note)}&a=${encodeURIComponent(amount)}&c=${cover}`);
+  const key = new Request(`${url.origin}/og-cache?h=${encodeURIComponent(handle)}&e=${style.id}&m=${encodeURIComponent(note)}&a=${encodeURIComponent(amount)}&c=${cover}&${extrasKey(extras)}`);
   const hit = await cache.match(key);
   if (hit) return hit;
   // drawing costs CPU and font downloads: a new picture is allowed a limited number of times per address
   if (await overLimit(req, env, "og", 60)) return new Response("slow down", { status: 429 });
   const coverBytes = cover && !(await banned(cover, env)) ? await env.COVERS.get(cover, "arrayBuffer") : null;
-  const built = card(style, handle, note, amount, coverBytes ? "x" : "");
+  const built = card(style, handle, note, amount, coverBytes ? "x" : "", extras);
   const svg = coverBytes ? built.svg.replace("__COVER__", "data:image/jpeg;base64," + toBase64(coverBytes)) : built.svg;
-  const { bytes: out, complete } = await render(svg, built.text);
+  const { bytes: out, complete } = await render(svg, built.text, built.fonts);
   const res = new Response(out, { headers: { "content-type": "image/png", "cache-control": complete ? "public, max-age=86400" : "no-store" } });
   if (complete) await cache.put(key, res.clone());
   return res;
@@ -251,7 +237,7 @@ async function saveEnvelope(req: Request, env: Env): Promise<Response> {
   if (await overLimit(req, env, "envelope", 30)) return json({ error: "slow down" }, 429);
   const text = await readCapped(req, 600);
   if (text === null) return json({ error: "too big" }, 413);
-  let body: { e?: string; m?: string; c?: string };
+  let body: Record<string, string>;
   try {
     body = JSON.parse(text);
   } catch {
@@ -259,7 +245,7 @@ async function saveEnvelope(req: Request, env: Env): Promise<Response> {
   }
   // a record is stored under the hash of its own content, which is what a deposit commits to on-chain: it cannot be
   // squatted, and nobody can store a different record where a gift's envelope belongs
-  const rec = { e: styleOf(body.e).id, m: cleanNote(body.m ?? ""), c: isCoverId(body.c) ? body.c : "" };
+  const rec = cleanRecord(body && typeof body === "object" ? body : {});
   const hash = await envelopeHash(rec);
   const key = `env:${hash}`;
   if (!(await env.COVERS.get(key, "arrayBuffer"))) {

@@ -811,6 +811,8 @@ function renderSend(prefill?: string): void {
   let windowEpochs = 0;
   let busy = false;
   let style = env.STYLES[0]!;
+  // pattern, seal symbol, colour, font and opening burst: all optional, all in the link and the envelope's hash
+  let extras: env.Extras = {};
   let coverId = "";
   let coverUrl = "";
   let uploading = false;
@@ -857,9 +859,88 @@ function renderSend(prefill?: string): void {
   const personalSum = h("span", { class: "sum-val" });
   const drawSummary = (): void => {
     const who = fromInput.value.trim().replace(/^@/, "");
-    personalSum.textContent = [coverUrl ? "Your picture" : style.name, env.cleanNote(noteInput.value) ? "with a note" : "", who ? `from @${who}` : "anonymous"].filter(Boolean).join(" · ");
+    const touches = env.hasExtras(extras) ? "customized" : "";
+    personalSum.textContent = [coverUrl ? "Your picture" : style.name, touches, env.cleanNote(noteInput.value) ? "with a note" : "", who ? `from @${who}` : "anonymous"].filter(Boolean).join(" · ");
   };
   fromInput.addEventListener("input", drawSummary);
+  // The finer touches, under the styles: pattern, seal, colour, note font and what bursts out when it's opened.
+  const moreEl = h("div", { class: "env-more" });
+  const setExtra = (k: keyof env.Extras, v: string | undefined): void => {
+    extras = env.cleanExtras({ ...extras, [k]: v });
+    drawEnvelope();
+  };
+  const chip = (label: string | Node, on: boolean, pick: () => void, attrs: Record<string, string> = {}): HTMLElement =>
+    h("button", { class: "chip-o", role: "radio", "aria-checked": String(on), onclick: pick, ...attrs }, label);
+  const pickAny = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)]!;
+  const surprise = (): void => {
+    style = pickAny(env.STYLES);
+    extras = env.cleanExtras({
+      p: pickAny(env.PATTERNS).id,
+      g: Math.random() < 0.6 ? pickAny(env.SEALS) : "",
+      f: pickAny(env.FONTS).id,
+      x: pickAny(env.EFFECTS.filter((e) => e.id)).id,
+    });
+    drawEnvelope();
+    const shown = previewEl.querySelector<HTMLElement>(".env");
+    if (shown) setTimeout(() => shown.click(), 250);
+  };
+  const drawMore = (): void => {
+    const eff = env.effectiveStyle(style, extras);
+    const sealIn = h("input", { class: "input seal-in", maxlength: "16", placeholder: "Any", value: extras.g && !env.SEALS.includes(extras.g) ? extras.g : "", "aria-label": "Your own seal symbol" }) as HTMLInputElement;
+    sealIn.addEventListener("change", () => setExtra("g", sealIn.value));
+    const colour = h("input", { type: "color", value: extras.k ?? style.paper, "aria-label": "Cover colour" }) as HTMLInputElement;
+    colour.addEventListener("input", () => setExtra("k", colour.value));
+    mount(
+      moreEl,
+      h(
+        "div",
+        null,
+        h("div", { class: "lbl" }, h("span", null, "Pattern"), coverUrl ? h("span", null, "shows without a picture") : null),
+        h(
+          "div",
+          { class: "chips", role: "radiogroup", "aria-label": "Pattern" },
+          env.PATTERNS.map((pt) =>
+            chip(h("span", null, pt.name), eff.pattern === pt.id, () => setExtra("p", pt.id), { class: "chip-o sw", style: `--paper:${eff.paper};background-image:${env.patternCss(pt.id, eff.ink) || "none"}`, "aria-label": pt.name }),
+          ),
+        ),
+      ),
+      h(
+        "div",
+        null,
+        h("div", { class: "lbl" }, "Seal"),
+        h("div", { class: "chips", role: "radiogroup", "aria-label": "Seal symbol" }, chip("Auto", !extras.g, () => setExtra("g", "")), env.SEALS.map((g) => chip(g, extras.g === g, () => setExtra("g", g))), sealIn),
+      ),
+      h(
+        "div",
+        null,
+        h("div", { class: "lbl" }, "Colour"),
+        h("div", { class: "colour-row" }, colour, h("span", { class: "help", style: "margin:0" }, extras.k ? "Your own colour" : `${style.name} colour`), extras.k ? h("button", { class: "btn ghost sm", onclick: () => setExtra("k", "") }, "Reset") : null),
+      ),
+      h(
+        "div",
+        null,
+        h("div", { class: "lbl" }, "Note font"),
+        h("div", { class: "chips", role: "radiogroup", "aria-label": "Note font" }, env.FONTS.map((f) => chip(h("span", { class: f.id ? `env-msg font-${f.id}` : "", style: "font-size:15px" }, f.name), (extras.f ?? "") === f.id, () => setExtra("f", f.id)))),
+      ),
+      h(
+        "div",
+        null,
+        h("div", { class: "lbl" }, h("span", null, "Opening burst"), h("span", null, "tap to preview")),
+        h(
+          "div",
+          { class: "chips", role: "radiogroup", "aria-label": "Opening burst" },
+          env.EFFECTS.map((fx) =>
+            chip(fx.chars.length ? `${fx.chars[0]} ${fx.name}` : fx.id ? `🎊 ${fx.name}` : fx.name, (extras.x ?? "") === fx.id, () => {
+              setExtra("x", fx.id);
+              if (fx.id) env.burst(previewEl, fx.id);
+            }),
+          ),
+        ),
+      ),
+      h("div", { class: "row" }, h("button", { class: "btn ghost sm", onclick: surprise }, "🎲 Surprise me"), env.hasExtras(extras) ? h("button", { class: "btn ghost sm", onclick: () => { extras = {}; drawEnvelope(); } }, "Clear touches") : null),
+    );
+  };
+
   const drawEnvelope = (): void => {
     drawSummary();
     const file = h("input", { type: "file", accept: "image/*", style: "display:none" }) as HTMLInputElement;
@@ -885,16 +966,23 @@ function renderSend(prefill?: string): void {
     mount(
       pickEl,
       env.STYLES.map((o) =>
-        h("button", { class: "env-opt", role: "radio", "aria-checked": String(style.id === o.id), style: `--paper:${o.paper};--flap:${o.flap};--seal:${o.seal}`, onclick: () => { style = o; drawEnvelope(); } }, h("div", { class: "mini" }, h("i")), h("b", null, o.name), h("small", null, o.tag)),
+        h(
+          "button",
+          { class: "env-opt", role: "radio", "aria-checked": String(style.id === o.id && !extras.k), style: `--paper:${o.paper};--flap:${o.flap};--seal:${o.seal}`, onclick: () => { style = o; extras = env.cleanExtras({ ...extras, k: "" }); drawEnvelope(); } },
+          h("div", { class: "mini", style: `background-color:${o.paper};background-image:${env.patternCss(o.pattern ?? "none", o.ink) || "none"}` }, h("i")),
+          h("b", null, o.name),
+          h("small", null, o.tag),
+        ),
       ),
       h("button", { class: "env-up", onclick: () => file.click() }, h("div", { class: "mini", style: coverUrl ? `background-image:url(${coverUrl})` : "" }, coverUrl ? "" : "+"), h("b", null, coverUrl ? "Change picture" : "Your own picture"), h("small", null, "Any image")),
       file,
       h("div", { class: "env-designs" }, h("span", null, "Or start from a design:"), env.PRESETS.map((d) => h("button", { class: "btn ghost sm", onclick: () => void useCover(() => env.presetCover(d.id)) }, d.name))),
     );
+    drawMore();
     const a = amount();
     mount(
       previewEl,
-      env.envelope(style, env.cleanNote(noteInput.value), { amount: a ? `${chain.formatTari(a)} ${CONFIG.symbol}` : undefined, coverUrl: coverUrl || undefined }),
+      env.envelope(style, env.cleanNote(noteInput.value), { amount: a ? `${chain.formatTari(a)} ${CONFIG.symbol}` : undefined, coverUrl: coverUrl || undefined, extras }),
       h("p", { class: "help", style: "margin-top:12px" }, "Tap the envelope to peek inside.", coverUrl ? h("span", null, " ", h("a", { href: "#", onclick: (ev: Event) => { ev.preventDefault(); coverId = ""; coverUrl = ""; drawEnvelope(); } }, "Remove picture")) : null),
     );
   };
@@ -986,7 +1074,7 @@ function renderSend(prefill?: string): void {
       const esc = await chain.readEscrow(provider, profile.did);
       // the deposit commits to a hash of the envelope, so the bot's mention and the "Remind them" link can show it
       // and nobody else can put something different in its place
-      const rec = { e: style.id, m: env.cleanNote(noteInput.value), c: coverId };
+      const rec = env.cleanRecord({ e: style.id, m: noteInput.value, c: coverId, ...extras });
       const plain = env.isPlainEnvelope(rec);
       const envelope = plain ? "" : await env.envelopeHash(rec);
       // Who it's from, if the sender named themselves: recorded before sending, so nobody can name it first.
@@ -1015,7 +1103,7 @@ function renderSend(prefill?: string): void {
   const done = (p: bsky.Profile, a: bigint, w: number): void => {
     confetti();
     const note = env.cleanNote(noteInput.value);
-    const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId);
+    const link = env.shareLink(location.origin, p.handle, style.id, note, `${chain.formatTari(a)} ${CONFIG.symbol}`, coverId, extras);
     const noteLine = (note ? `\n“${note}”` : "") + (challenge() ? `\nTo collect it, your claim post also has to say: ${challenge()}${hold() ? ` (and stay up for ${eta(hold())})` : ""}` : "");
     const text = `@${p.handle} I just sent you ${chain.formatTari(a)} ${CONFIG.symbol} on Tari 🎁${noteLine}\nCollect it here (you prove you own this account, no wallet needed):\n${link}`;
     mount(
@@ -1054,7 +1142,7 @@ function renderSend(prefill?: string): void {
         "div",
         { class: "stack", style: "margin-top:12px" },
         h("div", null, h("label", { class: "f" }, "From"), fromInput, h("p", { class: "help" }, "Your Bluesky handle, so the bot's message tells them who sent it. Leave it empty to stay anonymous.")),
-        h("div", null, h("label", { class: "f" }, "Envelope and note"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("p", { class: "help" }, "The envelope and note travel in the claim link you share, so they see it when they open it.")),
+        h("div", null, h("label", { class: "f" }, "Envelope and note"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("details", { class: "env-touches" }, h("summary", null, "More touches: pattern, seal, colour, font, burst"), moreEl), h("p", { class: "help" }, "The envelope and note travel in the claim link you share, so they see it when they open it.")),
       ),
     ),
     h(
@@ -1433,12 +1521,12 @@ function renderLink(prefill?: string, flow = false): void {
 // ---------------------------------------------------------------------------------------------------------
 
 function giftEl(g: Gift): HTMLElement {
-  const e = env.envelope(g.style, g.note, { coverUrl: g.cover ? `/c/${g.cover}.jpg` : undefined, onToggle: () => wrap.querySelector(".from")?.remove() });
+  const e = env.envelope(g.style, g.note, { coverUrl: g.cover ? `/c/${g.cover}.jpg` : undefined, extras: g.extras, onToggle: () => wrap.querySelector(".from")?.remove() });
   const wrap = h("div", { class: "env-hello" }, e, h("p", { class: "from" }, "Tap the envelope"));
   return wrap;
 }
 
-interface Gift { style: env.Style; note: string; cover: string }
+interface Gift { style: env.Style; note: string; cover: string; extras: env.Extras }
 
 function renderClaim(prefill?: string, gift?: Gift): void {
   let profile: bsky.Profile | null = null;
@@ -1927,7 +2015,7 @@ function renderClaim(prefill?: string, gift?: Gift): void {
   layout(
     "claim",
     h("h1", { class: "page" }, `Collect your ${CONFIG.symbol}`),
-    gift && (gift.note || gift.cover || gift.style.id !== "air") ? giftEl(gift) : null,
+    gift && (gift.note || gift.cover || gift.style.id !== "air" || env.hasExtras(gift.extras)) ? giftEl(gift) : null,
     h("p", { class: "sub" }, "Enter your Bluesky handle. You'll post one line to prove it's you."),
     h("div", { class: "card" }, h("label", { class: "f" }, "Your Bluesky handle"), field.el),
     stepsEl,
@@ -2014,7 +2102,7 @@ function renderSent(): void {
             : d.challenge
               ? { tone: "wait", label: "Needs the phrase", text: `${who} has linked a wallet. Waiting for a post that says “${d.challenge}”${keep}.` }
               : { tone: "wait", label: "Waiting", text: `Waiting for ${who} to collect it.` };
-      const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "");
+      const link = env.shareLink(location.origin, p?.handle ?? d.did, saved?.e ?? "air", saved?.m ?? "", `${chain.formatTari(d.amount)} ${CONFIG.symbol}`, saved?.c ?? "", saved ?? {});
       const nudge = `@${p?.handle ?? ""} there's ${chain.formatTari(d.amount)} ${CONFIG.symbol} waiting for you on Tari 🎁 Collect it here:\n${link}`;
       return h(
         "div",
@@ -2180,7 +2268,7 @@ function route(): void {
   const q = new URLSearchParams(query);
   if (!deployed() && ["send", "claim", "tips", "link", "sent"].includes(kind)) renderGiftsPaused();
   else if (kind === "send") renderSend(param || undefined);
-  else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "" });
+  else if (kind === "claim") renderClaim(param || undefined, { style: env.styleOf(q.get("e")), note: env.cleanNote(q.get("m") ?? ""), cover: env.isCoverId(q.get("c")) ? q.get("c")! : "", extras: env.extrasFromQuery((k) => q.get(k)) });
   else if (kind === "tips") renderTips(param || undefined);
   else if (kind === "link") renderLink(param || undefined, q.get("flow") === "1");
   else if (kind === "sent") renderSent();

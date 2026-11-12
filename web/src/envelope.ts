@@ -1,27 +1,73 @@
 import { h } from "./dom";
-import { envelopeHash } from "./envelope-data";
-import type { EnvelopeRecord, Style } from "./envelope-data";
+import { EFFECTS, cleanExtras, effectiveStyle, envelopeHash, patternTile } from "./envelope-data";
+import type { EnvelopeRecord, Extras, Style } from "./envelope-data";
 export * from "./envelope-data";
 
+/** A pattern tile as a CSS background picture. */
+export function patternCss(id: string, ink: string): string {
+  const t = patternTile(id, ink);
+  if (!t) return "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${t.w}" height="${t.h}" viewBox="0 0 ${t.w} ${t.h}">${t.body}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+/** The handwritten font is only fetched once someone uses it. */
+let caveat = false;
+function needCaveat(): void {
+  if (caveat || typeof document === "undefined") return;
+  caveat = true;
+  document.head.appendChild(h("link", { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Caveat:wght@700&display=swap" }));
+}
+
+const reducedMotion = (): boolean => typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** What bursts out of an envelope as it opens: emoji, or paper confetti. */
+export function burst(at: HTMLElement, effect: string): void {
+  const fx = EFFECTS.find((e) => e.id === effect);
+  if (!fx || !fx.id || reducedMotion()) return;
+  const layer = h("div", { class: "env-burst", "aria-hidden": "true" });
+  const colours = ["#d9362b", "#2350d8", "#f6d44c", "#2aa876", "#c2386b", "#7b3fe4"];
+  for (let i = 0; i < 26; i++) {
+    const bit = fx.chars.length ? h("span", null, fx.chars[i % fx.chars.length]!) : h("i", { style: `background:${colours[i % colours.length]}` });
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.3;
+    const dist = 90 + Math.random() * 120;
+    bit.style.setProperty("--dx", `${Math.cos(angle) * dist}px`);
+    bit.style.setProperty("--dy", `${Math.sin(angle) * dist}px`);
+    bit.style.setProperty("--r", `${(Math.random() - 0.5) * 720}deg`);
+    bit.style.animationDelay = `${Math.random() * 120}ms`;
+    layer.appendChild(bit);
+  }
+  at.appendChild(layer);
+  setTimeout(() => layer.remove(), 1700);
+}
+
 /**
- * A tall red-packet style envelope: a cover (a colour, or the sender's own picture) with a round seal, and the
- * note and amount waiting inside. Tapping it lifts the cover away.
+ * A tall red-packet style envelope: a cover (a colour, a pattern, or the sender's own picture) with a round seal,
+ * and the note and amount waiting inside. Tapping it lifts the cover away, with the sender's chosen burst.
  */
-export function envelope(style: Style, note: string, opts: { amount?: string; open?: boolean; coverUrl?: string; onToggle?: () => void } = {}): HTMLElement {
+export function envelope(base: Style, note: string, opts: { amount?: string; open?: boolean; coverUrl?: string; onToggle?: () => void; extras?: Extras } = {}): HTMLElement {
+  const x = cleanExtras(opts.extras);
+  const style = effectiveStyle(base, x);
   const cover = h("div", { class: "env-cover" });
   if (opts.coverUrl) {
     cover.style.backgroundImage = `url("${opts.coverUrl}")`;
     cover.classList.add("pic");
+  } else {
+    const pat = patternCss(style.pattern, style.ink);
+    if (pat) cover.style.backgroundImage = pat;
   }
+  if (x.f === "hand") needCaveat();
+  const msg = h("span", { class: "env-msg" + (x.f ? ` font-${x.f}` : "") }, note || "A little something for you");
   const el = h(
     "div",
     { class: "env" + (opts.open ? " open" : ""), style: `--paper:${style.paper};--flap:${style.flap};--eink:${style.ink};--seal:${style.seal}`, role: "img", "aria-label": "Gift envelope" },
-    h("div", { class: "env-in" }, h("span", { class: "env-msg" }, note || "A little something for you"), opts.amount ? h("b", { class: "env-amt" }, opts.amount) : null),
+    h("div", { class: "env-in" }, msg, opts.amount ? h("b", { class: "env-amt" }, opts.amount) : null),
     cover,
-    h("div", { class: "env-seal" }, h("span", null, opts.coverUrl ? "福" : style.glyph)),
+    h("div", { class: "env-seal" }, h("span", null, x.g ? x.g : opts.coverUrl ? "福" : style.glyph)),
   );
   el.addEventListener("click", () => {
     el.classList.toggle("open");
+    if (el.classList.contains("open") && x.x) burst(el.parentElement ?? el, x.x);
     opts.onToggle?.();
   });
   return el;
@@ -147,7 +193,7 @@ export async function presetCover(id: string): Promise<Blob> {
 /** Tells the Worker which envelope goes with a deposit. Best effort: a failure only means the bot uses the plain card. */
 export async function registerEnvelope(rec: Partial<EnvelopeRecord>): Promise<void> {
   try {
-    await fetch("/envelope", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ e: rec.e, m: rec.m, c: rec.c }) });
+    await fetch("/envelope", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ e: rec.e, m: rec.m, c: rec.c, ...cleanExtras(rec) }) });
   } catch {
     /* ignore */
   }
