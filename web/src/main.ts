@@ -1147,10 +1147,9 @@ function renderSend(prefill?: string): void {
     card,
     h("div", null, h("label", { class: "f" }, "To (Bluesky handle)"), field.el, waiting),
     h("div", null, h("label", { class: "f" }, "Amount"), h("div", { class: "field" }, amountInput, h("span", { class: "suffix" }, CONFIG.symbol)), h("div", { class: "chips" }, ["0.1", "1", "5"].map((v) => h("button", { class: "q", onclick: () => { amountInput.value = v; update(); } }, v))), fundsEl),
-    h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
     h(
       "details",
-      { class: "opt" },
+      { class: "opt", open: "" },
       h("summary", null, h("span", { class: "sum-main" }, "Personalize", h("span", { class: "tag" }, "optional")), personalSum),
       h(
         "div",
@@ -1159,6 +1158,7 @@ function renderSend(prefill?: string): void {
         h("div", null, h("label", { class: "f" }, "Envelope and note"), pickEl, h("div", { class: "env-note" }, noteInput), previewEl, h("details", { class: "env-touches" }, h("summary", null, "More touches: pattern, seal, colour, font, burst"), moreEl), h("p", { class: "help" }, "The envelope and note travel in the claim link you share, so they see it when they open it.")),
       ),
     ),
+    h("div", null, h("label", { class: "f" }, "Safety level"), choicesEl, h("p", { class: "help" }, "Each payment sets its own safety window. It protects against someone using a stolen Bluesky key to collect, by giving the real owner time to cancel it.")),
     h(
       "details",
       { class: "opt" },
